@@ -33,7 +33,7 @@
 #define CONFIG_SYSTEM_TIME_ZONE_DEFAULT       8    // GMT+ 8
 #define CONFIG_SYSTEM_SOUND_ENABLE_DEFAULT    true
 
-#define CONFIG_WEIGHT_DEFAULT                 75   // kg
+#define CONFIG_WEIGHT_DEFAULT                 70   // kg
 
 #ifdef ARDUINO
 #  define CONFIG_GPS_REFR_PERIOD              1000 // ms
@@ -50,14 +50,13 @@
 #define CONFIG_MAP_USE_WGS84_DEFAULT          false
 #define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAP"
 
+#ifndef CONFIG_MAP_EXT_NAME_DEFAULT
 #define CONFIG_MAP_EXT_NAME_DEFAULT           "bin"
+#endif
 
 #ifndef CONFIG_MAP_IMG_PNG_ENABLE
 #  define CONFIG_MAP_IMG_PNG_ENABLE           0
 #endif
-
-#define CONFIG_GAUGE_DESIGN_CAP_DEFAULT       1000
-#define CONFIG_GAUGE_FULL_CHG_CAP_DEFAULT     2000
 
 #define CONFIG_ARROW_THEME_DEFAULT            "default"
 
