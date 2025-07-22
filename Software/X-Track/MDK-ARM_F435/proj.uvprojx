@@ -596,11 +596,6 @@
               <FilePath>..\USER\App\Common\DataProc\DP_IMU.cpp</FilePath>
             </File>
             <File>
-              <FileName>DP_MAG.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\USER\App\Common\DataProc\DP_MAG.cpp</FilePath>
-            </File>
-            <File>
               <FileName>DP_MusicPlayer.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\USER\App\Common\DataProc\DP_MusicPlayer.cpp</FilePath>

@@ -12,4 +12,3 @@ DP_DEF(MusicPlayer, 0);
 DP_DEF(TzConv, 0);
 DP_DEF(SysConfig, 0);
 DP_DEF(TrackFilter, 0);
-DP_DEF(BacklightCtrl, 0);

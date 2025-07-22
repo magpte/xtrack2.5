@@ -109,7 +109,6 @@ bool TinyGPSPlus::encode(char c)
   //return false;
 }
 
-
 //
 // internal utilities
 //
