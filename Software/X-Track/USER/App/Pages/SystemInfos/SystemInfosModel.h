@@ -27,6 +27,11 @@ public:
         float* speed
     );
 
+    void GetIMUInfo(
+        int* step,
+        char* info, uint32_t len
+    );
+
     void GetRTCInfo(
         char* dateTime, uint32_t len
     );
@@ -34,13 +39,7 @@ public:
     void GetBatteryInfo(
         int* usage,
         float* voltage,
-        char* state, uint32_t len,
-        int16_t* current,
-        uint16_t* remaining_capacity,
-        uint16_t* fullcharge_capacity,
-        int16_t* average_power,
-        uint16_t* design_capacity,
-        uint16_t* time_to
+        char* state, uint32_t len
     );
 
     void GetStorageInfo(
