@@ -45,6 +45,8 @@ static void loop()
     __wfi();
 }
 
+#endif
+
 /**
   * @brief  Main Function
   * @param  None
