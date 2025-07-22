@@ -9,6 +9,7 @@ void SystemInfosModel::Init()
 
     account->Subscribe("SportStatus");
     account->Subscribe("GPS");
+    account->Subscribe("IMU");
     account->Subscribe("Clock");
     account->Subscribe("Power");
     account->Subscribe("Storage");
@@ -65,6 +66,28 @@ void SystemInfosModel::GetGPSInfo(
     *speed = gps.speed;
 }
 
+void SystemInfosModel::GetIMUInfo(
+    int* step,
+    char* info, uint32_t len
+)
+{
+    HAL::IMU_Info_t imu = { 0 };
+
+    account->Pull("IMU", &imu, sizeof(imu));
+    *step = imu.steps;
+    snprintf(
+        info,
+        len,
+        "%d\n%d\n%d\n%d\n%d\n%d",
+        imu.ax,
+        imu.ay,
+        imu.az,
+        imu.gx,
+        imu.gy,
+        imu.gz
+    );
+}
+
 void SystemInfosModel::GetRTCInfo(
     char* dateTime, uint32_t len
 )
@@ -87,13 +110,7 @@ void SystemInfosModel::GetRTCInfo(
 void SystemInfosModel::GetBatteryInfo(
     int* usage,
     float* voltage,
-    char* state, uint32_t len,
-    int16_t* current,
-    uint16_t* remaining_capacity,
-    uint16_t* fullcharge_capacity,
-    int16_t* average_power,
-    uint16_t* design_capacity,
-    uint16_t* time_to
+    char* state, uint32_t len
 )
 {
     HAL::Power_Info_t power = { 0 };
@@ -102,12 +119,6 @@ void SystemInfosModel::GetBatteryInfo(
     *voltage = power.voltage / 1000.0f;
     strncpy(state, power.isCharging ? "CHARGE" : "DISCHARGE", len);
     state[len - 1] = '\0';
-    *current = power.current;
-    *remaining_capacity = power.remaining_capacity;
-    *fullcharge_capacity = power.fullcharge_capacity;
-    *average_power = power.average_power;
-    *design_capacity = power.design_capacity;
-    *time_to = power.time_to;
 }
 
 void SystemInfosModel::GetStorageInfo(
