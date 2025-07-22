@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file lv_conf.h
  * Configuration file for v8.1.1-dev
  */
@@ -16,7 +16,6 @@
 
 #ifndef LV_CONF_H
 #define LV_CONF_H
-/*clang-format off*/
 
 #include <stdint.h>
 
@@ -26,15 +25,19 @@
  *====================*/
 
 /*Color depth: 1 (1 byte per pixel), 8 (RGB332), 16 (RGB565), 32 (ARGB8888)*/
+#ifndef LV_COLOR_DEPTH
 #define LV_COLOR_DEPTH 16
+#endif
 
 /*Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI)*/
+#ifndef LV_COLOR_16_SWAP
 #define LV_COLOR_16_SWAP 1
+#endif
 
-/*Enable more complex drawing routines to manage screens transparency.
- *Can be used if the UI is above another layer, e.g. an OSD menu or video player.
- *Requires `LV_COLOR_DEPTH = 32` colors and the screen's `bg_opa` should be set to non LV_OPA_COVER value*/
-#define LV_COLOR_SCREEN_TRANSP 0
+/*Enable features to draw on transparent background.
+ *It's required if opa, and transform_* style properties are used.
+ *Can be also used if the UI is above another layer, e.g. an OSD menu or video player.*/
+#define LV_COLOR_SCREEN_TRANSP 1
 
 /* Adjust color mix functions rounding. GPUs might calculate color mix (blending) differently.
  * 0: round down, 64: round up from x.75, 128: round up from half, 192: round up from x.25, 254: round up */
@@ -55,7 +58,7 @@
 #endif
 #if LV_MEM_CUSTOM == 0
     /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
-    #define LV_MEM_SIZE (53U * 1024U)          /*[bytes]*/
+    #define LV_MEM_SIZE (72U * 1024U)          /*[bytes]*/
 
     /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
     #define LV_MEM_ADR 0     /*0: unused*/
@@ -93,12 +96,17 @@
  *It removes the need to manually update the tick with `lv_tick_inc()`)*/
 #define LV_TICK_CUSTOM     1
 #if LV_TICK_CUSTOM
-#ifdef ARDUINO
+#if defined(ARDUINO)
 #  define LV_TICK_CUSTOM_INCLUDE       "Arduino.h"    /*Header for the system time function*/
 #  define LV_TICK_CUSTOM_SYS_TIME_EXPR (millis())     /*Expression evaluating to current system time in ms*/
-#else
+#elif defined(_WIN32)
 #  define LV_TICK_CUSTOM_INCLUDE  <Windows.h>
-#  define LV_TICK_CUSTOM_SYS_TIME_EXPR (GetTickCount())
+#  pragma comment(lib, "Winmm.lib")
+#  define LV_TICK_CUSTOM_SYS_TIME_EXPR (timeGetTime())
+#else
+#  define LV_TICK_CUSTOM_INCLUDE  <stdint.h>
+#  define LV_TICK_CUSTOM_SYS_TIME_EXPR (custom_tick_get())
+uint32_t custom_tick_get(void);
 #endif
 #endif   /*LV_TICK_CUSTOM*/
 
@@ -131,6 +139,24 @@
     #define LV_CIRCLE_CACHE_SIZE 32
 
 #endif /*LV_DRAW_COMPLEX*/
+
+/**
+ * "Simple layers" are used when a widget has `style_opa < 255` to buffer the widget into a layer
+ * and blend it as an image with the given opacity.
+ * Note that `bg_opa`, `text_opa` etc don't require buffering into layer)
+ * The widget can be buffered in smaller chunks to avoid using large buffers.
+ * `draw_area` (`lv_area_t` meaning the area to draw and `px_size` (size of a pixel in bytes)
+ * can be used the set the buffer size adaptively.
+ *
+ * - LV_LAYER_SIMPLE_BUF_SIZE: [bytes] the optimal target buffer size. LVGL will try to allocate it
+ * - LV_LAYER_SIMPLE_FALLBACK_BUF_SIZE: [bytes]  used if `LV_LAYER_SIMPLE_BUF_SIZE` couldn't be allocated.
+ *
+ * Both buffer sizes are in bytes.
+ * "Transformed layers" (where transform_angle/zoom properties are used) use larger buffers
+ * and can't be drawn in chunks. So these settings affects only widgets with opacity.
+ */
+#define LV_LAYER_SIMPLE_BUF_SIZE          (24 * 1024)
+#define LV_LAYER_SIMPLE_FALLBACK_BUF_SIZE  LV_MAX(lv_area_get_width(&draw_area) * px_size, 2048)
 
 /*Default image cache size. Image caching keeps the images opened.
  *If only the built-in image formats are used there is no real advantage of caching. (I.e. if no new image decoder is added)
@@ -169,12 +195,18 @@
  * GPU
  *-----------*/
 
+/*Use Arm's 2D acceleration library Arm-2D */
+#define LV_USE_GPU_ARM2D 0
 /*Use STM32's DMA2D (aka Chrom Art) GPU*/
 #define LV_USE_GPU_STM32_DMA2D 0
 #if LV_USE_GPU_STM32_DMA2D
     /*Must be defined to include path of CMSIS header of target processor
     e.g. "stm32f769xx.h" or "stm32f429xx.h"*/
     #define LV_GPU_DMA2D_CMSIS_INCLUDE
+#endif
+#define LV_USE_GPU_SWM341_DMA2D 0
+#if LV_USE_GPU_SWM341_DMA2D
+    #define LV_GPU_SWM341_DMA2D_INCLUDE "SWM341.h"
 #endif
 
 /*Use NXP's PXP GPU iMX RTxxx platforms*/
@@ -261,8 +293,8 @@
 #endif
 
 /*Add a custom handler when assert happens e.g. to restart the MCU*/
-#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);   /*Halt by default*/
+#define LV_ASSERT_HANDLER_INCLUDE <assert.h>
+#define LV_ASSERT_HANDLER assert(0);   /*Halt by default*/
 
 
 /*-------------
@@ -292,7 +324,7 @@
     #define lv_snprintf  snprintf
     #define lv_vsnprintf vsnprintf
 #else   /*LV_SPRINTF_CUSTOM*/
-    #define LV_SPRINTF_USE_FLOAT 1
+    #define LV_SPRINTF_USE_FLOAT 0
 #endif  /*LV_SPRINTF_CUSTOM*/
 
 #define LV_USE_USER_DATA 1
@@ -676,7 +708,7 @@
 #define LV_USE_FFMPEG  0
 #if LV_USE_FFMPEG
     /*Dump input information to stderr*/
-    #define LV_FFMPEG_AV_DUMP_FORMAT 0
+    #define LV_FFMPEG_DUMP_FORMAT 0
 #endif
 
 /*-----------
@@ -684,7 +716,7 @@
  *----------*/
 
 /*1: Enable API to take snapshot for object*/
-#define LV_USE_SNAPSHOT 1
+#define LV_USE_SNAPSHOT 0
 
 /*1: Enable Monkey test*/
 #define LV_USE_MONKEY 1
@@ -695,6 +727,8 @@
 /*1: Enable lv_obj fragment*/
 #define LV_USE_FRAGMENT 0
 
+#define LV_USE_IMGFONT 0
+#define LV_USE_MSG 0
 /*==================
 * EXAMPLES
 *==================*/
@@ -716,7 +750,7 @@
 #define LV_USE_DEMO_KEYPAD_AND_ENCODER     0
 
 /*Benchmark your system*/
-#define LV_USE_DEMO_BENCHMARK   1
+#define LV_USE_DEMO_BENCHMARK   0
 
 /*Stress test for LVGL*/
 #define LV_USE_DEMO_STRESS      0
