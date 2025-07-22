@@ -16,15 +16,11 @@ using namespace Page;
 
 void LiveMapView::Create(lv_obj_t* root, uint32_t tileNum)
 {
-    lv_obj_remove_style_all(root);
-    lv_obj_set_size(root, LV_HOR_RES, LV_VER_RES);
-    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(root, lv_color_white(), 0);
 
     lv_obj_t* label = lv_label_create(root);
     lv_obj_center(label);
     lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_17"), 0);
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
     lv_label_set_text(label, "LOADING...");
     ui.labelInfo = label;
 
@@ -183,10 +179,9 @@ void LiveMapView::ZoomCtrl_Create(lv_obj_t* par)
     lv_style_transition_dsc_init(&tran, prop, lv_anim_path_ease_out, 200, 0, nullptr);
     lv_obj_set_style_x(cont, lv_obj_get_style_width(par, 0), LV_STATE_USER_1);
     lv_obj_set_style_opa(cont, LV_OPA_TRANSP, LV_STATE_USER_1);
-    lv_obj_add_state(cont, LV_STATE_USER_1);
     lv_obj_set_style_transition(cont, &tran, LV_STATE_USER_1);
-    lv_obj_set_style_transition(cont, &tran, 0);
-
+    lv_obj_set_style_transition(cont, &tran, LV_STATE_DEFAULT);
+    lv_obj_add_state(cont, LV_STATE_USER_1);
 
     lv_obj_t* label = lv_label_create(cont);
     lv_obj_add_style(label, &ui.styleLabel, 0);
