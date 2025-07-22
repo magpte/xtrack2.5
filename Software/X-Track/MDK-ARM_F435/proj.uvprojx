@@ -387,11 +387,6 @@
               <FileType>8</FileType>
               <FilePath>..\USER\main.cpp</FilePath>
             </File>
-            <File>
-              <FileName>benchmark.inc</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\USER\benchmark.inc</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>
@@ -2969,11 +2964,6 @@
               <FileName>HAL_IMU.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\USER\HAL\HAL_IMU.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>HAL_MAG.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\USER\HAL\HAL_MAG.cpp</FilePath>
             </File>
             <File>
               <FileName>HAL_Memory.cpp</FileName>
