@@ -12,8 +12,8 @@
 #define _Time_h
 
 #include <inttypes.h>
-#ifndef __AVR__
-//#include <sys/types.h> // for __time_t_defined, but avr libc lacks sys/types.h
+#if !defined(ARDUINO)
+#include <sys/types.h> // for __time_t_defined, but avr libc lacks sys/types.h
 #endif
 
 
@@ -141,4 +141,3 @@ time_t makeTime(tmElements_t &tm);  // convert time elements into time_t
 } // extern "C++"
 #endif // __cplusplus
 #endif /* _Time_h */
-
