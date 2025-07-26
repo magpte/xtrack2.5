@@ -59,11 +59,6 @@ int I2C_Scan();
 bool IMU_Init();
 void IMU_SetCommitCallback(CommitFunc_t func, void* userData);
 void IMU_Update();
-    
-/* MAG */
-bool MAG_Init();
-void MAG_SetCommitCallback(CommitFunc_t func, void* userData);
-void MAG_Update();
 
 /* SD */
 bool SD_Init();

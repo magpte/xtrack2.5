@@ -1,4 +1,5 @@
 #include "Dialplate.h"
+#include "../HAL/HAL.h"
 
 using namespace Page;
 
@@ -208,12 +209,6 @@ void Dialplate::onEvent(lv_event_t* event)
     lv_obj_t* obj = lv_event_get_current_target(event);
     lv_event_code_t code = lv_event_get_code(event);
 
-
-    if (code == LV_EVENT_SHORT_CLICKED)
-    {
-        instance->onBtnClicked(obj);
-    }
-
     if (obj == instance->View.ui.btnCont.btnRec)
     {
         if (code == LV_EVENT_SHORT_CLICKED)
@@ -224,5 +219,29 @@ void Dialplate::onEvent(lv_event_t* event)
         {
             instance->onRecord(true);
         }
-    }
+		}
+		
+		if (obj == instance->View.ui.btnCont.btnMap)
+    {
+        if (code == LV_EVENT_SHORT_CLICKED)
+        {
+            instance->onBtnClicked(obj);
+        }
+        else if (code == LV_EVENT_LONG_PRESSED)
+        {
+            HAL::Backlight_SetGradual(10, 500);
+        }
+		}
+		
+		if (obj == instance->View.ui.btnCont.btnMenu)
+    {
+        if (code == LV_EVENT_SHORT_CLICKED)
+        {
+            instance->onBtnClicked(obj);
+        }
+        else if (code == LV_EVENT_LONG_PRESSED)
+        {
+            HAL::Backlight_SetGradual(40, 500);
+        }
+		}
 }
