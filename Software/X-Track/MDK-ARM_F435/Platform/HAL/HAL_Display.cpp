@@ -1,6 +1,7 @@
 #include "HAL/HAL.h"
 #include "Adafruit_ST7789/Adafruit_ST7789.h"
 #include "Adafruit_GFX_Library/Fonts/FreeMono12pt7b.h"
+#include "cm_backtrace/cm_backtrace.h" 
 
 #define DISP_USE_FPS_TEST    0
 #define DISP_USE_DMA         1
@@ -155,32 +156,42 @@ void HAL::Display_Init()
     Serial.println("success");
 }
 
-void HAL::Display_DumpCrashInfo(const char* info)
-{
-#   define TEXT_HEIGHT_1   8
-#   define TEXT_WIDTH_1    6
-
-    screen.fillScreen(SCREEN_CLASS::COLOR_BLUE);
-    screen.setTextColor(SCREEN_CLASS::COLOR_WHITE);
-    screen.setFont(&FreeMono12pt7b);
-    screen.setTextSize(2);
-    screen.setCursor(0, 34);
-    screen.print(":(");
-
-    screen.setFont();
-
-    screen.setTextSize(1);
-    screen.setCursor(0, screen.height() / 2 - TEXT_HEIGHT_1 - 5);
-    screen.println(info);
-    screen.print("Press KEY to reboot..");
-
-    screen.setCursor(0, screen.height() - TEXT_HEIGHT_1 * 6);
-    screen.println("Error code:");
-    screen.printf("MMFAR = 0x%08X\r\n", SCB->MMFAR);
-    screen.printf("BFAR  = 0x%08X\r\n", SCB->BFAR);
-    screen.printf("CFSR  = 0x%08X\r\n", SCB->CFSR);
-    screen.printf("HFSR  = 0x%08X\r\n", SCB->HFSR);
-    screen.printf("DFSR  = 0x%08X\r\n", SCB->DFSR);
+void HAL::Display_DumpCrashInfo(const char* info)  
+{  
+    HAL::Backlight_ForceLit(true);  
+      
+    screen.fillScreen(SCREEN_CLASS::COLOR_BLUE);  
+    screen.setTextColor(SCREEN_CLASS::COLOR_WHITE);  
+    screen.setFont(&FreeMono12pt7b);  
+    screen.setTextSize(2);  
+    screen.setCursor(0, 34);  
+    screen.print(":(");  
+      
+    screen.setFont();  
+    screen.setTextSize(1);  
+    screen.setCursor(0, screen.height() / 2 - 8 - 5);  
+    screen.println(info);  
+    screen.print("Press KEY to reboot..");  
+      
+    // 显示调用栈信息  
+    screen.setCursor(0, 80);  
+    screen.println("Call Stack:");  
+      
+    // 获取调用栈  
+    uint32_t call_stack_buf[8];  
+    size_t depth = cm_backtrace_call_stack(call_stack_buf, 8, __get_MSP());  
+      
+    for (size_t i = 0; i < depth && i < 6; i++) {  
+        screen.printf("%d: 0x%08X\n", i, call_stack_buf[i]);  
+    }  
+      
+    screen.setCursor(0, screen.height() - 8 * 6);  
+    screen.println("Error code:");  
+    screen.printf("MMFAR = 0x%08X\r\n", SCB->MMFAR);  
+    screen.printf("BFAR  = 0x%08X\r\n", SCB->BFAR);  
+    screen.printf("CFSR  = 0x%08X\r\n", SCB->CFSR);  
+    screen.printf("HFSR  = 0x%08X\r\n", SCB->HFSR);  
+    screen.printf("DFSR  = 0x%08X\r\n", SCB->DFSR);  
 }
 
 void HAL::Display_SetAddrWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
