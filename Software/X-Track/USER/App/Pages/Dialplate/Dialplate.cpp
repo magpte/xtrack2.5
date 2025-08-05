@@ -229,7 +229,7 @@ void Dialplate::onEvent(lv_event_t* event)
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(10, 500);
+            HAL::Backlight_SetGradual(100, 500);
         }
 		}
 		
