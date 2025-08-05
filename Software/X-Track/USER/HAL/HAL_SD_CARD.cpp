@@ -154,3 +154,19 @@ void HAL::SD_Update()
 
     CM_VALUE_MONITOR(isInsert, SD_Check(isInsert));
 }
+
+// ÔÚHAL_SD_CARD.cppÖÐÌí¼Ó  
+bool HAL::SD_WriteCrashLog(const char* data)  
+{  
+    if (!SD_IsReady) {  
+        return false;  
+    }  
+      
+    File crashFile = SD.open("/crash.log", FILE_WRITE);  
+    if (crashFile) {  
+        crashFile.print(data);  
+        crashFile.close();  
+        return true;  
+    }  
+    return false;  
+}

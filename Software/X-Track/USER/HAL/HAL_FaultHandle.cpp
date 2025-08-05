@@ -1,10 +1,7 @@
 #include "HAL.h"
 #include "App/Version.h"
 #include "cm_backtrace/cm_backtrace.h"
-
 #include "SdFat.h"  // 添加SD卡支持  
-  
-extern SdFat SD;  // 引用SD卡实例
 
 static void Delay(uint32_t ms)
 {
@@ -43,26 +40,7 @@ void cmb_printf(const char *__restrict __format, ...)
     Serial.print(printf_buff);  
       
     // 写入crash.log文件  
-    static bool crash_file_opened = false;  
-    static File crashFile;  
-      
-    if (!crash_file_opened && HAL::SD_GetReady()) {  
-        crashFile = SD.open("/crash.log", FILE_WRITE);  
-        if (crashFile) {  
-            crash_file_opened = true;  
-            // 写入时间戳头部  
-            HAL::Clock_Info_t clock;  
-            HAL::Clock_GetInfo(&clock);  
-            crashFile.printf("=== CRASH LOG %04d-%02d-%02d %02d:%02d:%02d ===\n",   
-                           clock.year, clock.month, clock.day,   
-                           clock.hour, clock.minute, clock.second);  
-        }  
-    }  
-      
-    if (crash_file_opened && crashFile) {  
-        crashFile.print(printf_buff);  
-        crashFile.flush(); // 立即写入  
-    }  
+    HAL::SD_WriteCrashLog(printf_buff);  
 }
 
 extern "C"
@@ -84,13 +62,7 @@ extern "C"
     */
     
     void vApplicationHardFaultHook()
-		{  
-    // 确保crash.log文件被正确关闭  
-    extern File crashFile;  
-    if (crashFile) {  
-        crashFile.close();  
-    }  
-      
+		{
     HAL::Display_DumpCrashInfo("FXXK HardFault!");  
     Reboot();  
 		}
