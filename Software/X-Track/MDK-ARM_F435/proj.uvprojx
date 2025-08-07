@@ -16,7 +16,7 @@
         <TargetCommonOption>
           <Device>-AT32F435CGU7</Device>
           <Vendor>ArteryTek</Vendor>
-          <PackID>ArteryTek.AT32F435_437_DFP.2.0.6</PackID>
+          <PackID>ArteryTek.AT32F435_437_DFP.2.2.0</PackID>
           <Cpu>IRAM(0x20000000,0x60000) IROM(0x08000000,0x100000) CPUTYPE("Cortex-M4") FPU2 CLOCK(12000000) ELITTLE</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
           <StartupFile></StartupFile>
@@ -4166,6 +4166,21 @@
   </Targets>
 
   <RTE>
+    <packages>
+      <filter>
+        <targetInfos/>
+      </filter>
+      <package name="CMSIS" schemaVersion="1.3" url="http://www.keil.com/pack/" vendor="ARM" version="5.8.0">
+        <targetInfos>
+          <targetInfo name="X-Track" versionMatchMode="fixed"/>
+        </targetInfos>
+      </package>
+      <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6">
+        <targetInfos>
+          <targetInfo name="X-Track" versionMatchMode="fixed"/>
+        </targetInfos>
+      </package>
+    </packages>
     <apis/>
     <components>
       <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="5.5.0" condition="ARMv6_7_8-M Device">
@@ -4175,91 +4190,91 @@
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_conf" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 CMSIS">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="adc" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="crm" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS MISC">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="dma" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="ertc" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="exint" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="gpio" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="misc" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 CMSIS">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="pwc" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="scfg" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="spi" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="tmr" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="usart" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="wdt" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
       <component Cclass="Device" Cgroup="startup" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437">
-        <package name="AT32F435_437_DFP" schemaVersion="1.3" url="" vendor="ArteryTek" version="2.0.1"/>
+        <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
         <targetInfos>
           <targetInfo name="X-Track"/>
         </targetInfos>
