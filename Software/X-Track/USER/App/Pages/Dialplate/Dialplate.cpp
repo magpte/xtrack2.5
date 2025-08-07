@@ -221,7 +221,7 @@ void Dialplate::onEvent(lv_event_t* event)
         }
 		}
 		
-		if (obj == instance->View.ui.btnCont.btnMap)
+    if (obj == instance->View.ui.btnCont.btnMap)
     {
         if (code == LV_EVENT_SHORT_CLICKED)
         {
@@ -229,11 +229,11 @@ void Dialplate::onEvent(lv_event_t* event)
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(10, 500);
+            HAL::Backlight_SetGradual(1000, 1000);
         }
 		}
 		
-		if (obj == instance->View.ui.btnCont.btnMenu)
+    if (obj == instance->View.ui.btnCont.btnMenu)
     {
         if (code == LV_EVENT_SHORT_CLICKED)
         {
@@ -241,7 +241,7 @@ void Dialplate::onEvent(lv_event_t* event)
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(40, 500);
+            HAL::Backlight_SetGradual(Backlight_GetValue()-245, 500);
         }
 		}
 }
