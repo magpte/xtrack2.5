@@ -61,11 +61,24 @@ extern "C"
     }
     */
     
-    void vApplicationHardFaultHook()
-		{
+    void vApplicationHardFaultHook()  
+    {  
     HAL::Display_DumpCrashInfo("FXXK HardFault!");  
-    Reboot();  
-		}
+      
+    // 等待用户按键后再重启  
+    while(digitalRead(CONFIG_ENCODER_PUSH_PIN) == HIGH)  
+    {  
+        Delay(100);  // 减少延时，提高响应性  
+    }  
+      
+    // 等待按键释放  
+    while(digitalRead(CONFIG_ENCODER_PUSH_PIN) == LOW)  
+    {  
+        Delay(100);  
+    }  
+      
+    NVIC_SystemReset();  
+    }
     
     __asm void HardFault_Handler()
     {

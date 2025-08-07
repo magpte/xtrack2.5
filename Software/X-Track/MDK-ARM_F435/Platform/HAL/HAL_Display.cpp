@@ -169,29 +169,28 @@ void HAL::Display_DumpCrashInfo(const char* info)
       
     screen.setFont();  
     screen.setTextSize(1);  
-    screen.setCursor(0, screen.height() / 2 - 8 - 5);  
+    screen.setCursor(0, screen.height() / 2 - 8 - 5);  // 直接使用8而不是TEXT_HEIGHT_1  
     screen.println(info);  
-    screen.print("Press KEY to reboot..");  
       
     // 显示调用栈信息  
-    screen.setCursor(0, 80);  
+    screen.setCursor(0, 60);  
     screen.println("Call Stack:");  
-      
-    // 获取调用栈  
-    uint32_t call_stack_buf[8];  
-    size_t depth = cm_backtrace_call_stack(call_stack_buf, 8, __get_MSP());  
-      
-    for (size_t i = 0; i < depth && i < 6; i++) {  
-        screen.printf("%d: 0x%08X\n", i, call_stack_buf[i]);  
+    uint32_t call_stack_buf[4];  
+    size_t depth = cm_backtrace_call_stack(call_stack_buf, 4, __get_MSP());  
+    for (size_t i = 0; i < depth && i < 3; i++) {  
+        screen.printf("%d:0x%08X\n", i, call_stack_buf[i]);  
     }  
       
-    screen.setCursor(0, screen.height() - 8 * 6);  
+    screen.setCursor(0, screen.height() - 8 * 6);  // 直接使用8  
     screen.println("Error code:");  
     screen.printf("MMFAR = 0x%08X\r\n", SCB->MMFAR);  
     screen.printf("BFAR  = 0x%08X\r\n", SCB->BFAR);  
     screen.printf("CFSR  = 0x%08X\r\n", SCB->CFSR);  
     screen.printf("HFSR  = 0x%08X\r\n", SCB->HFSR);  
     screen.printf("DFSR  = 0x%08X\r\n", SCB->DFSR);  
+      
+    screen.setCursor(0, screen.height() - 8);  // 直接使用8  
+    screen.print("Press KEY to reboot..");  
 }
 
 void HAL::Display_SetAddrWindow(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
