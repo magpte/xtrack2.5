@@ -225,11 +225,11 @@ void Dialplate::onEvent(lv_event_t* event)
     {
         if (code == LV_EVENT_SHORT_CLICKED)
         {
-            instance->onBtnClicked(obj);
+            HAL::FaultHandle_TestDivideByZero();
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(1000, 1000);
+            HAL::FaultHandle_TestDivideByZero();
         }
 		}
 		

@@ -51,7 +51,8 @@ void Display_SetSendFinishCallback(Display_CallbackFunc_t func);
     
 /* FaultHandle */
 void FaultHandle_Init();
-bool SD_WriteCrashLog(const char* data);  
+bool SD_WriteCrashLog(const char* data);
+void FaultHandle_TestDivideByZero();
 
 /* I2C */
 int I2C_Scan();
