@@ -9,14 +9,6 @@ static void Delay(uint32_t ms)
     while(i--);
 }
 
-static void Reboot()
-{
-    while(digitalRead(CONFIG_ENCODER_PUSH_PIN) == HIGH)
-    {
-        Delay(1000);
-    }
-    NVIC_SystemReset();
-}
 
 void HAL::FaultHandle_Init()
 {
@@ -35,9 +27,6 @@ void cmb_printf(const char *__restrict __format, ...)
     va_start(args, __format);  
     int ret_status = vsnprintf(printf_buff, sizeof(printf_buff), __format, args);  
     va_end(args);  
-      
-    // 输出到串口  
-    Serial.print(printf_buff);  
       
     // 写入crash.log文件  
     HAL::SD_WriteCrashLog(printf_buff);  
