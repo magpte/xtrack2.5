@@ -27,15 +27,6 @@ void HAL::FaultHandle_Init()
     );
 }
 
-// 添加除零测试函数  
-void HAL::FaultHandle_TestDivideByZero()
-{  
-    volatile int a = 10;  
-    volatile int b = 0;  
-    volatile int result = a / b;  // 这会触发除零异常  
-    (void)result;  // 避免编译器优化  
-}
-
 void cmb_printf(const char *__restrict __format, ...)  
 {  
     char printf_buff[256];  
