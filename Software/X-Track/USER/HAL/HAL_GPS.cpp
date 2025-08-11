@@ -58,7 +58,6 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
     info->longitude = gps.location.lng();
     info->latitude = gps.location.lat();
     info->altitude = gps.altitude.meters();
-#endif
     info->speed = gps.speed.kmph();
     info->course = gps.course.deg();
 
