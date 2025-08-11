@@ -9,7 +9,7 @@ static TinyGPSPlus gps;
 
 void HAL::GPS_Init()
 {
-    GPS_SERIAL.begin(115200);
+    GPS_SERIAL.begin(19200);
 
     Serial.print("GPS: TinyGPS++ library v. ");
     Serial.print(TinyGPSPlus::libraryVersion());
