@@ -102,6 +102,11 @@
 #define CONFIG_SHOW_STACK_INFO      0
 #define CONFIG_SHOW_HEAP_INFO       0
 
+/* Backlight Config */
+#define CONFIG_BACKLIGHT_MIN        200  // Range [0, 1000]
+#define CONFIG_BACKLIGHT_MAX        700 // Range [0, 1000]
+#define CONFIG_BACKLIGHT_CTRL_RANGE 60   // minute Range[1, 120]
+
 /* Use Watch Dog */
 #define CONFIG_WATCH_DOG_ENABLE     1
 #if CONFIG_WATCH_DOG_ENABLE
