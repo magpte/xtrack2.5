@@ -22,7 +22,7 @@ double temperature = 0;
 
 void HAL::GPS_Init()
 {
-    GPS_SERIAL.begin(9600);
+    GPS_SERIAL.begin(115200);
 
     Serial.print("GPS: TinyGPS++ library v. ");
     Serial.print(TinyGPSPlus::libraryVersion());
