@@ -44,7 +44,7 @@ class BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  virtual bool syncBlocks() = 1;
+  virtual bool syncBlocks() = 0;
   /**
    * Writes a 512 byte block to an SD card.
    *
