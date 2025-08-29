@@ -17,6 +17,18 @@ void HAL::FaultHandle_Init()
         VERSION_HARDWARE,
         VERSION_SOFTWARE " " __DATE__
     );
+      
+    // Settle for MSK  
+    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;  
+}
+
+// divide ZERO 
+void HAL::FaultHandle_TestDivideByZero()  
+{  
+    volatile int a = 10;  
+    volatile int b = 0;  
+    volatile int result = a / b;  // Trigger 
+    (void)result;  // avoid optimization
 }
 
 void cmb_printf(const char *__restrict __format, ...)  

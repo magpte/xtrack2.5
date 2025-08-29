@@ -10,6 +10,7 @@ using namespace DataProc;
 #define RECORDER_GPX_FILE_NAME   "/" CONFIG_TRACK_RECORD_FILE_DIR_NAME "/TRK_%d%02d%02d_%02d%02d%02d.gpx"
 #define RECORDER_GPX_META_NAME   VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE
 #define RECORDER_GPX_META_DESC   VERSION_PROJECT_LINK
+#define SYNC_INTERVAL 30  // Sync every 30 track points
 
 typedef struct
 {
@@ -18,6 +19,7 @@ typedef struct
     lv_fs_file_t file;
     bool active;
     Account* account;
+    uint32_t syncCounter;  // Add this line for tracking sync intervals  
 } Recorder_t;
 
 static lv_fs_res_t Recorder_FileWriteString(lv_fs_file_t* file_p, const char* str)
@@ -87,7 +89,28 @@ static void Recorder_RecPoint(Recorder_t* recorder, HAL::GPS_Info_t* gpsInfo)
                         String(gpsInfo->latitude, 6)
                     );
 
-    Recorder_FileWriteString(&(recorder->file), gpxStr.c_str());
+    Recorder_FileWriteString(&(recorder->file), gpxStr.c_str());  
+      
+    // Increment sync counter and perform periodic sync  
+    recorder->syncCounter++;  
+    if (recorder->syncCounter >= SYNC_INTERVAL)  
+    {  
+        // Access the underlying SdFile object and sync  
+        SdFile* sdFile = (SdFile*)(recorder->file.file_d);  
+        if (sdFile != nullptr)  
+        {  
+            bool syncResult = sdFile->sync();  
+            if (syncResult)  
+            {  
+                LV_LOG_USER("Track file synced successfully");  
+            }  
+            else  
+            {  
+                LV_LOG_WARN("Track file sync failed");  
+            }  
+        }  
+        recorder->syncCounter = 0;  // Reset counter  
+    }  
 }
 
 static void Recorder_RecStart(Recorder_t* recorder, uint16_t time)
@@ -235,6 +258,7 @@ DATA_PROC_INIT_DEF(Recorder)
     memset(&recorder.file, 0, sizeof(recorder.file));
     recorder.active = false;
     recorder.account = account;
+    recorder.syncCounter = 0;  // Add this line  
     account->UserData = &recorder;
 
     account->Subscribe("GPS");
