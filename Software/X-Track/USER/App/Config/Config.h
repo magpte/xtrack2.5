@@ -55,7 +55,7 @@
 #endif
 
 #ifndef CONFIG_MAP_IMG_PNG_ENABLE
-#  define CONFIG_MAP_IMG_PNG_ENABLE           0
+#  define CONFIG_MAP_IMG_PNG_ENABLE           1
 #endif
 
 #define CONFIG_ARROW_THEME_DEFAULT            "default"
