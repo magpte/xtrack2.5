@@ -2,6 +2,7 @@
 #define __DIALPLATE_MODEL_H
 
 #include "Common/DataProc/DataProc.h"
+#include "TinyGPSPlus/src/TinyGPS++.h"
 
 namespace Page
 {
@@ -36,6 +37,22 @@ public:
     {
         return sportStatusInfo.speedAvgKph;
     }
+		
+	  float GetCourse()  
+		{  
+        HAL::GPS_Info_t gps;  
+        if(account->Pull("GPS", &gps, sizeof(gps)) != Account::RES_OK)  
+        {  
+            return 0.0f;  
+        }  
+        return gps.course;  
+		}  
+  
+    const char* GetCourseDirection()  
+		{  
+        float course = GetCourse();  
+        return TinyGPSPlus::cardinal(course);  
+		}
 
     void RecorderCommand(RecCmd_t cmd);
     void PlayMusic(const char* music);

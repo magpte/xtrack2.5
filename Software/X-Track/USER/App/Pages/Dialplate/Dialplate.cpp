@@ -99,7 +99,7 @@ void Dialplate::AttachEvent(lv_obj_t* obj)
 void Dialplate::Update()
 {
     char buf[16];
-    lv_label_set_text_fmt(View.ui.topInfo.labelSpeed, "%02d", (int)Model.GetSpeed());
+    lv_label_set_text_fmt(View.ui.topInfo.labelSpeed, "%03d%s", (int)Model.GetCourse(), Model.GetCourseDirection());
 
     lv_label_set_text_fmt(View.ui.bottomInfo.labelInfoGrp[0].lableValue, "%0.1f km/h", Model.GetAvgSpeed());
     lv_label_set_text(
@@ -113,8 +113,9 @@ void Dialplate::Update()
     );
     lv_label_set_text_fmt(
         View.ui.bottomInfo.labelInfoGrp[3].lableValue,
-        "%0.2f m/s",
-        Model.GetSpeed() * 5 / 18
+        "%0.1f %s",
+        Model.GetCourse(),  
+        Model.GetCourseDirection()  
     );
 }
 

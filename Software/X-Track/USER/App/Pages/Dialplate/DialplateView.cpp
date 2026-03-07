@@ -71,7 +71,7 @@ void DialplateView::TopInfo_Create(lv_obj_t* par)
     label = lv_label_create(cont);
     lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_17"), 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_label_set_text(label, "km/h");
+    lv_label_set_text(label, "Deg");
     lv_obj_align_to(label, ui.topInfo.labelSpeed, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
     ui.topInfo.labelUint = label;
 }
@@ -100,7 +100,7 @@ void DialplateView::BottomInfo_Create(lv_obj_t* par)
         "AVG",
         "Time",
         "Trip",
-        "Speed"
+        "Deg"
     };
 
     for (int i = 0; i < ARRAY_SIZE(ui.bottomInfo.labelInfoGrp); i++)
