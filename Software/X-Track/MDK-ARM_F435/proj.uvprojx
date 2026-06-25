@@ -4156,6 +4156,21 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>Utils/lv_img_rle</GroupName>
+          <Files>
+            <File>
+              <FileName>lv_img_rle.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\USER\App\Utils\lv_img_rle\lv_img_rle.cpp</FilePath>
+            </File>
+            <File>
+              <FileName>lv_img_rle.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\USER\App\Utils\lv_img_rle\lv_img_rle.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
         <Group>

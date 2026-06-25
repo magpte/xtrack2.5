@@ -170,3 +170,18 @@ bool HAL::SD_WriteCrashLog(const char* data)
     }  
     return false;  
 }
+
+bool HAL::SD_WriteDebugLog(const char* data)
+{
+    if (!SD_IsReady) {
+        return false;
+    }
+
+    File dbgFile = SD.open("/memchk.log", FILE_WRITE);
+    if (dbgFile) {
+        dbgFile.print(data);
+        dbgFile.close();
+        return true;
+    }
+    return false;
+}

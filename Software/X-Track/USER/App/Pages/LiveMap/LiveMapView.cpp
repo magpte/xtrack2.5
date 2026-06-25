@@ -9,6 +9,10 @@ using namespace Page;
 #include "Utils/lv_img_png/lv_img_png.h"
 #  define TILE_IMG_CREATE  lv_img_png_create
 #  define TILE_IMG_SET_SRC lv_img_png_set_src
+#elif CONFIG_MAP_IMG_RLE_ENABLE
+#include "Utils/lv_img_rle/lv_img_rle.h"
+#  define TILE_IMG_CREATE  lv_img_rle_create
+#  define TILE_IMG_SET_SRC lv_img_rle_set_src
 #else
 #  define TILE_IMG_CREATE  lv_img_create
 #  define TILE_IMG_SET_SRC lv_img_set_src

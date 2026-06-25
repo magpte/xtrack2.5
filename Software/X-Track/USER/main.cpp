@@ -34,9 +34,9 @@
 
 static void setup()
 {
-    HAL::HAL_Init();
     lv_init();
     lv_port_init();
+    HAL::HAL_Init();
 
     App_Init();
 

@@ -48,15 +48,15 @@
 #define CONFIG_TRACK_RECORD_FILE_DIR_NAME     "Track"
 
 #define CONFIG_MAP_USE_WGS84_DEFAULT          false
-#define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAP"
+#define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPR"
 
 #ifndef CONFIG_MAP_EXT_NAME_DEFAULT
-#define CONFIG_MAP_EXT_NAME_DEFAULT           "bin"
+#define CONFIG_MAP_EXT_NAME_DEFAULT           "rle"
 #endif
 
-#ifndef CONFIG_MAP_IMG_PNG_ENABLE
-#  define CONFIG_MAP_IMG_PNG_ENABLE           0
-#endif
+#define CONFIG_MAP_IMG_PNG_ENABLE             0
+
+#define CONFIG_MAP_IMG_RLE_ENABLE             1
 
 #define CONFIG_ARROW_THEME_DEFAULT            "default"
 
