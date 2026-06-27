@@ -1,3 +1,4 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/magpte/xtrack2.5)
 # X-TRACK
 > 开源GPS自行车码表。
 > 
