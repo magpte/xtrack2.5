@@ -116,24 +116,22 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
             return;
         }
 
-        const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);
-
-        lv_disp_t* disp = _lv_refr_get_disp_refreshing();
-        lv_disp_draw_buf_t* draw_buf = lv_disp_get_draw_buf(disp);
-        lv_color_t* disp_buf = (lv_color_t*)draw_buf->buf_act;
-
-        lv_area_t disp_area;
-        lv_area_set(&disp_area, 0, 0, LV_HOR_RES - 1, LV_VER_RES - 1);
-        lv_coord_t disp_width = lv_area_get_width(&disp_area);
-
-        lv_area_t src_area;
-        src_area = *draw_ctx->clip_area;
-        lv_area_move(&src_area, -obj->coords.x1, -obj->coords.y1);
-
-        lv_img_rle_draw_dsc_t dsc;
-        dsc.dest_buf = disp_buf + draw_ctx->clip_area->y1 * disp_width + draw_ctx->clip_area->x1;
-        dsc.src_area = &src_area;
-        dsc.disp_area = &disp_area;
+        const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);  
+  
+        // 使用 draw_ctx->buf_area 作为 buffer 的实际覆盖区域（partial rendering 安全）  
+        lv_coord_t buf_stride = lv_area_get_width(draw_ctx->buf_area);  
+        lv_color_t* buf_ptr = (lv_color_t*)draw_ctx->buf;  
+  
+        lv_area_t src_area;  
+        src_area = *draw_ctx->clip_area;  
+        lv_area_move(&src_area, -obj->coords.x1, -obj->coords.y1);  
+  
+        lv_img_rle_draw_dsc_t dsc;  
+        dsc.dest_buf = buf_ptr  
+                     + (draw_ctx->clip_area->y1 - draw_ctx->buf_area->y1) * buf_stride  
+                     + (draw_ctx->clip_area->x1 - draw_ctx->buf_area->x1);  
+        dsc.src_area = &src_area;  
+        dsc.disp_area = draw_ctx->buf_area;  // stride 由 buf_area 的宽度决定
 
         lv_rle_draw(img->src, &dsc);
     }
