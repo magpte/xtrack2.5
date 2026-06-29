@@ -2,9 +2,9 @@
 #include "lvgl/lvgl.h"
 
 /**
-  * @brief  ±³¹âÁÁ¶È½¥±ä£¬ÊÜlv_anim¿ØÖÆ
-  * @param  obj:ÎÞÓÃ
-  * @param  brightness:ÁÁ¶ÈÖµ
+  * @brief  èƒŒå…‰äº®åº¦æ¸å˜ï¼Œå—lv_animæŽ§åˆ¶
+  * @param  obj:æ— ç”¨
+  * @param  brightness:äº®åº¦å€¼
   * @retval None
   */
 static void Backlight_AnimCallback(void * obj, int32_t brightness)
@@ -13,24 +13,29 @@ static void Backlight_AnimCallback(void * obj, int32_t brightness)
 }
 
 /**
-  * @brief  ±³¹â³õÊ¼»¯
-  * @param  ÎÞ
-  * @retval ÎÞ
+  * @brief  èƒŒå…‰åˆå§‹åŒ–
+  * @param  æ— 
+  * @retval æ— 
   */
 void HAL::Backlight_Init()
 {
-    /*PWM³õÊ¼»¯£¬1000¼¶£¬20KHzÆµÂÊ*/
+    /*PWMåˆå§‹åŒ–ï¼Œ1000çº§ï¼Œ20KHzé¢‘çŽ‡*/
     PWM_Init(CONFIG_SCREEN_BLK_PIN, 1000, 20000);
     Backlight_SetValue(0);
 }
 
 /**
-  * @brief  ±³¹âÉèÖÃ£¬½¥±äÐ§¹û
-  * @param  target:Ä¿±êÁÁ¶È(0~1000 -> 0~100%)
-  * @retval ÎÞ
+  * @brief  èƒŒå…‰è®¾ç½®ï¼Œæ¸å˜æ•ˆæžœ
+  * @param  target:ç›®æ ‡äº®åº¦(0~1000 -> 0~100%)
+  * @retval æ— 
   */
-void HAL::Backlight_SetGradual(uint16_t target, uint16_t time)
+void HAL::Backlight_SetGradual(int32_t target, uint16_t time)
 {
+    // åœ¨è¿™é‡Œä¹Ÿåšä¸€æ¬¡é’³ä½ï¼šä¸ç®¡è°ƒç”¨è€…é‚£è¾¹ç®—å‡ºä»€ä¹ˆå€¼ï¼Œ
+    // è¿™ä¸ªå‡½æ•°è‡ªå·±æ°¸è¿œä¸ä¼šæŠŠä¸€ä¸ªè¶Šç•Œçš„ç›®æ ‡å€¼å–‚ç»™åŠ¨ç”»ï¼Œ
+    // ä»Žæ ¹ä¸Šå µæ­»â€œå‡å‡ºè´Ÿæ•°/ç®—å‡ºè¶…ç•Œå€¼â€è¿™ä¸€ç±»é—®é¢˜å†æ¬¡å‡ºçŽ°çš„å¯èƒ½ã€‚
+    CM_VALUE_LIMIT(target, 0, 1000);
+
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)Backlight_AnimCallback);
@@ -42,11 +47,11 @@ void HAL::Backlight_SetGradual(uint16_t target, uint16_t time)
 }
 
 /**
-  * @brief  »ñÈ¡±³¹âÁÁ¶È
-  * @param  ÎÞ
-  * @retval µ±Ç°ÁÁ¶È(0~1000 -> 0~100%)
+  * @brief  èŽ·å–èƒŒå…‰äº®åº¦
+  * @param  æ— 
+  * @retval å½“å‰äº®åº¦(0~1000 -> 0~100%)
   */
-uint16_t HAL::Backlight_GetValue()
+int32_t HAL::Backlight_GetValue()
 {
     return Timer_GetCompare(
                PIN_MAP[CONFIG_SCREEN_BLK_PIN].TIMx,
@@ -55,20 +60,20 @@ uint16_t HAL::Backlight_GetValue()
 }
 
 /**
-  * @brief  ÉèÖÃ±³¹âÁÁ¶È
-  * @param  val: ÁÁ¶È(0~1000 -> 0~100%)
-  * @retval ÎÞ
+  * @brief  è®¾ç½®èƒŒå…‰äº®åº¦
+  * @param  val: äº®åº¦(0~1000 -> 0~100%)
+  * @retval æ— 
   */
-void HAL::Backlight_SetValue(int16_t val)
+void HAL::Backlight_SetValue(int32_t val)
 {
     CM_VALUE_LIMIT(val, 0, 1000);
     analogWrite(CONFIG_SCREEN_BLK_PIN, val);
 }
 
 /**
-  * @brief  ±³¹âÇ¿ÖÆµãÁÁ
-  * @param  en: ±³¹âÊ¹ÄÜ
-  * @retval ÎÞ
+  * @brief  èƒŒå…‰å¼ºåˆ¶ç‚¹äº®
+  * @param  en: èƒŒå…‰ä½¿èƒ½
+  * @retval æ— 
   */
 void HAL::Backlight_ForceLit(bool en)
 {

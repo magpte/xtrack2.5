@@ -35,9 +35,9 @@ void HAL_Update();
 
 /* Backlight */
 void Backlight_Init();
-uint16_t Backlight_GetValue();
-void Backlight_SetValue(int16_t val);
-void Backlight_SetGradual(uint16_t target, uint16_t time = 500);
+int32_t Backlight_GetValue();
+void Backlight_SetValue(int32_t val);
+void Backlight_SetGradual(int32_t target, uint16_t time = 500);
 void Backlight_ForceLit(bool en);
 
 /* Display */

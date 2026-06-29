@@ -242,7 +242,15 @@ void Dialplate::onEvent(lv_event_t* event)
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(HAL::Backlight_GetValue()-196, 500);
+            // 现在 HAL::Backlight_GetValue()/Backlight_SetGradual() 都已经
+            // 改成 int32_t，这里不会再发生“减出负数→隐式转换成巨大正数”
+            // 的溢出问题，HAL 内部也额外做了一层钳位兜底。
+            int32_t next = HAL::Backlight_GetValue() - 196;
+            if (next < 0)
+            {
+                next += 1000;  // 循环回到最亮，而不是停在黑屏
+            }
+            HAL::Backlight_SetGradual(next, 500);
         }
 		}
 }
