@@ -4171,21 +4171,6 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>Utils/TileBundleFS</GroupName>
-          <Files>
-            <File>
-              <FileName>TileBundleFS.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\USER\App\Utils\TileBundleFS\TileBundleFS.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>TileBundleFS.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\USER\App\Utils\TileBundleFS\TileBundleFS.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
         <Group>
