@@ -48,7 +48,7 @@
 #define CONFIG_TRACK_RECORD_FILE_DIR_NAME     "Track"
 
 #define CONFIG_MAP_USE_WGS84_DEFAULT          false
-#define CONFIG_MAP_DIR_PATH_DEFAULT           "B:/MAP"
+#define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPR"
 
 #ifndef CONFIG_MAP_EXT_NAME_DEFAULT
 #define CONFIG_MAP_EXT_NAME_DEFAULT           "rle"
