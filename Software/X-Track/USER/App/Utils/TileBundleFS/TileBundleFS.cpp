@@ -22,11 +22,35 @@
 
 typedef struct
 {
-    lv_fs_file_t bundle_file;  // the real, underlying bundle file
     uint32_t tile_start;       // absolute byte offset of this tile's data within the bundle file
     uint32_t tile_length;
     uint32_t cursor;           // virtual read position, 0..tile_length
 } TileBundleFile_t;
+
+// --- Shared, persistent bundle file handle ------------------------------
+// IMPORTANT ASSUMPTION: this driver assumes only ONE virtual tile "file"
+// is ever open at a time (i.e. the caller always fully reads and closes
+// one tile before opening the next). This holds for how lv_img_rle.cpp
+// actually uses it today (lv_rle_draw opens, decodes, and closes within
+// a single synchronous call, and LVGL's draw events are not concurrent).
+// If this driver is ever used somewhere that opens two RLE tiles at once
+// before closing the first, this sharing would corrupt both reads --
+// don't add a second concurrent caller without revisiting this.
+//
+// Why this exists: the same tile is often redrawn multiple times within
+// one refresh burst (overlapping panels like SportInfo/zoom indicator/
+// active line each invalidate their own small region, and each one
+// triggers a redraw of whatever tile is underneath), and adjacent tiles
+// share the same 100x100-tile bundle file. Without this cache, every
+// single tile draw re-opens the underlying .tbnd file from scratch --
+// a real FAT directory traversal -- even when it's the exact same file
+// as the previous call. Keeping it open and only re-doing the cheap
+// 8-byte index lookup for a new tile cuts that cost out for repeats and
+// neighbors, which is the majority of real-world access patterns while
+// panning/viewing a live map.
+static lv_fs_file_t s_shared_bundle_file;
+static char s_shared_bundle_path[96] = "";
+static bool s_shared_bundle_valid = false;
 
 // Parses ".../<level>/<tileX>/<tileY>.rle" out of `path`, computes which
 // bundle block (tileX,tileY) falls into, and writes the real bundle
@@ -82,6 +106,34 @@ static bool parse_virtual_path(const char* path, char* bundle_path_out, size_t b
     return written > 0 && (size_t)written < bundle_path_max;
 }
 
+// Ensures s_shared_bundle_file is open and positioned on `bundle_path`.
+// Reuses the already-open handle if it's already pointing at the same
+// file (the common case); otherwise closes whatever was open and opens
+// the new one.
+static bool ensure_shared_bundle_open(const char* bundle_path)
+{
+    if (s_shared_bundle_valid && strcmp(s_shared_bundle_path, bundle_path) == 0)
+    {
+        return true;  // already open on the right file -- nothing to do
+    }
+
+    if (s_shared_bundle_valid)
+    {
+        lv_fs_close(&s_shared_bundle_file);
+        s_shared_bundle_valid = false;
+    }
+
+    if (lv_fs_open(&s_shared_bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
+    {
+        return false;
+    }
+
+    strncpy(s_shared_bundle_path, bundle_path, sizeof(s_shared_bundle_path) - 1);
+    s_shared_bundle_path[sizeof(s_shared_bundle_path) - 1] = '\0';
+    s_shared_bundle_valid = true;
+    return true;
+}
+
 static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mode)
 {
     LV_UNUSED(drv);
@@ -100,22 +152,20 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
         return NULL;
     }
 
-    TileBundleFile_t* f = (TileBundleFile_t*)lv_mem_alloc(sizeof(TileBundleFile_t));
-    if (f == NULL)
-    {
-        LV_LOG_ERROR("TileBundle: out of memory");
-        return NULL;
-    }
-
-    if (lv_fs_open(&f->bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
+    if (!ensure_shared_bundle_open(bundle_path))
     {
         // Bundle file itself missing -- could be a legitimately empty
         // block (no tiles there at all), or could be a path/dirPath
         // mismatch. Logging this is cheap and is the fastest way to
         // tell those two cases apart while debugging.
-        LV_LOG_WARN("TileBundle: could not open bundle file %s (from virtual path %s)",
-                     bundle_path, path);
-        lv_mem_free(f);
+        LV_LOG_WARN("TileBundle: could not open bundle file %s (from virtual path %s)", bundle_path, path);
+        return NULL;
+    }
+
+    TileBundleFile_t* f = (TileBundleFile_t*)lv_mem_alloc(sizeof(TileBundleFile_t));
+    if (f == NULL)
+    {
+        LV_LOG_ERROR("TileBundle: out of memory");
         return NULL;
     }
 
@@ -124,12 +174,11 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
 
     uint8_t entry[8];
     uint32_t br = 0;
-    if (lv_fs_seek(&f->bundle_file, index_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK
-        || lv_fs_read(&f->bundle_file, entry, sizeof(entry), &br) != LV_FS_RES_OK
+    if (lv_fs_seek(&s_shared_bundle_file, index_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK
+        || lv_fs_read(&s_shared_bundle_file, entry, sizeof(entry), &br) != LV_FS_RES_OK
         || br != sizeof(entry))
     {
         LV_LOG_WARN("TileBundle: index read failed in %s", bundle_path);
-        lv_fs_close(&f->bundle_file);
         lv_mem_free(f);
         return NULL;
     }
@@ -142,7 +191,6 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
     if (offset == ABSENT_OFFSET || length == 0)
     {
         // Tile genuinely doesn't exist in the map data -- not an error.
-        lv_fs_close(&f->bundle_file);
         lv_mem_free(f);
         return NULL;
     }
@@ -153,9 +201,9 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
     f->tile_length = length;
     f->cursor = 0;
 
-    if (lv_fs_seek(&f->bundle_file, f->tile_start, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+    if (lv_fs_seek(&s_shared_bundle_file, f->tile_start, LV_FS_SEEK_SET) != LV_FS_RES_OK)
     {
-        lv_fs_close(&f->bundle_file);
+        LV_LOG_WARN("TileBundle: seek failed in %s", bundle_path);
         lv_mem_free(f);
         return NULL;
     }
@@ -166,10 +214,13 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
 static lv_fs_res_t bundle_fs_close(lv_fs_drv_t* drv, void* file_p)
 {
     LV_UNUSED(drv);
+    // Deliberately does NOT close s_shared_bundle_file here -- it's kept
+    // open so the next open() call can potentially reuse it (see
+    // ensure_shared_bundle_open's comment above). Only the small
+    // per-virtual-open state is freed.
     TileBundleFile_t* f = (TileBundleFile_t*)file_p;
     if (f)
     {
-        lv_fs_close(&f->bundle_file);
         lv_mem_free(f);
     }
     return LV_FS_RES_OK;
@@ -183,7 +234,7 @@ static lv_fs_res_t bundle_fs_read(lv_fs_drv_t* drv, void* file_p, void* buf, uin
     uint32_t remaining = f->tile_length - f->cursor;
     uint32_t to_read = (btr < remaining) ? btr : remaining;  // never read past this tile's own bytes
 
-    lv_fs_res_t res = lv_fs_read(&f->bundle_file, buf, to_read, br);
+    lv_fs_res_t res = lv_fs_read(&s_shared_bundle_file, buf, to_read, br);
     if (res == LV_FS_RES_OK)
     {
         f->cursor += *br;
@@ -219,7 +270,7 @@ static lv_fs_res_t bundle_fs_seek(lv_fs_drv_t* drv, void* file_p, uint32_t pos, 
     }
     f->cursor = new_cursor;
 
-    return lv_fs_seek(&f->bundle_file, f->tile_start + f->cursor, LV_FS_SEEK_SET);
+    return lv_fs_seek(&s_shared_bundle_file, f->tile_start + f->cursor, LV_FS_SEEK_SET);
 }
 
 static lv_fs_res_t bundle_fs_tell(lv_fs_drv_t* drv, void* file_p, uint32_t* pos_p)
