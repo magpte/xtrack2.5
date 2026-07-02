@@ -1,54 +1,503 @@
 /*
  * lv_img_rle.cpp
  *
- * See lv_img_rle.h for background. The structure (constructor/destructor/
- * event handler, src string ownership) is copied directly from
- * lv_img_png.cpp so it drops into the same place in LiveMapView.cpp.
- * Only the decode routine (lv_rle_draw) is different.
+ * Combined tile-bundle reader + RLE2 decoder. Previously split across
+ * TileBundleFS.cpp (an lv_fs virtual driver) and this file (LVGL widget).
+ * Those two talked through LVGL's generic filesystem layer, which imposed
+ * per-draw overhead on every tile:
  *
- * Format version RLE2: adds a row-checkpoint table so a partial redraw
- * (e.g. a small overlapping panel) only needs to seek-and-decode the rows
- * it actually needs, instead of always scanning the file from the top.
- * See tile_rle_encode.py for the matching encoder.
+ *   1. lv_fs_open("B:/MAP/…") → drive-letter dispatch → bundle_fs_open
+ *      re-parsed the path with strrchr/atoi/snprintf from scratch.
+ *   2. lv_rle_draw called lv_fs_read(…, pair, 2, …) once per RLE run —
+ *      inside the hot loop — walking the full callback chain for 2 bytes.
+ *
+ * This file removes both costs:
+ *   1. Path parsing and bundle index lookup happen once per draw, as direct
+ *      C function calls with no lv_fs driver dispatch.
+ *   2. The run-stream is read through a 256-byte refill buffer, so the hot
+ *      decode loop makes O(tile_bytes / 256) lv_fs_read calls instead of
+ *      O(number_of_runs).
+ *
+ * Everything else is preserved:
+ *   - Shared bundle file handle: the same .tbnd file stays open across
+ *     adjacent tiles and repeated draws of the same tile, avoiding FAT
+ *     directory traversals (important with 40K+ tile files on the SD card).
+ *   - Metadata cache: header, palette, and checkpoint table for the most
+ *     recently drawn tile are cached, skipping those reads on every
+ *     repeat draw within one refresh burst.
+ *   - Checkpoint seek: only the rows needed for the current clip area are
+ *     decoded, not the full tile from row 0.
+ *
+ * -------------------------------------------------------------------------
+ * Bundle file format  (must match tile_bundle.py exactly)
+ * -------------------------------------------------------------------------
+ *   [0..3]   magic "TBND"
+ *   [4..5]   blockSize  (uint16 LE)
+ *   [6..9]   blockX     (uint32 LE, informational)
+ *   [10..13] blockY     (uint32 LE, informational)
+ *   index table: blockSize × blockSize entries, 8 bytes each
+ *     [0..3] tile data offset into data section (0xFFFFFFFF = absent)
+ *     [4..7] tile data length in bytes
+ *     entry for (localX, localY) is at index localY*blockSize + localX
+ *   data section: concatenated RLE2 tile byte streams
+ *
+ * -------------------------------------------------------------------------
+ * RLE2 tile format  (must match tile_rle_encode.py exactly)
+ * -------------------------------------------------------------------------
+ *   [0..3]   magic "RLE2"
+ *   [4..5]   width              (uint16 LE)
+ *   [6..7]   height             (uint16 LE)
+ *   [8..9]   paletteCount       (uint16 LE)
+ *   [10..11] checkpointInterval (uint16 LE)
+ *   [12..13] checkpointCount    (uint16 LE)
+ *   palette:      paletteCount × 2 bytes (RGB565 LE)
+ *   checkpoints:  checkpointCount × 4 bytes (uint32 LE offsets into run stream)
+ *   run stream:   (run_len: uint8, palette_idx: uint8) pairs
  */
+
 #include "lv_img_rle.h"
 #include <string.h>
+#include <stdlib.h>
 
 #define MY_CLASS &lv_img_rle_class
 
-#define RLE_MAGIC        "RLE2"
-#define RLE_HEADER_SIZE  14
-#define RLE_MAX_PALETTE  256
+// ---- Bundle constants (must match tile_bundle.py) -----------------------
+#define BUNDLE_MAGIC          "TBND"
+#define BUNDLE_HEADER_SIZE    14u
+#define BUNDLE_BLOCK_SIZE     100
+#define ABSENT_OFFSET         0xFFFFFFFFu
 
-// Must be large enough to hold height / checkpointInterval entries. With
-// the encoder's default 16-row interval and a 256px tile, that's 16 --
-// this leaves headroom in case the interval is ever tightened.
-#define RLE_MAX_CHECKPOINTS 32
+// ---- RLE2 constants (must match tile_rle_encode.py) ---------------------
+#define RLE_MAGIC             "RLE2"
+#define RLE_HEADER_SIZE       14u
+#define RLE_MAX_PALETTE       256
+#define RLE_MAX_CHECKPOINTS   32
+// Tile dimensions: must equal the actual encoded tile size.
+// A mismatch is caught at load_meta() and logged as a warning.
+#define RLE_MAX_TILE_WIDTH    256
 
-// Match this to your actual tile width (256 for the standard OSM-style
-// tile scheme this project uses). Encoding a wider tile than this will
-// be rejected at decode time rather than overflowing a buffer.
-#define RLE_MAX_TILE_WIDTH  256
+// ---- LVGL drive letter for the SD card ----------------------------------
+// Must match SD_LETTER in lv_port_fs_sdfat.cpp.
+#define TILE_SD_DRIVE_LETTER  '/'
+
+// ---- Run-stream read buffer size ----------------------------------------
+// Each refill issues one lv_fs_read for up to this many bytes, replacing
+// O(runs) per-pair reads with O(tile_bytes / RLE_READ_BUF_SIZE) reads.
+// 256 = 128 (run_len, idx) pairs per SD read.  Power of two, fits on stack.
+#define RLE_READ_BUF_SIZE     256u
+
+// =========================================================================
+// Shared bundle file handle
+// =========================================================================
+// One .tbnd file is kept open between draw calls. Adjacent tiles very often
+// share the same bundle, so the common path is a strcmp-and-reuse rather
+// than a FAT directory traversal for every single tile.
+//
+// CONCURRENCY NOTE (same as the old TileBundleFS):
+// Only ONE virtual tile may be in the process of being read at any time.
+// LVGL's draw events are serialised (one draw context at a time) so this
+// assumption holds today. Do not add a second concurrent caller without
+// revisiting the shared-handle design.
+// =========================================================================
+static lv_fs_file_t s_bundle_file;
+static char         s_bundle_path[96] = "";
+static bool         s_bundle_valid    = false;
+
+// =========================================================================
+// Tile metadata cache
+// =========================================================================
+// Caches header fields, palette, and checkpoint table for the most recently
+// drawn tile path. The same tile is redrawn multiple times per refresh burst
+// whenever overlapping panels (SportInfo, zoom indicator, active track line)
+// each invalidate their own clip region that happens to fall on this tile.
+// Caching the metadata (but NOT pixel data) skips 3 sequential SD reads on
+// every repeat draw.  tile_start/tile_length are included so the cache hit
+// path never needs to re-read the bundle index table.
+// =========================================================================
+typedef struct {
+    char     path[80];
+    bool     valid;
+
+    uint32_t tile_start;          // absolute byte offset of this tile in the bundle file
+    uint32_t tile_length;         // byte length of the full RLE2 stream for this tile
+
+    uint16_t width;
+    uint16_t height;
+    uint16_t paletteCount;
+    uint16_t checkpointInterval;
+    uint16_t checkpointCount;
+    uint32_t run_stream_start;    // byte offset from tile_start to first run pair
+
+    uint16_t palette[RLE_MAX_PALETTE];
+    uint32_t checkpoints[RLE_MAX_CHECKPOINTS];
+} TileMeta_t;
+
+static TileMeta_t s_meta = { "", false, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0} };
+
+// =========================================================================
+// Buffered run-stream reader
+// =========================================================================
+// Wraps s_bundle_file; tracks absolute bundle-file position and the tile's
+// end boundary so reads never escape this tile's byte range.
+// =========================================================================
+typedef struct {
+    uint32_t abs_pos;             // absolute bundle-file offset of next byte to read
+    uint32_t tile_end;            // absolute bundle-file offset just past this tile
+    uint8_t  buf[RLE_READ_BUF_SIZE];
+    uint32_t pos;                 // next unread byte index within buf
+    uint32_t filled;              // valid byte count in buf
+    bool     error;
+} RleReader_t;
+
+// Refills reader buffer from s_bundle_file. Returns false on EOF or error.
+static bool reader_refill(RleReader_t* r)
+{
+    uint32_t avail = r->tile_end - r->abs_pos;
+    if (avail == 0)
+    {
+        r->filled = 0;
+        r->pos    = 0;
+        return false;
+    }
+
+    uint32_t want = (avail < RLE_READ_BUF_SIZE) ? avail : RLE_READ_BUF_SIZE;
+    uint32_t br   = 0;
+    if (lv_fs_read(&s_bundle_file, r->buf, want, &br) != LV_FS_RES_OK || br == 0)
+    {
+        r->filled = 0;
+        r->pos    = 0;
+        r->error  = true;
+        return false;
+    }
+
+    r->abs_pos += br;
+    r->filled   = br;
+    r->pos      = 0;
+    return true;
+}
+
+// Seeks s_bundle_file to abs_pos and initialises the reader for this tile.
+static bool reader_seek(RleReader_t* r, uint32_t abs_pos, uint32_t tile_end)
+{
+    r->abs_pos  = abs_pos;
+    r->tile_end = tile_end;
+    r->pos      = 0;
+    r->filled   = 0;
+    r->error    = false;
+
+    if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+    {
+        r->error = true;
+        return false;
+    }
+    return true;
+}
+
+// Returns one (run_len, palette_idx) pair from the reader.
+// Handles the rare split-pair case when a pair straddles a buffer boundary.
+static inline bool reader_read_pair(RleReader_t* r, uint8_t* run_len, uint8_t* idx)
+{
+    // Fast path: both bytes already in buffer
+    if (r->pos + 1 < r->filled)
+    {
+        *run_len = r->buf[r->pos++];
+        *idx     = r->buf[r->pos++];
+        return true;
+    }
+
+    // Slow path: at most one byte remains; carry it and refill
+    uint8_t carry       = 0;
+    bool    has_carry   = (r->pos < r->filled);
+    if (has_carry)
+    {
+        carry = r->buf[r->pos];
+    }
+
+    if (!reader_refill(r) || r->filled == 0)
+    {
+        return false;
+    }
+
+    if (has_carry)
+    {
+        *run_len = carry;
+        *idx     = r->buf[r->pos++];
+    }
+    else
+    {
+        if (r->filled < 2) return false;
+        *run_len = r->buf[r->pos++];
+        *idx     = r->buf[r->pos++];
+    }
+    return true;
+}
+
+// =========================================================================
+// Ensure s_bundle_file is open on bundle_path; reuse if already open on it.
+// =========================================================================
+static bool ensure_bundle_open(const char* bundle_path)
+{
+    if (s_bundle_valid && strcmp(s_bundle_path, bundle_path) == 0)
+    {
+        return true;  // common case: same file as last draw
+    }
+
+    if (s_bundle_valid)
+    {
+        lv_fs_close(&s_bundle_file);
+        s_bundle_valid = false;
+    }
+
+    if (lv_fs_open(&s_bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
+    {
+        return false;
+    }
+
+    strncpy(s_bundle_path, bundle_path, sizeof(s_bundle_path) - 1);
+    s_bundle_path[sizeof(s_bundle_path) - 1] = '\0';
+    s_bundle_valid = true;
+    return true;
+}
+
+// =========================================================================
+// Path parsing
+// =========================================================================
+// Input:  full src string, e.g. "B:/MAP/16/53354/28462.rle"
+// Output: bundle_path_out = "/MAP/16/533_284.tbnd" (on the SD drive)
+//         *local_x = 54, *local_y = 62
+//
+// Strips the drive-letter prefix (anything up to and including ':'), then
+// splits the remaining "/<prefix>/<level>/<tileX>/<tileY>.ext" into parts.
+// The bundle path is formed on the SD drive directly (no virtual drive
+// letter prefix) because the SD driver is registered under TILE_SD_DRIVE_LETTER
+// which is also the first character of every absolute path, e.g. "/MAP/...".
+// =========================================================================
+static bool parse_tile_path(const char* src,
+                             char* bundle_path_out, size_t bundle_path_max,
+                             int* local_x, int* local_y)
+{
+    // Strip everything up to and including ':' (the virtual drive letter).
+    const char* colon = strchr(src, ':');
+    const char* path  = (colon != NULL) ? (colon + 1) : src;
+
+    char buf[96];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(buf))
+    {
+        return false;
+    }
+    strcpy(buf, path);
+
+    // Work right-to-left, cutting at each slash to isolate components.
+    char* slash3 = strrchr(buf, '/');           // points before "<tileY>.ext"
+    if (!slash3) return false;
+    *slash3 = '\0';
+    const char* tileY_str = slash3 + 1;        // "28462.rle" -- atoi ignores ".rle"
+
+    char* slash2 = strrchr(buf, '/');           // points before "<tileX>"
+    if (!slash2) return false;
+    *slash2 = '\0';
+    const char* tileX_str = slash2 + 1;        // "53354"
+
+    char* slash1 = strrchr(buf, '/');           // points before "<level>"
+    if (!slash1) return false;
+    *slash1 = '\0';
+    const char* level_str = slash1 + 1;        // "16"
+    // buf is now the prefix: "/MAP"
+
+    int tile_x = atoi(tileX_str);
+    int tile_y = atoi(tileY_str);
+    int level  = atoi(level_str);
+
+    int block_x = tile_x / BUNDLE_BLOCK_SIZE;
+    int block_y = tile_y / BUNDLE_BLOCK_SIZE;
+    *local_x    = tile_x % BUNDLE_BLOCK_SIZE;
+    *local_y    = tile_y % BUNDLE_BLOCK_SIZE;
+
+    int written = snprintf(bundle_path_out, bundle_path_max,
+                           "%s/%d/%d_%d.tbnd",
+                           buf, level, block_x, block_y);
+    return (written > 0 && (size_t)written < bundle_path_max);
+}
+
+// =========================================================================
+// Bundle index lookup
+// =========================================================================
+// Parses src → opens the right .tbnd → reads the 8-byte index entry →
+// returns tile_start and tile_length for the RLE2 stream in the bundle.
+// Returns false if the tile is absent (not an error) or on I/O failure.
+// =========================================================================
+static bool open_tile(const char* src,
+                      uint32_t* tile_start_out,
+                      uint32_t* tile_length_out)
+{
+    char bundle_path[96];
+    int  local_x = 0, local_y = 0;
+    if (!parse_tile_path(src, bundle_path, sizeof(bundle_path), &local_x, &local_y))
+    {
+        LV_LOG_WARN("RLE: cannot parse path '%s'", src);
+        return false;
+    }
+
+    if (!ensure_bundle_open(bundle_path))
+    {
+        // Either the bundle block genuinely doesn't exist for this area of
+        // the map, or there is a map-directory configuration mismatch.
+        LV_LOG_WARN("RLE: cannot open bundle '%s' (from '%s')", bundle_path, src);
+        return false;
+    }
+
+    // Index entry for this tile is at a fixed offset within the bundle header.
+    uint32_t index_pos = BUNDLE_HEADER_SIZE
+                         + (uint32_t)(local_y * BUNDLE_BLOCK_SIZE + local_x) * 8u;
+
+    uint8_t  entry[8];
+    uint32_t br = 0;
+    if (lv_fs_seek(&s_bundle_file, index_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK
+        || lv_fs_read(&s_bundle_file, entry, sizeof(entry), &br) != LV_FS_RES_OK
+        || br != sizeof(entry))
+    {
+        LV_LOG_WARN("RLE: index read failed in '%s'", bundle_path);
+        return false;
+    }
+
+    uint32_t offset = (uint32_t)entry[0]        | ((uint32_t)entry[1] << 8)
+                    | ((uint32_t)entry[2] << 16) | ((uint32_t)entry[3] << 24);
+    uint32_t length = (uint32_t)entry[4]        | ((uint32_t)entry[5] << 8)
+                    | ((uint32_t)entry[6] << 16) | ((uint32_t)entry[7] << 24);
+
+    if (offset == ABSENT_OFFSET || length == 0)
+    {
+        return false;  // tile absent -- not an error, caller returns LV_RES_OK
+    }
+
+    uint32_t data_section_start = BUNDLE_HEADER_SIZE
+                                   + (uint32_t)BUNDLE_BLOCK_SIZE * BUNDLE_BLOCK_SIZE * 8u;
+    *tile_start_out  = data_section_start + offset;
+    *tile_length_out = length;
+    return true;
+}
+
+// =========================================================================
+// RLE2 metadata load (with cache)
+// =========================================================================
+// Reads (or reuses from s_meta) the header, palette, and checkpoint table.
+// s_bundle_file must be seeked to tile_start before calling this on a
+// cache miss; on a cache hit nothing is read from the file.
+// =========================================================================
+static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length)
+{
+    // Cache hit: same path → same tile → metadata hasn't changed
+    if (s_meta.valid && strcmp(s_meta.path, src) == 0)
+    {
+        return true;
+    }
+
+    // Cache miss: read header
+    uint8_t  header[RLE_HEADER_SIZE];
+    uint32_t br = 0;
+    if (lv_fs_read(&s_bundle_file, header, sizeof(header), &br) != LV_FS_RES_OK
+        || br != sizeof(header)
+        || memcmp(header, RLE_MAGIC, 4) != 0)
+    {
+        LV_LOG_WARN("RLE: bad RLE2 header in '%s'", src);
+        s_meta.valid = false;
+        return false;
+    }
+
+    uint16_t width              = (uint16_t)(header[4]  | ((uint16_t)header[5]  << 8));
+    uint16_t height             = (uint16_t)(header[6]  | ((uint16_t)header[7]  << 8));
+    uint16_t paletteCount       = (uint16_t)(header[8]  | ((uint16_t)header[9]  << 8));
+    uint16_t checkpointInterval = (uint16_t)(header[10] | ((uint16_t)header[11] << 8));
+    uint16_t checkpointCount    = (uint16_t)(header[12] | ((uint16_t)header[13] << 8));
+
+    if (paletteCount == 0 || paletteCount > RLE_MAX_PALETTE)
+    {
+        LV_LOG_WARN("RLE: bad palette count %d in '%s'", paletteCount, src);
+        s_meta.valid = false;
+        return false;
+    }
+
+    // Require exact match on tile dimensions to catch encoder/decoder
+    // mismatches early rather than silently writing garbage pixels.
+    if (width != RLE_MAX_TILE_WIDTH || height != RLE_MAX_TILE_WIDTH)
+    {
+        LV_LOG_WARN("RLE: unexpected tile size %dx%d in '%s' (expected %dx%d)",
+                    width, height, src, RLE_MAX_TILE_WIDTH, RLE_MAX_TILE_WIDTH);
+        s_meta.valid = false;
+        return false;
+    }
+
+    if (checkpointInterval == 0
+        || checkpointCount == 0
+        || checkpointCount > RLE_MAX_CHECKPOINTS)
+    {
+        LV_LOG_WARN("RLE: bad checkpoint info (interval=%d count=%d) in '%s'",
+                    checkpointInterval, checkpointCount, src);
+        s_meta.valid = false;
+        return false;
+    }
+
+    if (lv_fs_read(&s_bundle_file, s_meta.palette,
+                   (uint32_t)paletteCount * sizeof(uint16_t), &br) != LV_FS_RES_OK
+        || br != (uint32_t)paletteCount * sizeof(uint16_t))
+    {
+        LV_LOG_WARN("RLE: truncated palette in '%s'", src);
+        s_meta.valid = false;
+        return false;
+    }
+
+    if (lv_fs_read(&s_bundle_file, s_meta.checkpoints,
+                   (uint32_t)checkpointCount * sizeof(uint32_t), &br) != LV_FS_RES_OK
+        || br != (uint32_t)checkpointCount * sizeof(uint32_t))
+    {
+        LV_LOG_WARN("RLE: truncated checkpoint table in '%s'", src);
+        s_meta.valid = false;
+        return false;
+    }
+
+    s_meta.tile_start         = tile_start;
+    s_meta.tile_length        = tile_length;
+    s_meta.width              = width;
+    s_meta.height             = height;
+    s_meta.paletteCount       = paletteCount;
+    s_meta.checkpointInterval = checkpointInterval;
+    s_meta.checkpointCount    = checkpointCount;
+    s_meta.run_stream_start   = RLE_HEADER_SIZE
+                                 + (uint32_t)paletteCount   * sizeof(uint16_t)
+                                 + (uint32_t)checkpointCount * sizeof(uint32_t);
+
+    size_t slen = strlen(src);
+    if (slen >= sizeof(s_meta.path)) slen = sizeof(s_meta.path) - 1;
+    memcpy(s_meta.path, src, slen);
+    s_meta.path[slen] = '\0';
+    s_meta.valid = true;
+    return true;
+}
+
+// =========================================================================
+// LVGL widget boilerplate
+// =========================================================================
 
 typedef struct {
     const lv_area_t* src_area;
     const lv_area_t* disp_area;
-    lv_color_t* dest_buf;
+    lv_color_t*      dest_buf;
 } lv_img_rle_draw_dsc_t;
 
-static void lv_img_rle_constructor(const lv_obj_class_t* class_p, lv_obj_t* obj);
-static void lv_img_rle_destructor(const lv_obj_class_t* class_p, lv_obj_t* obj);
-static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e);
+static void    lv_img_rle_constructor(const lv_obj_class_t* class_p, lv_obj_t* obj);
+static void    lv_img_rle_destructor(const lv_obj_class_t* class_p, lv_obj_t* obj);
+static void    lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e);
 static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc);
 static inline lv_color_t rgb565_to_lv_color(uint16_t c);
 
 const lv_obj_class_t lv_img_rle_class =
 {
-    .base_class = &lv_obj_class,
+    .base_class    = &lv_obj_class,
     .constructor_cb = lv_img_rle_constructor,
-    .destructor_cb = lv_img_rle_destructor,
-    .event_cb = lv_img_rle_event,
-    .instance_size = sizeof(lv_img_rle_t),
+    .destructor_cb  = lv_img_rle_destructor,
+    .event_cb       = lv_img_rle_event,
+    .instance_size  = sizeof(lv_img_rle_t),
 };
 
 lv_obj_t* lv_img_rle_create(lv_obj_t* parent)
@@ -86,8 +535,7 @@ void lv_img_rle_set_src(lv_obj_t* obj, const char* src)
 static void lv_img_rle_constructor(const lv_obj_class_t* class_p, lv_obj_t* obj)
 {
     LV_UNUSED(class_p);
-    lv_img_rle_t* img = (lv_img_rle_t*)obj;
-    img->src = NULL;
+    ((lv_img_rle_t*)obj)->src = NULL;
 }
 
 static void lv_img_rle_destructor(const lv_obj_class_t* class_p, lv_obj_t* obj)
@@ -105,258 +553,131 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
 {
     LV_UNUSED(class_p);
 
-    lv_res_t res;
     lv_event_code_t code = lv_event_get_code(e);
 
     if (code != LV_EVENT_DRAW_MAIN_BEGIN)
     {
-        res = lv_obj_event_base(MY_CLASS, e);
+        lv_res_t res = lv_obj_event_base(MY_CLASS, e);
         if (res != LV_RES_OK) return;
     }
 
     if (code == LV_EVENT_DRAW_MAIN_BEGIN)
     {
-        lv_obj_t* obj = lv_event_get_current_target(e);
-        lv_img_rle_t* img = (lv_img_rle_t*)obj;
-
-        if (img->src == NULL)
-        {
-            return;
-        }
+        lv_obj_t*      obj = lv_event_get_current_target(e);
+        lv_img_rle_t*  img = (lv_img_rle_t*)obj;
+        if (img->src == NULL) return;
 
         const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);
-
-        // draw_ctx->buf is NOT necessarily indexed from absolute screen
-        // (0,0) -- in LVGL's normal (non-full_refresh, non-direct_mode)
-        // partial rendering, draw_ctx->buf_area is the sub-rectangle of
-        // the screen that the current refresh pass is filling, and every
-        // standard LVGL draw call (see lv_draw_sw_blend.c) computes its
-        // destination offset relative to *that*, not to the screen
-        // origin. The previous version of this file always indexed from
-        // (0,0), which only happened to be correct during a full-screen
-        // refresh (where buf_area->y1 is 0 anyway) and silently wrote to
-        // the wrong place in the same buffer for any smaller partial
-        // redraw -- which is most of them. That mismatch between where
-        // we wrote tile pixels and where LVGL's own blending later read
-        // from is what caused the various "garbled"/"blank" symptoms.
         lv_coord_t buf_stride = lv_area_get_width(draw_ctx->buf_area);
-        lv_color_t* buf_ptr = (lv_color_t*)draw_ctx->buf;
 
-        lv_area_t src_area;
-        src_area = *draw_ctx->clip_area;
+        lv_area_t src_area = *draw_ctx->clip_area;
         lv_area_move(&src_area, -obj->coords.x1, -obj->coords.y1);
 
         lv_img_rle_draw_dsc_t dsc;
-        dsc.dest_buf = buf_ptr
+        dsc.dest_buf = (lv_color_t*)draw_ctx->buf
                        + (draw_ctx->clip_area->y1 - draw_ctx->buf_area->y1) * buf_stride
                        + (draw_ctx->clip_area->x1 - draw_ctx->buf_area->x1);
-        dsc.src_area = &src_area;
-        dsc.disp_area = draw_ctx->buf_area;  // row stride for blitting now comes from buf_area's width
+        dsc.src_area  = &src_area;
+        dsc.disp_area = draw_ctx->buf_area;
 
         lv_rle_draw(img->src, &dsc);
     }
 }
 
+// =========================================================================
+// rgb565_to_lv_color
+// =========================================================================
 static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 {
     uint8_t r = (c >> 11) & 0x1F;
     uint8_t g = (c >> 5)  & 0x3F;
-    uint8_t b = c & 0x1F;
-    // Re-expand to 8-bit per channel; lv_color_make() packs it back down
-    // to whatever LV_COLOR_DEPTH is actually configured, so this is
-    // correct regardless of color depth/swap settings.
+    uint8_t b =  c        & 0x1F;
     return lv_color_make(r << 3, g << 2, b << 3);
 }
 
-// Header/palette/checkpoint table for the most recently drawn tile.
-// Overlapping panels (active line, SportInfo, zoom indicator) each
-// invalidate their own small region, and each one triggers a fresh
-// LV_EVENT_DRAW_MAIN_BEGIN for any tile beneath them -- so the *same*
-// tile routinely gets redrawn several times within one refresh burst.
-// This metadata never changes for a given file, so caching just the
-// metadata (not pixel data) for the single most-recently-used path
-// skips 3 SD-card reads (header, palette, checkpoint table) on every
-// one of those repeat calls. Pixel data itself is still always read
-// fresh via decode_row() below, so this can't go stale mid-edit.
-typedef struct
-{
-    char path[80];
-    bool valid;
-    uint16_t width;
-    uint16_t height;
-    uint16_t paletteCount;
-    uint16_t checkpointInterval;
-    uint16_t checkpointCount;
-    uint32_t run_stream_start;
-    uint16_t palette[RLE_MAX_PALETTE];
-    uint32_t checkpoints[RLE_MAX_CHECKPOINTS];
-} lv_img_rle_meta_t;
-
-static lv_img_rle_meta_t s_meta_cache = { "", false, 0, 0, 0, 0, 0, 0, {0}, {0} };
-
-static bool load_meta(lv_fs_file_t* f, const char* src, lv_img_rle_meta_t* m)
-{
-    if (m->valid && strcmp(m->path, src) == 0)
-    {
-        return true;  // same tile as last call -- skip the re-read entirely
-    }
-
-    uint8_t header[RLE_HEADER_SIZE];
-    uint32_t br = 0;
-    if (lv_fs_read(f, header, sizeof(header), &br) != LV_FS_RES_OK || br != sizeof(header)
-        || memcmp(header, RLE_MAGIC, 4) != 0)
-    {
-        LV_LOG_WARN("RLE: bad header in %s", src);
-        m->valid = false;
-        return false;
-    }
-
-    uint16_t width              = (uint16_t)(header[4]  | (header[5]  << 8));
-    uint16_t height              = (uint16_t)(header[6]  | (header[7]  << 8));
-    uint16_t paletteCount        = (uint16_t)(header[8]  | (header[9]  << 8));
-    uint16_t checkpointInterval  = (uint16_t)(header[10] | (header[11] << 8));
-    uint16_t checkpointCount     = (uint16_t)(header[12] | (header[13] << 8));
-
-    if (paletteCount == 0 || paletteCount > RLE_MAX_PALETTE)
-    {
-        LV_LOG_WARN("RLE: bad palette count in %s (palette=%d)", src, paletteCount);
-        m->valid = false;
-        return false;
-    }
-
-    // Require an exact match to the configured tile size, not just "fits".
-    // A mismatched width here would mean the row buffer only gets filled
-    // up to the file's (smaller) width each row, leaving stale stack
-    // bytes in the rest of the row -- and those stale bytes could get
-    // blitted to the screen if the visible clip area extends past that.
-    if (width != RLE_MAX_TILE_WIDTH || height != RLE_MAX_TILE_WIDTH)
-    {
-        LV_LOG_WARN("RLE: unexpected tile size in %s (%dx%d, expected %dx%d)",
-                     src, width, height, RLE_MAX_TILE_WIDTH, RLE_MAX_TILE_WIDTH);
-        m->valid = false;
-        return false;
-    }
-
-    if (checkpointInterval == 0 || checkpointCount == 0 || checkpointCount > RLE_MAX_CHECKPOINTS)
-    {
-        LV_LOG_WARN("RLE: bad checkpoint table in %s (interval=%d, count=%d)",
-                     src, checkpointInterval, checkpointCount);
-        m->valid = false;
-        return false;
-    }
-
-    if (lv_fs_read(f, m->palette, (uint32_t)paletteCount * sizeof(uint16_t), &br) != LV_FS_RES_OK
-        || br != paletteCount * sizeof(uint16_t))
-    {
-        LV_LOG_WARN("RLE: truncated palette in %s", src);
-        m->valid = false;
-        return false;
-    }
-
-    if (lv_fs_read(f, m->checkpoints, (uint32_t)checkpointCount * sizeof(uint32_t), &br) != LV_FS_RES_OK
-        || br != checkpointCount * sizeof(uint32_t))
-    {
-        LV_LOG_WARN("RLE: truncated checkpoint table in %s", src);
-        m->valid = false;
-        return false;
-    }
-
-    m->width = width;
-    m->height = height;
-    m->paletteCount = paletteCount;
-    m->checkpointInterval = checkpointInterval;
-    m->checkpointCount = checkpointCount;
-    m->run_stream_start = RLE_HEADER_SIZE
-                           + (uint32_t)paletteCount * sizeof(uint16_t)
-                           + (uint32_t)checkpointCount * sizeof(uint32_t);
-
-    size_t len = strlen(src);
-    if (len >= sizeof(m->path))
-    {
-        len = sizeof(m->path) - 1;
-    }
-    memcpy(m->path, src, len);
-    m->path[len] = '\0';
-    m->valid = true;
-
-    return true;
-}
-
-// Total *stack* working memory for this function: one scanline
-// (<=512B for a 256px tile) plus a few locals. The header/palette/
-// checkpoint table live in the small persistent cache above instead of
-// on the stack now, since they need to survive across calls.
+// =========================================================================
+// lv_rle_draw  --  the hot path
+// =========================================================================
+// Stack budget: line_buf (512 B for 256px lv_color_t) + RleReader_t (264 B)
+// + locals ≈ 800 B total.  Fine for Cortex-M4 with 224 KB RAM.
+// =========================================================================
 static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
-    lv_fs_file_t f;
-    if (lv_fs_open(&f, src, LV_FS_MODE_RD) != LV_FS_RES_OK)
+    // ---- Step 1: bundle index lookup ------------------------------------
+    uint32_t tile_start  = 0;
+    uint32_t tile_length = 0;
+    if (!open_tile(src, &tile_start, &tile_length))
     {
-        LV_LOG_WARN("RLE: failed to open %s", src);
+        // Tile absent from map data or bad path -- silent, not an error.
+        return LV_RES_OK;
+    }
+
+    // ---- Step 2: metadata (header + palette + checkpoints) --------------
+    // On a cache miss, the bundle file must be seeked to tile_start first
+    // so load_meta() can read sequentially.  On a cache hit, the seek is
+    // skipped entirely.
+    if (!s_meta.valid || strcmp(s_meta.path, src) != 0)
+    {
+        if (lv_fs_seek(&s_bundle_file, tile_start, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+        {
+            LV_LOG_WARN("RLE: seek to tile_start failed for '%s'", src);
+            return LV_RES_INV;
+        }
+    }
+    if (!load_meta(src, tile_start, tile_length))
+    {
         return LV_RES_INV;
     }
 
-    if (!load_meta(&f, src, &s_meta_cache))
+    // ---- Step 3: pick checkpoint closest to (and at or before) clip top -
+    int start_cp = dsc->src_area->y1 / (int)s_meta.checkpointInterval;
+    if (start_cp >= (int)s_meta.checkpointCount)
     {
-        lv_fs_close(&f);
+        start_cp = (int)s_meta.checkpointCount - 1;
+    }
+    int row = start_cp * (int)s_meta.checkpointInterval;
+
+    // ---- Step 4: seek to run stream and initialise buffered reader ------
+    uint32_t stream_abs = s_meta.tile_start
+                          + s_meta.run_stream_start
+                          + s_meta.checkpoints[start_cp];
+    uint32_t tile_end   = s_meta.tile_start + s_meta.tile_length;
+
+    RleReader_t reader;
+    if (!reader_seek(&reader, stream_abs, tile_end))
+    {
+        LV_LOG_WARN("RLE: checkpoint seek failed for '%s'", src);
         return LV_RES_INV;
     }
 
-    uint16_t width = s_meta_cache.width;
-    uint16_t height = s_meta_cache.height;
-    uint16_t paletteCount = s_meta_cache.paletteCount;
-    uint16_t checkpointInterval = s_meta_cache.checkpointInterval;
-    uint16_t checkpointCount = s_meta_cache.checkpointCount;
-    uint32_t run_stream_start = s_meta_cache.run_stream_start;
-    uint16_t* palette = s_meta_cache.palette;
-    uint32_t* checkpoints = s_meta_cache.checkpoints;
-    uint32_t br = 0;
-
-    // Only decode the rows we actually need: seek to the checkpoint at or
-    // before the clip area's top edge, start counting rows from there, and
-    // stop as soon as we pass the bottom edge -- rather than always
-    // decoding the whole tile from row 0. This is what makes redrawing a
-    // small overlapping region (e.g. a semi-transparent panel) cheap
-    // instead of requiring a full sequential pass through the file.
-    int start_checkpoint = dsc->src_area->y1 / checkpointInterval;
-    if (start_checkpoint >= checkpointCount)
-    {
-        start_checkpoint = checkpointCount - 1;
-    }
-    int row = start_checkpoint * checkpointInterval;
-
-    if (lv_fs_seek(&f, run_stream_start + checkpoints[start_checkpoint], LV_FS_SEEK_SET) != LV_FS_RES_OK)
-    {
-        LV_LOG_WARN("RLE: seek failed in %s", src);
-        lv_fs_close(&f);
-        return LV_RES_INV;
-    }
-
+    // ---- Step 5: decode -------------------------------------------------
     lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
-    lv_memset_00(line_buf, sizeof(line_buf));
 
-    uint32_t total_pixels = (uint32_t)width * height;
-    uint32_t pixel_idx = (uint32_t)row * width;
-    int col = 0;
+    uint16_t       width       = s_meta.width;
+    uint16_t       height      = s_meta.height;
+    uint16_t       paletteCount = s_meta.paletteCount;
+    const uint16_t* palette    = s_meta.palette;
 
-    lv_coord_t disp_width = lv_area_get_width(dsc->disp_area);
-    lv_coord_t blit_width = lv_area_get_width(dsc->src_area);
-    lv_coord_t x_offset = dsc->src_area->x1;
+    uint32_t total_pixels  = (uint32_t)width * height;
+    uint32_t pixel_idx     = (uint32_t)row * width;
+    int      col           = 0;
 
-    uint8_t pair[2];
+    lv_coord_t disp_width  = lv_area_get_width(dsc->disp_area);
+    lv_coord_t blit_width  = lv_area_get_width(dsc->src_area);
+    lv_coord_t x_offset    = dsc->src_area->x1;
+
     while (pixel_idx < total_pixels && row <= dsc->src_area->y2)
     {
-        if (lv_fs_read(&f, pair, sizeof(pair), &br) != LV_FS_RES_OK || br != sizeof(pair))
+        uint8_t run_len = 0, idx = 0;
+        if (!reader_read_pair(&reader, &run_len, &idx))
         {
-            LV_LOG_WARN("RLE: truncated run stream in %s", src);
-            break;  // bail cleanly on a corrupt/short file -- no crash
+            LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
+            break;
         }
-
-        uint8_t run_len = pair[0];
-        uint8_t idx = pair[1];
 
         if (run_len == 0 || idx >= paletteCount)
         {
-            LV_LOG_WARN("RLE: corrupt run in %s", src);
+            LV_LOG_WARN("RLE: corrupt run (len=%d idx=%d) in '%s'", run_len, idx, src);
             break;
         }
 
@@ -364,27 +685,27 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 
         for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
         {
-            line_buf[col] = c;
-            col++;
+            line_buf[col++] = c;
             pixel_idx++;
 
             if (col == width)
             {
-                if (row >= dsc->src_area->y1 && row <= dsc->src_area->y2)
+                if (row >= dsc->src_area->y1)
                 {
-                    lv_color_t* dest = dsc->dest_buf + (row - dsc->src_area->y1) * disp_width;
-                    lv_memcpy(dest, &line_buf[x_offset], blit_width * sizeof(lv_color_t));
+                    lv_color_t* dest = dsc->dest_buf
+                                       + (row - dsc->src_area->y1) * disp_width;
+                    lv_memcpy(dest, &line_buf[x_offset],
+                              (uint32_t)blit_width * sizeof(lv_color_t));
                 }
                 col = 0;
                 row++;
                 if (row > dsc->src_area->y2)
                 {
-                    break;  // already covered everything the caller needs
+                    break;  // covered all rows the caller needs
                 }
             }
         }
     }
 
-    lv_fs_close(&f);
     return LV_RES_OK;
 }

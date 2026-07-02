@@ -123,6 +123,13 @@ void LiveMap::onViewDidAppear()
 void LiveMap::onViewWillDisappear()
 {
     lv_timer_del(priv.timer);
+    priv.timer = nullptr;
+
+    /* Clear the callback so the filter can't fire into a half-torn-down
+     * View after the timer is gone (defensive: the timer deletion above
+     * is the primary guard, this makes the invariant explicit). */
+    Model.pointFilter.SetOutputPointCallback(nullptr);
+
     lv_obj_add_flag(View.ui.map.cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_fade_out(_root, 250, 250);
 }

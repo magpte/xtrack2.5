@@ -104,6 +104,13 @@ void lv_poly_line::stop()
         return;
     }
 
+    if (current_index >= poly_line.size())
+    {
+        LV_LOG_ERROR("stop(): current_index(%u) >= poly_line.size(%u), ignored",
+                     (unsigned)current_index, (unsigned)poly_line.size());
+        return;
+    }
+
     single_line_t* single_line = &poly_line[current_index];
     const lv_point_t* points = get_points(single_line);
     lv_line_set_points(single_line->line, points, (uint16_t)single_line->points.size());
@@ -130,17 +137,14 @@ void lv_poly_line::reset()
 
 lv_poly_line::single_line_t* lv_poly_line::get_end_line()
 {
-    size_t size = poly_line.size();
-    if (size == 0)
+    if (poly_line.size() == 0 || current_index == 0)
     {
-        LV_LOG_ERROR("NOT found");
+        LV_LOG_ERROR("get_end_line(): no completed segment (size=%u, index=%u)",
+                     (unsigned)poly_line.size(), (unsigned)current_index);
         return nullptr;
     }
-    else
-    {
-        LV_LOG_INFO("end_line index = %d", current_index - 1);
-    }
 
+    LV_LOG_INFO("end_line index = %d", current_index - 1);
     return &poly_line[current_index - 1];
 }
 
