@@ -1,4 +1,5 @@
 #include "DialplateModel.h"
+#include "Config/Config.h"
 
 using namespace Page;
 
@@ -10,6 +11,7 @@ void DialplateModel::Init()
     account->Subscribe("StatusBar");
     account->Subscribe("GPS");
     account->Subscribe("MusicPlayer");
+    account->Subscribe("SysConfig");
     account->SetEventCallback(onEvent);
 }
 
@@ -109,4 +111,25 @@ void DialplateModel::SetStatusBarStyle(DataProc::StatusBar_Style_t style)
     info.param.style = style;
 
     account->Notify("StatusBar", &info, sizeof(info));
+}
+
+int32_t DialplateModel::GetScreenBrightness()
+{
+    DataProc::SysConfig_Info_t sysConfig;
+    if (account->Pull("SysConfig", &sysConfig, sizeof(sysConfig)) != Account::RES_OK)
+    {
+        return CONFIG_SCREEN_BRIGHTNESS_DEFAULT;
+    }
+    return sysConfig.screenBrightness;
+}
+
+void DialplateModel::SetScreenBrightness(int32_t value)
+{
+    DataProc::SysConfig_Info_t info;
+    DATA_PROC_INIT_STRUCT(info);
+
+    info.cmd = DataProc::SYSCONFIG_CMD_SET_BRIGHTNESS;
+    info.screenBrightness = (int16_t)value;
+
+    account->Notify("SysConfig", &info, sizeof(info));
 }

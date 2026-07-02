@@ -40,6 +40,9 @@ private:
     void onBtnClicked(lv_obj_t* btn);
     void onRecord(bool longPress);
     void SetBtnRecImgSrc(const char* srcName);
+    void BrightnessAdjust_Enter();
+    void BrightnessAdjust_Exit();
+    void BrightnessAdjust_Step(int32_t dir);
 
 private:
     DialplateView View;
@@ -47,6 +50,8 @@ private:
     lv_timer_t* timer;
     RecordState_t recState;
     lv_obj_t* lastFocus;
+    bool isAdjustingBrightness;
+    int32_t brightnessValue;
 };
 
 }

@@ -41,6 +41,12 @@ public:
             lv_obj_t* btnMenu;
         } btnCont;
 
+        struct
+        {
+            lv_obj_t* cont;
+            lv_obj_t* labelValue;
+        } brightness;
+
         lv_anim_timeline_t* anim_timeline;
     } ui;
 
@@ -48,11 +54,15 @@ public:
     void Delete();
     void AppearAnimStart(bool reverse = false);
 
+    void ShowBrightnessOverlay(bool show);
+    void SetBrightnessValue(int32_t value);
+
 private:
     void TopInfo_Create(lv_obj_t* par);
     void BottomInfo_Create(lv_obj_t* par);
     void SubInfoGrp_Create(lv_obj_t* par, SubInfo_t* info, const char* unitText);
     void BtnCont_Create(lv_obj_t* par);
+    void Brightness_Create(lv_obj_t* par);
     lv_obj_t* Btn_Create(lv_obj_t* par, const void* img_src, lv_coord_t x_ofs);
 };
 

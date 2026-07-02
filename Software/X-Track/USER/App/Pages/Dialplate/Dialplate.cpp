@@ -6,6 +6,8 @@ using namespace Page;
 Dialplate::Dialplate()
     : recState(RECORD_STATE_READY)
     , lastFocus(nullptr)
+    , isAdjustingBrightness(false)
+    , brightnessValue(0)
 {
 }
 
@@ -68,6 +70,11 @@ void Dialplate::onViewDidAppear()
 
 void Dialplate::onViewWillDisappear()
 {
+    if (isAdjustingBrightness)
+    {
+        BrightnessAdjust_Exit();
+    }
+
     lv_group_t* group = lv_group_get_default();
     LV_ASSERT_NULL(group);
     lastFocus = lv_group_get_focused(group);
@@ -202,6 +209,60 @@ void Dialplate::SetBtnRecImgSrc(const char* srcName)
     lv_obj_set_style_bg_img_src(View.ui.btnCont.btnRec, ResourcePool::GetImage(srcName), 0);
 }
 
+#define BRIGHTNESS_STEP  50
+#define BRIGHTNESS_MIN   0
+#define BRIGHTNESS_MAX   1000
+
+void Dialplate::BrightnessAdjust_Enter()
+{
+    lv_group_t* group = lv_group_get_default();
+    LV_ASSERT_NULL(group);
+
+    isAdjustingBrightness = true;
+    brightnessValue = Model.GetScreenBrightness();
+
+    // 编码器转动期间锁定焦点在 btnMenu 上，不再在按钮间切换焦点，
+    // 而是把 LV_KEY_LEFT/LV_KEY_RIGHT 直接发给 btnMenu (见 lv_indev.c
+    // 里 enc_diff 在 lv_group_get_editing() 为真时的分支)。
+    lv_group_set_editing(group, true);
+
+    View.SetBrightnessValue(brightnessValue);
+    View.ShowBrightnessOverlay(true);
+
+    HAL::Buzz_Tone(600, 20);
+}
+
+void Dialplate::BrightnessAdjust_Exit()
+{
+    lv_group_t* group = lv_group_get_default();
+    LV_ASSERT_NULL(group);
+
+    lv_group_set_editing(group, false);
+    View.ShowBrightnessOverlay(false);
+    isAdjustingBrightness = false;
+
+    HAL::Buzz_Tone(400, 20);
+}
+
+void Dialplate::BrightnessAdjust_Step(int32_t dir)
+{
+    brightnessValue += dir * BRIGHTNESS_STEP;
+
+    if (brightnessValue < BRIGHTNESS_MIN)
+    {
+        brightnessValue = BRIGHTNESS_MIN;
+    }
+    else if (brightnessValue > BRIGHTNESS_MAX)
+    {
+        brightnessValue = BRIGHTNESS_MAX;
+    }
+
+    // 立即应用到硬件 + 更新内存中的 sysConfig，下次 SYSCONFIG_CMD_SAVE
+    // （关机/断电时触发，见 App.cpp）会把这个值写进 SystemSave.json。
+    Model.SetScreenBrightness(brightnessValue);
+    View.SetBrightnessValue(brightnessValue);
+}
+
 void Dialplate::onEvent(lv_event_t* event)
 {
     Dialplate* instance = (Dialplate*)lv_event_get_user_data(event);
@@ -238,19 +299,43 @@ void Dialplate::onEvent(lv_event_t* event)
     {
         if (code == LV_EVENT_SHORT_CLICKED)
         {
-            instance->onBtnClicked(obj);
+            if (instance->isAdjustingBrightness)
+            {
+                // 短按 = 确认并退出调光模式，而不是跳转到设置页
+                instance->BrightnessAdjust_Exit();
+            }
+            else
+            {
+                instance->onBtnClicked(obj);
+            }
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            // 现在 HAL::Backlight_GetValue()/Backlight_SetGradual() 都已经
-            // 改成 int32_t，这里不会再发生“减出负数→隐式转换成巨大正数”
-            // 的溢出问题，HAL 内部也额外做了一层钳位兜底。
-            int32_t next = HAL::Backlight_GetValue() - 196;
-            if (next < 0)
+            // 长按 Menu：进入/退出亮度调节模式。
+            // 进入后旋转编码器每格 ±50 调整亮度（见下面 LV_EVENT_KEY 分支）。
+            if (instance->isAdjustingBrightness)
             {
-                next += 1000;  // 循环回到最亮，而不是停在黑屏
+                instance->BrightnessAdjust_Exit();
             }
-            HAL::Backlight_SetGradual(next, 500);
+            else
+            {
+                instance->BrightnessAdjust_Enter();
+            }
+        }
+        else if (code == LV_EVENT_KEY)
+        {
+            if (instance->isAdjustingBrightness)
+            {
+                uint32_t key = lv_event_get_key(event);
+                if (key == LV_KEY_RIGHT)
+                {
+                    instance->BrightnessAdjust_Step(1);
+                }
+                else if (key == LV_KEY_LEFT)
+                {
+                    instance->BrightnessAdjust_Step(-1);
+                }
+            }
         }
 		}
 }

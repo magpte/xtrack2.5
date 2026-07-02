@@ -32,6 +32,7 @@
 #define CONFIG_SYSTEM_LANGUAGE_DEFAULT        "en-GB"
 #define CONFIG_SYSTEM_TIME_ZONE_DEFAULT       8    // GMT+ 8
 #define CONFIG_SYSTEM_SOUND_ENABLE_DEFAULT    true
+#define CONFIG_SCREEN_BRIGHTNESS_DEFAULT       800  // Range [0, 1000]
 
 #define CONFIG_WEIGHT_DEFAULT                 70   // kg
 

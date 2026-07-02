@@ -108,6 +108,7 @@ typedef enum
 {
     SYSCONFIG_CMD_LOAD,
     SYSCONFIG_CMD_SAVE,
+    SYSCONFIG_CMD_SET_BRIGHTNESS,
 } SysConfig_Cmd_t;
 
 typedef struct
@@ -117,6 +118,7 @@ typedef struct
     float latitude;
     int16_t timeZone;
     bool soundEnable;
+    int16_t screenBrightness;
     char language[8];
     char arrowTheme[16];
     char mapDirPath[16];

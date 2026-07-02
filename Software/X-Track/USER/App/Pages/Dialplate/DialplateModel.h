@@ -58,6 +58,9 @@ public:
     void PlayMusic(const char* music);
     void SetStatusBarStyle(DataProc::StatusBar_Style_t style);
 
+    int32_t GetScreenBrightness();
+    void SetScreenBrightness(int32_t value);
+
 private:
     Account* account;
 

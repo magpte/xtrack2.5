@@ -23,6 +23,7 @@ static int onEvent(Account* account, Account::EventParam_t* param)
         if (info->cmd == SYSCONFIG_CMD_LOAD)
         {
             HAL::Buzz_SetEnable(sysConfig.soundEnable);
+            HAL::Backlight_SetGradual(sysConfig.screenBrightness, 1000);
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
             HAL::Power_Info_t powerInfo;
             HAL::Power_GetInfo(&powerInfo);
@@ -31,6 +32,25 @@ static int onEvent(Account* account, Account::EventParam_t* param)
                 HAL::Power_RevertCapacity(sysConfig.designCap, sysConfig.fullChgCap);
             }
 #endif
+        }
+        else if (info->cmd == SYSCONFIG_CMD_SET_BRIGHTNESS)
+        {
+            // 由旋转编码器等实时调节场景调用：只更新内存中的 sysConfig，
+            // 不在这里写 SD 卡；真正落盘发生在下一次 SYSCONFIG_CMD_SAVE
+            // （见 App.cpp，通常是关机/断电时触发）。
+            // App 层不引用 HAL/CommonMacro.h，这里手写钳位，
+            // 避免跨层依赖（CM_VALUE_LIMIT 定义在 USER/HAL/CommonMacro.h，
+            // 而这里 include 的是 App/Common/HAL/HAL.h，两者不是同一个文件）。
+            if (info->screenBrightness < 0)
+            {
+                info->screenBrightness = 0;
+            }
+            else if (info->screenBrightness > 1000)
+            {
+                info->screenBrightness = 1000;
+            }
+            sysConfig.screenBrightness = info->screenBrightness;
+            HAL::Backlight_SetGradual(sysConfig.screenBrightness, 100);
         }
         else if (info->cmd == SYSCONFIG_CMD_SAVE)
         {
@@ -90,6 +110,7 @@ do{ \
     sysConfig.latitude    = CONFIG_GPS_LATITUDE_DEFAULT;
     sysConfig.timeZone    = CONFIG_SYSTEM_TIME_ZONE_DEFAULT;
     sysConfig.soundEnable = CONFIG_SYSTEM_SOUND_ENABLE_DEFAULT;
+    sysConfig.screenBrightness = CONFIG_SCREEN_BRIGHTNESS_DEFAULT;
     SYSCGF_STRCPY(sysConfig.language, CONFIG_SYSTEM_LANGUAGE_DEFAULT);
     SYSCGF_STRCPY(sysConfig.arrowTheme, CONFIG_ARROW_THEME_DEFAULT);
     SYSCGF_STRCPY(sysConfig.mapDirPath, CONFIG_MAP_DIR_PATH_DEFAULT);
@@ -105,6 +126,7 @@ do{ \
     STORAGE_VALUE_REG(account, sysConfig.latitude, STORAGE_TYPE_FLOAT);
 
     STORAGE_VALUE_REG(account, sysConfig.soundEnable, STORAGE_TYPE_INT);
+    STORAGE_VALUE_REG(account, sysConfig.screenBrightness, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.timeZone, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.language, STORAGE_TYPE_STRING);
     STORAGE_VALUE_REG(account, sysConfig.arrowTheme, STORAGE_TYPE_STRING);

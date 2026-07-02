@@ -11,6 +11,7 @@ void DialplateView::Create(lv_obj_t* root)
     BottomInfo_Create(root);
     TopInfo_Create(root);
     BtnCont_Create(root);
+    Brightness_Create(root);
 
     ui.anim_timeline = lv_anim_timeline_create();
 
@@ -197,6 +198,45 @@ lv_obj_t* DialplateView::Btn_Create(lv_obj_t* par, const void* img_src, lv_coord
     lv_obj_update_layout(obj);
 
     return obj;
+}
+
+void DialplateView::Brightness_Create(lv_obj_t* par)
+{
+    lv_obj_t* cont = lv_obj_create(par);
+    lv_obj_remove_style_all(cont);
+    lv_obj_set_size(cont, 120, 50);
+    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(cont, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_70, 0);
+    lv_obj_set_style_radius(cont, 10, 0);
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(cont);
+    ui.brightness.cont = cont;
+
+    lv_obj_t* label = lv_label_create(cont);
+    lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_17"), 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_label_set_text(label, "");
+    lv_obj_center(label);
+    ui.brightness.labelValue = label;
+}
+
+void DialplateView::ShowBrightnessOverlay(bool show)
+{
+    if (show)
+    {
+        lv_obj_move_foreground(ui.brightness.cont);
+        lv_obj_clear_flag(ui.brightness.cont, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        lv_obj_add_flag(ui.brightness.cont, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void DialplateView::SetBrightnessValue(int32_t value)
+{
+    lv_label_set_text_fmt(ui.brightness.labelValue, "%d%%", (int)(value * 100 / 1000));
 }
 
 void DialplateView::AppearAnimStart(bool reverse)
