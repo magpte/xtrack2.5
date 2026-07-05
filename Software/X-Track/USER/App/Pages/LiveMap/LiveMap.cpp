@@ -1,6 +1,10 @@
 #include "LiveMap.h"
 #include "Config/Config.h"
 
+#if CONFIG_MAP_IMG_RLE_ENABLE
+#include "Utils/lv_img_rle/lv_img_rle.h"
+#endif
+
 using namespace Page;
 
 uint16_t LiveMap::mapLevelCurrent = CONFIG_LIVE_MAP_LEVEL_DEFAULT;
@@ -95,6 +99,12 @@ void LiveMap::onViewWillAppear()
 
 void LiveMap::onViewDidAppear()
 {
+#if CONFIG_MAP_IMG_RLE_ENABLE
+    // 只在地图页可见期间占用像素缓存的 RAM（见 lv_img_rle.h 里的说明），
+    // 离开页面时对应 deinit 会释放掉。
+    lv_img_rle_cache_init();
+#endif
+
     priv.timer = lv_timer_create([](lv_timer_t* timer)
     {
         LiveMap* instance = (LiveMap*)timer->user_data;
@@ -108,6 +118,8 @@ void LiveMap::onViewDidAppear()
 
     priv.lastTileContOriPoint.x = 0;
     priv.lastTileContOriPoint.y = 0;
+    priv.isStationary = false;   // 每次进入页面先按正常刷新频率来，避免上次退出时
+                                  // 恰好处于静止状态被错误带入这次的第一帧判断
 
     priv.isTrackAvtive = Model.GetTrackFilterActive();
     if (!priv.isTrackAvtive)
@@ -123,15 +135,19 @@ void LiveMap::onViewDidAppear()
 void LiveMap::onViewWillDisappear()
 {
     lv_timer_del(priv.timer);
-    priv.timer = nullptr;
+    priv.timer = NULL;
 
     /* Clear the callback so the filter can't fire into a half-torn-down
      * View after the timer is gone (defensive: the timer deletion above
      * is the primary guard, this makes the invariant explicit). */
-    Model.pointFilter.SetOutputPointCallback(nullptr);
+    Model.pointFilter.SetOutputPointCallback(NULL);
 
     lv_obj_add_flag(View.ui.map.cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_fade_out(_root, 250, 250);
+
+#if CONFIG_MAP_IMG_RLE_ENABLE
+    lv_img_rle_cache_deinit();
+#endif
 }
 
 void LiveMap::onViewDidDisappear()
@@ -156,7 +172,17 @@ void LiveMap::AttachEvent(lv_obj_t* obj)
 
 void LiveMap::Update()
 {
-    if (lv_tick_elaps(priv.lastMapUpdateTime) >= CONFIG_GPS_REFR_PERIOD)
+    // 静止时把检查间隔从 CONFIG_GPS_REFR_PERIOD（默认 1000ms）拉长到
+    // CONFIG_GPS_REFR_PERIOD_STATIONARY（默认 3000ms），减少 CheckPosition()
+    // 的调用频率——包括其中的瓦片坐标换算、SportInfo 文本刷新，以及最容易
+    // 被 GPS 噪声在瓦片边界附近反复触发的 MapTileContReload()。
+    // 一旦速度重新超过退出阈值（在 CheckPosition() 里判断），下一次检查
+    // 就会立刻恢复到 CONFIG_GPS_REFR_PERIOD。
+    uint32_t period = priv.isStationary
+                       ? CONFIG_GPS_REFR_PERIOD_STATIONARY
+                       : CONFIG_GPS_REFR_PERIOD;
+
+    if (lv_tick_elaps(priv.lastMapUpdateTime) >= period)
     {
         CheckPosition();
         SportInfoUpdate();
@@ -170,6 +196,11 @@ void LiveMap::Update()
 
 void LiveMap::UpdateDelay(uint32_t ms)
 {
+    // 这里的 -1000 是按 CONFIG_GPS_REFR_PERIOD（1000ms）换算的，如果调用时
+    // 恰好处于静止节流状态（周期是 CONFIG_GPS_REFR_PERIOD_STATIONARY），这个
+    // 换算会不对，导致缩放条这类主动交互的响应被拖慢到静止周期那么久。
+    // 用户正在动缩放条本身就说明不是"闲置"，所以这里顺带退出静止状态。
+    priv.isStationary = false;
     priv.lastMapUpdateTime = lv_tick_get() - 1000 + ms;
 }
 
@@ -200,6 +231,27 @@ void LiveMap::CheckPosition()
 
     HAL::GPS_Info_t gpsInfo;
     Model.GetGPS_Info(&gpsInfo);
+
+    // 静止判断（双阈值迟滞）：没有有效定位时一律按"非静止"处理，保证一旦
+    // 重新定位成功能尽快追上真实位置，不被静止节流拖慢。
+    if (!gpsInfo.isVaild)
+    {
+        priv.isStationary = false;
+    }
+    else if (priv.isStationary)
+    {
+        if (gpsInfo.speed > CONFIG_LIVE_MAP_STATIONARY_EXIT_KPH)
+        {
+            priv.isStationary = false;
+        }
+    }
+    else
+    {
+        if (gpsInfo.speed < CONFIG_LIVE_MAP_STATIONARY_ENTER_KPH)
+        {
+            priv.isStationary = true;
+        }
+    }
 
     mapLevelCurrent = lv_slider_get_value(View.ui.zoom.slider);
     if (mapLevelCurrent != Model.mapConv.GetLevel())

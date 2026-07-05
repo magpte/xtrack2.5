@@ -34,6 +34,7 @@ private:
         lv_timer_t* timer;
         TileConv::Point_t lastTileContOriPoint;
         bool isTrackAvtive;
+        bool isStationary;   // 迟滞判断后的"静止"状态，见 CheckPosition()
     } priv;
 
     static uint16_t mapLevelCurrent;

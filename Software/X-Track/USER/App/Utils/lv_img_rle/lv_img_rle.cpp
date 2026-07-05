@@ -135,6 +135,157 @@ typedef struct {
 static TileMeta_t s_meta = { "", false, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0} };
 
 // =========================================================================
+// Pixel-level cache (palette-index form)
+// =========================================================================
+// Caches the FULLY DECODED tile as one palette-index byte per pixel
+// (RLE_MAX_TILE_WIDTH * RLE_MAX_TILE_WIDTH = 65536 bytes = 64KB per slot
+// at the default 256x256 tile size). This is deliberately NOT expanded to
+// RGB565 (which would be 128KB/slot) -- the extra rgb565 lookup on a cache
+// hit costs one array read per pixel, which is negligible next to the SD
+// read + run-stream decode it replaces.
+//
+// WHY THIS EXISTS: the map view keeps several tiles resident
+// (LiveMap.cpp: view is tiled into a ~2x3 grid of 256px tiles = 6 tiles),
+// and things drawn ON TOP of the map -- the direction arrow, the active
+// track line, the zoom/sport-info overlays -- move independently of the
+// map itself. Every time one of them moves, LVGL invalidates and redraws
+// the map tile(s) underneath, which without this cache means a full
+// re-decode of that tile from the run stream, even though the map hasn't
+// actually scrolled. This is the single most common redraw pattern during
+// active navigation (it fires roughly once per GPS update, i.e. every
+// CONFIG_GPS_REFR_PERIOD), and it always hits the SAME one or two tiles
+// (whichever the arrow currently sits over) until the view actually
+// crosses a tile boundary. Caching those tiles' decoded pixels turns a
+// full RLE decode into a flat memory copy for every one of those redraws.
+//
+// RAM BUDGET -- READ BEFORE CHANGING RLE_PIXEL_CACHE_SLOTS:
+// Target MCU (AT32F403ACGU7, per this project's .sct) has 224KB total
+// SRAM shared by LVGL's own buffers, fonts, GPS/track buffers, and every
+// other subsystem. A 6-slot cache (one per visible tile) would need
+// 6*64KB = 384KB -- more than the entire chip's RAM -- so this can only
+// ever cover the "same tile(s) redrawn repeatedly" case above, not "every
+// visible tile stays cached forever while panning". Each additional slot
+// costs another 64KB; do not raise this without first confirming real
+// spare heap via HAL::Memory_DumpInfo() (already called periodically in
+// HAL.cpp) with the map page open.
+//
+// LIFETIME: the buffers are NOT static/always-resident. LiveMap calls
+// lv_img_rle_cache_init() when the map page appears and
+// lv_img_rle_cache_deinit() when it disappears (see LiveMap.cpp), so the
+// 64KB/slot is only reserved while the map is actually on screen, freeing
+// it for other pages the rest of the time. Allocation failure (e.g. not
+// enough free heap right now) is handled gracefully: caching is simply
+// skipped and every draw falls back to the pre-cache decode path, so a
+// tight-RAM build still works correctly, just without this speedup.
+// =========================================================================
+#define RLE_PIXEL_CACHE_SLOTS   1
+
+typedef struct {
+    char     path[80];
+    bool     valid;              // true once a full top-to-bottom decode has populated pixels
+    uint16_t width;
+    uint16_t height;
+    uint16_t paletteCount;
+    uint16_t palette[RLE_MAX_PALETTE];   // 512 B -- self-contained, independent of s_meta's
+                                          // cache state so a pixel-cache hit never depends on
+                                          // whether s_meta currently happens to hold this tile
+    uint8_t* pixels;              // width*height palette-index bytes, or NULL if not allocated
+} PixelCacheSlot_t;
+
+static PixelCacheSlot_t s_pixelCache[RLE_PIXEL_CACHE_SLOTS];
+static uint8_t          s_pixelCacheNextSlot = 0;   // simple round-robin replacement
+
+void lv_img_rle_cache_init()
+{
+    for (int i = 0; i < RLE_PIXEL_CACHE_SLOTS; i++)
+    {
+        s_pixelCache[i].path[0] = '\0';
+        s_pixelCache[i].valid   = false;
+
+        if (s_pixelCache[i].pixels == NULL)
+        {
+            uint32_t bytes = (uint32_t)RLE_MAX_TILE_WIDTH * RLE_MAX_TILE_WIDTH;
+            s_pixelCache[i].pixels = (uint8_t*)lv_mem_alloc(bytes);
+
+            if (s_pixelCache[i].pixels == NULL)
+            {
+                // 分配失败：不是致命错误，之后所有绘制都会自动走没有像素
+                // 缓存的旧路径（正常解码），只是少了这部分加速。
+                LV_LOG_WARN("RLE: pixel cache slot %d alloc failed (%u bytes) -- "
+                            "caching disabled for this slot, falling back to normal decode",
+                            i, (unsigned)bytes);
+            }
+        }
+    }
+    s_pixelCacheNextSlot = 0;
+}
+
+void lv_img_rle_cache_deinit()
+{
+    for (int i = 0; i < RLE_PIXEL_CACHE_SLOTS; i++)
+    {
+        if (s_pixelCache[i].pixels != NULL)
+        {
+            lv_mem_free(s_pixelCache[i].pixels);
+            s_pixelCache[i].pixels = NULL;
+        }
+        s_pixelCache[i].path[0] = '\0';
+        s_pixelCache[i].valid   = false;
+    }
+}
+
+// Find an existing valid cache slot for this path, or NULL if not cached.
+static PixelCacheSlot_t* pixel_cache_find(const char* src)
+{
+    for (int i = 0; i < RLE_PIXEL_CACHE_SLOTS; i++)
+    {
+        if (s_pixelCache[i].pixels != NULL
+            && s_pixelCache[i].valid
+            && strcmp(s_pixelCache[i].path, src) == 0)
+        {
+            return &s_pixelCache[i];
+        }
+    }
+    return NULL;
+}
+
+// Claim a slot to (re)populate for this path. Round-robin eviction -- simple
+// and correctness-preserving (a stale slot is just invalidated + overwritten),
+// which is all a 1-2 slot cache needs; no LRU bookkeeping overhead.
+static PixelCacheSlot_t* pixel_cache_claim(const char* src)
+{
+    PixelCacheSlot_t* slot = NULL;
+
+    // Advance round-robin until it lands on a slot that actually has an
+    // allocated buffer -- with more than one slot and a partial allocation
+    // failure at init, some slots may have pixels == NULL, and picking
+    // one of those would crash the caller on the first pixel write.
+    for (int tries = 0; tries < RLE_PIXEL_CACHE_SLOTS; tries++)
+    {
+        PixelCacheSlot_t* candidate = &s_pixelCache[s_pixelCacheNextSlot];
+        s_pixelCacheNextSlot = (s_pixelCacheNextSlot + 1) % RLE_PIXEL_CACHE_SLOTS;
+
+        if (candidate->pixels != NULL)
+        {
+            slot = candidate;
+            break;
+        }
+    }
+
+    if (slot == NULL)
+    {
+        return NULL;  // no allocated slots at all (alloc failed at init time)
+    }
+
+    slot->valid = false;  // mark invalid until the full decode below completes
+    size_t slen = strlen(src);
+    if (slen >= sizeof(slot->path)) slen = sizeof(slot->path) - 1;
+    memcpy(slot->path, src, slen);
+    slot->path[slen] = '\0';
+    return slot;
+}
+
+// =========================================================================
 // Buffered run-stream reader
 // =========================================================================
 // Wraps s_bundle_file; tracks absolute bundle-file position and the tile's
@@ -599,10 +750,45 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 // lv_rle_draw  --  the hot path
 // =========================================================================
 // Stack budget: line_buf (512 B for 256px lv_color_t) + RleReader_t (264 B)
-// + locals ≈ 800 B total.  Fine for Cortex-M4 with 224 KB RAM.
+// + locals ~ 800 B total.  Fine for Cortex-M4 with 224 KB RAM.
 // =========================================================================
 static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
+    // ---- Fast path: pixel cache hit --------------------------------------
+    // No bundle open, no SD read, no run-stream decode at all -- just a
+    // palette-index -> RGB565 lookup and a row copy. This is what makes
+    // repeat redraws of a tile (arrow/track-line/overlay moving on top of
+    // an unchanged map) cheap.
+    PixelCacheSlot_t* cached = pixel_cache_find(src);
+    if (cached != NULL)
+    {
+        lv_coord_t disp_width = lv_area_get_width(dsc->disp_area);
+        lv_coord_t blit_width = lv_area_get_width(dsc->src_area);
+        lv_coord_t x_offset   = dsc->src_area->x1;
+        lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
+
+        for (int row = dsc->src_area->y1; row <= dsc->src_area->y2; row++)
+        {
+            if (row < 0 || row >= cached->height)
+            {
+                continue;
+            }
+
+            const uint8_t* srcRow = &cached->pixels[(uint32_t)row * cached->width];
+            for (lv_coord_t col = 0; col < blit_width; col++)
+            {
+                line_buf[col] = rgb565_to_lv_color(cached->palette[srcRow[x_offset + col]]);
+            }
+
+            lv_color_t* dest = dsc->dest_buf + (row - dsc->src_area->y1) * disp_width;
+            lv_memcpy(dest, line_buf, (uint32_t)blit_width * sizeof(lv_color_t));
+        }
+
+        return LV_RES_OK;
+    }
+
+    // ---- Cache miss: normal path -----------------------------------------
+
     // ---- Step 1: bundle index lookup ------------------------------------
     uint32_t tile_start  = 0;
     uint32_t tile_length = 0;
@@ -629,15 +815,41 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         return LV_RES_INV;
     }
 
-    // ---- Step 3: pick checkpoint closest to (and at or before) clip top -
-    int start_cp = dsc->src_area->y1 / (int)s_meta.checkpointInterval;
-    if (start_cp >= (int)s_meta.checkpointCount)
+    // ---- Step 3: claim a pixel-cache slot for this tile (may be null if -
+    // caching is disabled / allocation failed at init -- that's fine, the
+    // rest of this function works exactly as it did before the cache existed
+    // in that case).
+    PixelCacheSlot_t* slot = pixel_cache_claim(src);
+    if (slot != NULL)
     {
-        start_cp = (int)s_meta.checkpointCount - 1;
+        slot->width        = s_meta.width;
+        slot->height       = s_meta.height;
+        slot->paletteCount = s_meta.paletteCount;
+        memcpy(slot->palette, s_meta.palette,
+               (size_t)s_meta.paletteCount * sizeof(uint16_t));
+    }
+
+    // ---- Step 4: pick decode start row -----------------------------------
+    // Populating the cache needs the FULL tile (row 0 through height-1) so
+    // that any future clip region -- not just today's -- is a hit. Without
+    // a slot to populate, keep the original optimization of starting from
+    // the checkpoint nearest the current clip's top edge.
+    int start_cp;
+    if (slot != NULL)
+    {
+        start_cp = 0;
+    }
+    else
+    {
+        start_cp = dsc->src_area->y1 / (int)s_meta.checkpointInterval;
+        if (start_cp >= (int)s_meta.checkpointCount)
+        {
+            start_cp = (int)s_meta.checkpointCount - 1;
+        }
     }
     int row = start_cp * (int)s_meta.checkpointInterval;
 
-    // ---- Step 4: seek to run stream and initialise buffered reader ------
+    // ---- Step 5: seek to run stream and initialise buffered reader ------
     uint32_t stream_abs = s_meta.tile_start
                           + s_meta.run_stream_start
                           + s_meta.checkpoints[start_cp];
@@ -650,23 +862,23 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         return LV_RES_INV;
     }
 
-    // ---- Step 5: decode -------------------------------------------------
+    // ---- Step 6: decode ---------------------------------------------------
     lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
 
-    uint16_t       width       = s_meta.width;
-    uint16_t       height      = s_meta.height;
-    uint16_t       paletteCount = s_meta.paletteCount;
-    const uint16_t* palette    = s_meta.palette;
+    uint16_t        width        = s_meta.width;
+    uint16_t        height       = s_meta.height;
+    uint16_t        paletteCount = s_meta.paletteCount;
+    const uint16_t* palette      = s_meta.palette;
 
-    uint32_t total_pixels  = (uint32_t)width * height;
-    uint32_t pixel_idx     = (uint32_t)row * width;
-    int      col           = 0;
+    uint32_t total_pixels = (uint32_t)width * height;
+    uint32_t pixel_idx    = (uint32_t)row * width;
+    int      col          = 0;
 
-    lv_coord_t disp_width  = lv_area_get_width(dsc->disp_area);
-    lv_coord_t blit_width  = lv_area_get_width(dsc->src_area);
-    lv_coord_t x_offset    = dsc->src_area->x1;
+    lv_coord_t disp_width = lv_area_get_width(dsc->disp_area);
+    lv_coord_t blit_width = lv_area_get_width(dsc->src_area);
+    lv_coord_t x_offset   = dsc->src_area->x1;
 
-    while (pixel_idx < total_pixels && row <= dsc->src_area->y2)
+    while (pixel_idx < total_pixels)
     {
         uint8_t run_len = 0, idx = 0;
         if (!reader_read_pair(&reader, &run_len, &idx))
@@ -686,11 +898,17 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
         {
             line_buf[col++] = c;
+
+            if (slot != NULL)
+            {
+                slot->pixels[pixel_idx] = idx;
+            }
+
             pixel_idx++;
 
             if (col == width)
             {
-                if (row >= dsc->src_area->y1)
+                if (row >= dsc->src_area->y1 && row <= dsc->src_area->y2)
                 {
                     lv_color_t* dest = dsc->dest_buf
                                        + (row - dsc->src_area->y1) * disp_width;
@@ -699,12 +917,22 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 }
                 col = 0;
                 row++;
-                if (row > dsc->src_area->y2)
+
+                // Without a cache slot to populate, stop as soon as we've
+                // covered the rows the caller actually asked for (original
+                // behavior). With a slot, keep going to the tile's bottom
+                // so the cache is fully usable for future, different clips.
+                if (slot == NULL && row > dsc->src_area->y2)
                 {
-                    break;  // covered all rows the caller needs
+                    break;
                 }
             }
         }
+    }
+
+    if (slot != NULL && pixel_idx >= total_pixels)
+    {
+        slot->valid = true;
     }
 
     return LV_RES_OK;

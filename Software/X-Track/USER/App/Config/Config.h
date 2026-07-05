@@ -42,6 +42,17 @@
 #  define CONFIG_GPS_REFR_PERIOD              10 // ms
 #endif
 
+// 静止时把 LiveMap 的 GPS/瓦片检查间隔从 CONFIG_GPS_REFR_PERIOD 拉长到这个值，
+// 减少 CheckPosition() 的调用频率（瓦片坐标换算、SportInfo 文本格式化、
+// 以及最容易被 GPS 噪声在瓦片边界附近来回触发的 MapTileContReload()）。
+// 一旦速度重新超过 EXIT 阈值，下一次检查就会立刻恢复到正常刷新间隔。
+#define CONFIG_GPS_REFR_PERIOD_STATIONARY     3000 // ms
+
+// 双阈值迟滞：进入"静止"用低阈值，退出用高阈值，避免速度刚好卡在
+// 临界值附近时，每次判断都在两种刷新间隔之间来回抖动。
+#define CONFIG_LIVE_MAP_STATIONARY_ENTER_KPH  1.0f
+#define CONFIG_LIVE_MAP_STATIONARY_EXIT_KPH   2.5f
+
 #define CONFIG_GPS_LONGITUDE_DEFAULT          113.055735f
 #define CONFIG_GPS_LATITUDE_DEFAULT           23.011105f
 
