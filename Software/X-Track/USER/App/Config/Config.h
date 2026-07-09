@@ -37,7 +37,7 @@
 #define CONFIG_WEIGHT_DEFAULT                 70   // kg
 
 #ifdef ARDUINO
-#  define CONFIG_GPS_REFR_PERIOD              1000 // ms
+#  define CONFIG_GPS_REFR_PERIOD              500  // ms -- 配合模块 PCAS02 提到的 2Hz 定位频率
 #else
 #  define CONFIG_GPS_REFR_PERIOD              10 // ms
 #endif
@@ -53,6 +53,26 @@
 #define CONFIG_LIVE_MAP_STATIONARY_ENTER_KPH  1.0f
 #define CONFIG_LIVE_MAP_STATIONARY_EXIT_KPH   2.5f
 
+// ---------------------------------------------------------------------
+// 自动关机：没有速度 + 没有在录制轨迹 + 没有用户操作，持续这么久
+// （CONFIG_AUTO_SHUTDOWN_TIMEOUT_MS）就自动关机。
+// ---------------------------------------------------------------------
+#define CONFIG_AUTO_SHUTDOWN_ENABLE            1
+
+// 检查间隔：不需要很频繁，10 秒查一次足够。
+#define CONFIG_AUTO_SHUTDOWN_CHECK_PERIOD_MS   10000
+
+// 三个条件（无速度 + 未录制 + 无操作）持续满足多久后关机，默认 5 分钟。
+#define CONFIG_AUTO_SHUTDOWN_TIMEOUT_MS        (5 * 60 * 1000)
+
+// 关机前这么久，播放一次提示音提醒用户（默认提前 30 秒），
+// 避免用户觉得"设备突然自己关机了"。设成 0 就是不提前提醒，到点直接关。
+#define CONFIG_AUTO_SHUTDOWN_WARNING_LEAD_MS   30000
+
+// GPS 速度低于这个值（km/h）才算"没有速度"，用来吸收 GPS 本身在完全
+// 静止时的定位噪声（速度字段不会真的稳定在 0）。
+#define CONFIG_AUTO_SHUTDOWN_SPEED_KPH         1.5f
+
 #define CONFIG_GPS_LONGITUDE_DEFAULT          113.055735f
 #define CONFIG_GPS_LATITUDE_DEFAULT           23.011105f
 
@@ -60,7 +80,7 @@
 #define CONFIG_TRACK_RECORD_FILE_DIR_NAME     "Track"
 
 #define CONFIG_MAP_USE_WGS84_DEFAULT          false
-#define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPRB"
+#define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPR"
 
 #ifndef CONFIG_MAP_EXT_NAME_DEFAULT
 #define CONFIG_MAP_EXT_NAME_DEFAULT           "rle"

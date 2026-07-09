@@ -196,12 +196,14 @@ void LiveMap::Update()
 
 void LiveMap::UpdateDelay(uint32_t ms)
 {
-    // 这里的 -1000 是按 CONFIG_GPS_REFR_PERIOD（1000ms）换算的，如果调用时
-    // 恰好处于静止节流状态（周期是 CONFIG_GPS_REFR_PERIOD_STATIONARY），这个
-    // 换算会不对，导致缩放条这类主动交互的响应被拖慢到静止周期那么久。
-    // 用户正在动缩放条本身就说明不是"闲置"，所以这里顺带退出静止状态。
+    // 换算基准是 CONFIG_GPS_REFR_PERIOD（现在是 500ms，配合模块提到的 2Hz
+    // 定位频率），不能再写死 1000，不然这里的换算会跟实际周期对不上。
+    // 如果调用时恰好处于静止节流状态（周期是
+    // CONFIG_GPS_REFR_PERIOD_STATIONARY），这个换算依然会不对，导致缩放条
+    // 这类主动交互的响应被拖慢到静止周期那么久——用户正在动缩放条本身就
+    // 说明不是"闲置"，所以这里顺带退出静止状态。
     priv.isStationary = false;
-    priv.lastMapUpdateTime = lv_tick_get() - 1000 + ms;
+    priv.lastMapUpdateTime = lv_tick_get() - CONFIG_GPS_REFR_PERIOD + ms;
 }
 
 void LiveMap::SportInfoUpdate()

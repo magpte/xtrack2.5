@@ -67,6 +67,13 @@ void HAL::GPS_Init()
     // 格式：$PCAS03,nGGA,nGLL,nGSA,nGSV,nRMC,nVTG,nZDA,nANT,...*校验和
     // 每个字段 0=关闭，1=每次定位都输出。
     GPS_SERIAL.print("$PCAS03,1,0,0,0,1,0,0,0,0,0,,,0,0*02\r\n");
+
+    // 把模块本身的定位频率从默认 1Hz 提到 2Hz。只改这一条，不改
+    // CONFIG_GPS_REFR_PERIOD 的话，app 这边还是按 1 秒才去问一次，等于
+    // 模块算了两次新定位、app 只用上一半——两处要一起改，见 Config.h。
+    // 校验和 0x1A 已经手动核对过（"PCAS02,500" 各字符异或结果）。
+    // 同样是 ROM 版不保存配置，每次开机都要重发。
+    GPS_SERIAL.print("$PCAS02,500*1A\r\n");
 #endif
 
     Serial.print("GPS: TinyGPS++ library v. ");
