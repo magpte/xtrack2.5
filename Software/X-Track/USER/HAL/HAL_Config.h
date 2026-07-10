@@ -59,7 +59,7 @@
 /* GPS */
 #define CONFIG_GPS_SERIAL           Serial2
 #define CONFIG_GPS_USE_TRANSPARENT  1
-#define CONFIG_GPS_BUF_OVERLOAD_CHK 1
+#define CONFIG_GPS_BUF_OVERLOAD_CHK 0
 
 // 把 GPS 模块吐出来的原始 NMEA 语句实时写到 SD 卡 /nmea.log。
 // 用于在不接 USB 转串口工具的情况下抓取 NMEA 数据（比如确认星座配置）。
@@ -120,7 +120,7 @@
 
 /* Backlight Config */
 #define CONFIG_BACKLIGHT_MIN        200  // Range [0, 1000]
-#define CONFIG_BACKLIGHT_MAX        700 // Range [0, 1000]
+#define CONFIG_BACKLIGHT_MAX        1000 // Range [0, 1000]
 #define CONFIG_BACKLIGHT_CTRL_RANGE 60   // minute Range[1, 120]
 
 /* Use Watch Dog */

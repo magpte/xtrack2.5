@@ -10,7 +10,7 @@ using namespace DataProc;
 #define RECORDER_GPX_FILE_NAME   "/" CONFIG_TRACK_RECORD_FILE_DIR_NAME "/TRK_%d%02d%02d_%02d%02d%02d.gpx"
 #define RECORDER_GPX_META_NAME   VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE
 #define RECORDER_GPX_META_DESC   VERSION_PROJECT_LINK
-#define SYNC_INTERVAL 30  // Sync every 30 track points
+#define SYNC_INTERVAL 60  // Sync every 30 track points
 
 typedef struct
 {
