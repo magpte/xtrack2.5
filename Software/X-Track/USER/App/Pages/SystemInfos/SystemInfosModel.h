@@ -48,6 +48,13 @@ public:
         char* size, uint32_t len
     );
 
+    void GetMemoryInfo(
+        char* stackInfo, uint32_t stackLen,
+        char* heapInfo, uint32_t heapLen
+    );
+
+    void GetSkyInfo(HAL::Sky_Info_t* info);
+
     void SetStatusBarStyle(DataProc::StatusBar_Style_t style);
 
 private:

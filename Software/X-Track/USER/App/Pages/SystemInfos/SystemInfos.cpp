@@ -4,6 +4,7 @@
 using namespace Page;
 
 SystemInfos::SystemInfos()
+    : skyUpdateCounter(0)
 {
 }
 
@@ -29,6 +30,9 @@ void SystemInfos::onViewLoad()
     {
         AttachEvent(item_grp[i].icon);
     }
+
+    // sky 不在 View.ui 里面，上面那个循环覆盖不到，单独补一下。
+    AttachEvent(View.sky.icon);
 }
 
 void SystemInfos::onViewDidLoad()
@@ -42,6 +46,7 @@ void SystemInfos::onViewWillAppear()
 
     timer = lv_timer_create(onTimerUpdate, 1000, this);
     lv_timer_ready(timer);
+    skyUpdateCounter = 0;
 
     View.SetScrollToY(_root, -LV_VER_RES, LV_ANIM_OFF);
     lv_obj_set_style_opa(_root, LV_OPA_TRANSP, 0);
@@ -127,6 +132,12 @@ void SystemInfos::Update()
     );
 
     /* System */
+    char stackBuf[64];
+    char heapBuf[48];  // 显示用的缩短版——HAL_Memory.cpp 拼出来的原始诊断
+                        // 信息可能很长，这里限制一下，配合 labelData 的
+                        // 换行宽度（130px），避免换行行数太多撑爆容器。
+    Model.GetMemoryInfo(stackBuf, sizeof(stackBuf), heapBuf, sizeof(heapBuf));
+
     DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
     View.SetSystem(
         VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
@@ -134,8 +145,26 @@ void SystemInfos::Update()
         VERSION_LVGL,
         buf,
         VERSION_COMPILER,
-        VERSION_BUILD_TIME
+        VERSION_BUILD_TIME,
+        stackBuf,
+        heapBuf
     );
+
+    /* Sky View —— 每 5 秒才刷新一次，跟 GSV 数据本身的节流频率对上，
+     * 不需要跟着 Update() 的 1 秒周期一起跑。counter 从 0 开始，
+     * 第一次调用（counter==0）就会刷新，页面刚打开就能看到数据，
+     * 不用干等最多 5 秒。 */
+    if (skyUpdateCounter == 0)
+    {
+        HAL::Sky_Info_t sky;
+        Model.GetSkyInfo(&sky);
+        View.SetSky(&sky);
+    }
+    skyUpdateCounter++;
+    if (skyUpdateCounter >= 5)
+    {
+        skyUpdateCounter = 0;
+    }
 }
 
 void SystemInfos::onTimerUpdate(lv_timer_t* timer)

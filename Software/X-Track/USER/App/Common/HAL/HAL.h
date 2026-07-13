@@ -99,6 +99,12 @@ bool GPS_GetInfo(GPS_Info_t* info);
 bool GPS_LocationIsValid();
 double GPS_GetDistanceOffset(GPS_Info_t* info, double preLong, double preLat);
 
+// 拿最近一次解析完整的 GSV 天球数据（方位角/仰角/信噪比/星座）。
+// 独立于 GPS_Info_t 之外，不随 2Hz 定位一起刷新——GSV 本身被节流成
+// 5 秒一次（见 HAL_GPS.cpp 里的 PCAS03 配置），跟星星在天上移动的
+// 速度比起来完全够用，没必要跟着定位频率走。
+void GPS_GetSkyInfo(Sky_Info_t* info);
+
 /* Buzzer */
 void Buzz_init();
 void Buzz_SetEnable(bool en);
@@ -118,7 +124,8 @@ bool Audio_PlayMusic(const char* name);
 
 /* Memory */
 void Memory_DumpInfo();
-
+void Memory_GetStackInfo(char* buf, uint32_t len);
+void Memory_GetHeapInfo(char* buf, uint32_t len);
 }
 
 #endif

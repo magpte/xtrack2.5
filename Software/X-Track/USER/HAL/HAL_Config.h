@@ -64,18 +64,27 @@
 // 把 GPS 模块吐出来的原始 NMEA 语句实时写到 SD 卡 /nmea.log。
 // 用于在不接 USB 转串口工具的情况下抓取 NMEA 数据（比如确认星座配置）。
 // 确认完之后建议改回 0 关闭，避免长期运行时持续写卡。
-#define CONFIG_GPS_NMEA_LOG_ENABLE  0
+#define CONFIG_GPS_NMEA_LOG_ENABLE  1
 
-// 实验性：尝试用 PCAS04 的 Mode=7 打开更多星座（官方 AT300 手册只文档化
-// 了 1=GPS、2=BDS、3=GPS+BDS 三个值，7 不在文档范围内，是否有效、加的
-// 是哪个星座、甚至会不会被模块直接忽略都不确定）。
-// AT6558R 是 ROM 版，不支持 $PCAS00 保存配置，所以这条指令必须每次开机
-//都重新发送，不能只发一次——因此实现为开机时在 GPS_Init() 里发送。
-// 验证方法：改完烧录，配合 CONFIG_GPS_NMEA_LOG_ENABLE 抓一份新的
-// /nmea.log，看 GSA 语句里的系统 ID 有没有变化。
-// 如果发现没有效果或者定位变得不稳定，把这个改回 0 就能退回出厂默认的
-// GPS+BDS（mode=3 效果），不需要发任何指令。
+// 实测已确认 PCAS04 Mode=7（GPS+BDS+GLONASS 三星座联合定位）有效——
+// GSA 系统ID 里出现了 1/2/4，卫星总数从双星座 7 颗涨到三星座 12 颗。
+// 这个开关同时控制两条指令（都在 GPS_Init() 里）：
+//   1) $PCAS04,7*1E   打开三星座联合定位
+//   2) $PCAS03,...    只保留 GGA+RMC，关掉 TinyGPS++ 根本不解析、纯粹
+//      浪费带宽的 GSA/GSV/GLL/VTG/ZDA，把 9600 波特率下的带宽占用从
+//      83% 压到 15%，见 HAL_GPS.cpp 里的详细说明。
+// AT6558R 是 ROM 版，不支持 $PCAS00 保存配置，所以这两条指令必须每次
+// 开机都重新发送，不能只发一次——已经实现为开机时在 GPS_Init() 里发送。
+// 如果想退回出厂默认的 GPS+BDS 双星座、且不限制语句类型，把这个改回 0
+// 即可，不需要发任何指令。
 #define CONFIG_GPS_TRY_MODE7_ENABLE  1
+
+// 解析 GSV 语句，给 SystemInfos 页面的天球图提供卫星方位角/仰角/信噪比
+// 数据。见 HAL_GPS.cpp 里的 Sky_ParseLine()。关掉这个开关的话，
+// HAL::GPS_GetSkyInfo() 会返回一个空的（count=0）结构体，天球图那块
+// 区域会没有卫星点可画，但不会报错/崩溃。
+#define CONFIG_GPS_SKY_ENABLE        1
+
 #define CONFIG_GPS_TX_PIN           PA3
 #define CONFIG_GPS_RX_PIN           PA2
 
@@ -115,8 +124,8 @@
 #define CONFIG_HAL_UPDATE_TIM       TIM4
 
 /* Show Stack & Heap Info */
-#define CONFIG_SHOW_STACK_INFO      0
-#define CONFIG_SHOW_HEAP_INFO       0
+#define CONFIG_SHOW_STACK_INFO      1
+#define CONFIG_SHOW_HEAP_INFO       1
 
 /* Backlight Config */
 #define CONFIG_BACKLIGHT_MIN        200  // Range [0, 1000]

@@ -1,4 +1,5 @@
 #include "SystemInfosModel.h"
+#include "Common/HAL/HAL.h"
 #include <stdio.h>
 
 using namespace Page;
@@ -136,6 +137,24 @@ void SystemInfosModel::GetStorageInfo(
         "%0.1f GB",
         info.totalSizeMB / 1024.0f
     );
+}
+
+void SystemInfosModel::GetMemoryInfo(
+    char* stackInfo, uint32_t stackLen,
+    char* heapInfo, uint32_t heapLen
+)
+{
+    // 栈/堆用量是纯 HAL 层的诊断信息，没有对应的 DataProc 模块，
+    // 直接调 HAL 接口拿，不走 Account 订阅/Pull 那一套。
+    HAL::Memory_GetStackInfo(stackInfo, stackLen);
+    HAL::Memory_GetHeapInfo(heapInfo, heapLen);
+}
+
+void SystemInfosModel::GetSkyInfo(HAL::Sky_Info_t* info)
+{
+    // 跟 GetMemoryInfo 一样，天球数据是纯 HAL 层的东西，没有对应的
+    // DataProc 模块，直接调 HAL 接口。
+    HAL::GPS_GetSkyInfo(info);
 }
 
 void SystemInfosModel::SetStatusBarStyle(DataProc::StatusBar_Style_t style)
