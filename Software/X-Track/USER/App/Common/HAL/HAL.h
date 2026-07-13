@@ -52,8 +52,6 @@ void Display_SetSendFinishCallback(Display_CallbackFunc_t func);
 /* FaultHandle */
 void FaultHandle_Init();
 bool SD_WriteCrashLog(const char* data); 
-bool SD_WriteDebugLog(const char* data);
-bool SD_WriteNMEALog(const char* data);
 
 /* I2C */
 int I2C_Scan();
@@ -124,8 +122,7 @@ bool Audio_PlayMusic(const char* name);
 
 /* Memory */
 void Memory_DumpInfo();
-void Memory_GetStackInfo(char* buf, uint32_t len);
-void Memory_GetHeapInfo(char* buf, uint32_t len);
+
 }
 
 #endif

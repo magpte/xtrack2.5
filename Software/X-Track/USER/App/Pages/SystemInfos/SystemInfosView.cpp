@@ -115,16 +115,7 @@ void SystemInfosView::Create(lv_obj_t* root)
         "SysTick\n"
         "Compiler\n\n"
         "Build\n"
-        "Stack\n"
-        "Heap"
     );
-
-    // System 这一项的 Heap 数据可能是拼接出来的较长字符串（见
-    // HAL_Memory.cpp 的 Memory_FormatHeapInfo），不加宽度限制的话会
-    // 横向撑出去，跟左边 labelInfo 那一列文字重叠。这里单独给 System
-    // 的 labelData 设宽度+自动换行，不影响其他条目共用的样式。
-    lv_obj_set_width(ui.system.labelData, 130);
-    lv_label_set_long_mode(ui.system.labelData, LV_LABEL_LONG_WRAP);
 
     Group_Init();
 }
@@ -578,15 +569,11 @@ void SystemInfosView::SetSystem(
     const char* lvglVer,
     const char* bootTime,
     const char* compilerName,
-    const char* bulidTime,
-    const char* stackInfo,
-    const char* heapInfo
+    const char* bulidTime
 )
 {
     lv_label_set_text_fmt(
         ui.system.labelData,
-        "%s\n"
-        "%s\n"
         "%s\n"
         "%s\n"
         "%s\n"
@@ -598,8 +585,6 @@ void SystemInfosView::SetSystem(
         lvglVer,
         bootTime,
         compilerName,
-        bulidTime,
-        stackInfo,
-        heapInfo
+        bulidTime
     );
 }

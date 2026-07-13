@@ -61,11 +61,6 @@
 #define CONFIG_GPS_USE_TRANSPARENT  1
 #define CONFIG_GPS_BUF_OVERLOAD_CHK 0
 
-// 把 GPS 模块吐出来的原始 NMEA 语句实时写到 SD 卡 /nmea.log。
-// 用于在不接 USB 转串口工具的情况下抓取 NMEA 数据（比如确认星座配置）。
-// 确认完之后建议改回 0 关闭，避免长期运行时持续写卡。
-#define CONFIG_GPS_NMEA_LOG_ENABLE  1
-
 // 实测已确认 PCAS04 Mode=7（GPS+BDS+GLONASS 三星座联合定位）有效——
 // GSA 系统ID 里出现了 1/2/4，卫星总数从双星座 7 颗涨到三星座 12 颗。
 // 这个开关同时控制两条指令（都在 GPS_Init() 里）：

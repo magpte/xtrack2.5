@@ -7,36 +7,6 @@
 
 static TinyGPSPlus gps;
 
-#if CONFIG_GPS_NMEA_LOG_ENABLE
-// 简单的行缓冲：凑够一条完整的 NMEA 语句（以 '\n' 结尾）才写一次 SD 卡，
-// 不是收到一个字节就开关一次文件——NMEA 语句一般不超过 82 字节，128
-// 足够留余量。如果因为噪声/丢字节导致一直凑不到换行符，缓冲区满了就
-// 直接丢弃重来，不让脏数据把 /nmea.log 弄得一团糟。
-#define NMEA_LOG_LINE_MAX  128
-static char    s_nmeaLineBuf[NMEA_LOG_LINE_MAX];
-static uint8_t s_nmeaLineLen = 0;
-
-static void NMEA_Log_Feed(char c)
-{
-    if (s_nmeaLineLen < NMEA_LOG_LINE_MAX - 1)
-    {
-        s_nmeaLineBuf[s_nmeaLineLen++] = c;
-    }
-
-    if (c == '\n')
-    {
-        s_nmeaLineBuf[s_nmeaLineLen] = '\0';
-        HAL::SD_WriteNMEALog(s_nmeaLineBuf);
-        s_nmeaLineLen = 0;
-    }
-    else if (s_nmeaLineLen >= NMEA_LOG_LINE_MAX - 1)
-    {
-        // 缓冲区满了还没见到换行符，说明这条不正常，丢弃重来
-        s_nmeaLineLen = 0;
-    }
-}
-#endif
-
 #if CONFIG_GPS_SKY_ENABLE
 // ---------------------------------------------------------------------
 // GSV（卫星方位角/仰角/信噪比）解析
@@ -247,9 +217,7 @@ void HAL::GPS_Update()
 #if GPS_USE_TRANSPARENT
         DEBUG_SERIAL.write(c);
 #endif
-#if CONFIG_GPS_NMEA_LOG_ENABLE
-        NMEA_Log_Feed(c);
-#endif
+
 #if CONFIG_GPS_SKY_ENABLE
         Sky_Feed(c);
 #endif

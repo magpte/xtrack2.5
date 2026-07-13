@@ -171,37 +171,3 @@ bool HAL::SD_WriteCrashLog(const char* data)
     return false;  
 }
 
-bool HAL::SD_WriteDebugLog(const char* data)
-{
-    if (!SD_IsReady) {
-        return false;
-    }
-
-    File dbgFile = SD.open("/memchk.log", FILE_WRITE);
-    if (dbgFile) {
-        dbgFile.print(data);
-        dbgFile.close();
-        return true;
-    }
-    return false;
-}
-
-// ����ץȡ GPS ԭʼ NMEA �������ר����־���� crash.log/memchk.log ��ͬһ��
-// open-print-close ģʽ��������һ���ļ���/nmea.log�������������ı�����־����
-// һ�𣬷����º�ֻ����һ���ļ���Ķ�λ���ݣ����ôӱ�����Ϣ��ɸ��
-// ������ʱ��Ϲ��ܣ�ȷ������������֮����԰� CONFIG_GPS_NMEA_LOG_ENABLE
-// �Ļ� 0 �ص������ⳤ������ʱ����д����
-bool HAL::SD_WriteNMEALog(const char* data)
-{
-    if (!SD_IsReady) {
-        return false;
-    }
-
-    File nmeaFile = SD.open("/nmea.log", FILE_WRITE);
-    if (nmeaFile) {
-        nmeaFile.print(data);
-        nmeaFile.close();
-        return true;
-    }
-    return false;
-}

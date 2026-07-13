@@ -132,12 +132,6 @@ void SystemInfos::Update()
     );
 
     /* System */
-    char stackBuf[64];
-    char heapBuf[48];  // 显示用的缩短版——HAL_Memory.cpp 拼出来的原始诊断
-                        // 信息可能很长，这里限制一下，配合 labelData 的
-                        // 换行宽度（130px），避免换行行数太多撑爆容器。
-    Model.GetMemoryInfo(stackBuf, sizeof(stackBuf), heapBuf, sizeof(heapBuf));
-
     DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
     View.SetSystem(
         VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
@@ -145,9 +139,7 @@ void SystemInfos::Update()
         VERSION_LVGL,
         buf,
         VERSION_COMPILER,
-        VERSION_BUILD_TIME,
-        stackBuf,
-        heapBuf
+        VERSION_BUILD_TIME
     );
 
     /* Sky View —— 每 5 秒才刷新一次，跟 GSV 数据本身的节流频率对上，

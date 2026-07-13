@@ -82,11 +82,8 @@ public:
         const char* lvglVer,
         const char* bootTime,
         const char* compilerName,
-        const char* bulidTime,
-        const char* stackInfo,
-        const char* heapInfo
+        const char* bulidTime
     );
-
     void SetSky(HAL::Sky_Info_t* info);
 
     void SetScrollToY(lv_obj_t* obj, lv_coord_t y, lv_anim_enable_t en);
