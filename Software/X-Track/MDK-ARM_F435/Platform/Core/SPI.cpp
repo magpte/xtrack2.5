@@ -29,6 +29,7 @@
 SPIClass::SPIClass(spi_type* spix)
     : SPIx(spix)
     , SPI_Clock(0)
+    , _dmaReady(false)
 {
     memset(&spi_init_struct, 0, sizeof(spi_init_struct));
 }
@@ -425,6 +426,179 @@ uint8_t SPIClass::send(uint8_t *buf, uint32_t len)
 uint8_t SPIClass::recv(void)
 {
     return this->read();
+}
+
+/*
+ * ---------------------------------------------------------------------
+ * DMA2 加速的 SPI2 批量全双工传输（用于 SD 卡，见 HAL_SD_CARD.cpp /
+ * SdFat 的 CONFIG_SD_SPI = SPI_2）。
+ * ---------------------------------------------------------------------
+ * 原来的 read(buf,len)/write(buf,len) 是逐字节软件轮询 TDBE/RDBF，
+ * 每字节都要 CPU 忙等几个时钟周期；SD 卡一次读写至少是 512 字节的
+ * 扇区，累积开销不小。这里给 SPI2 接上一对 DMA2 通道，一次性把整个
+ * 扇区搬完，CPU 只在发起传输和等待完成之间可以做别的事（当前实现是
+ * 简单轮询"传输完成"标志，没有用中断/信号量，但轮询的已经是一个
+ * "一整块传完了没有"的标志，而不是每字节都要响应的 TDBE/RDBF，对
+ * CPU 的打扰次数从 O(字节数) 降到 O(1)）。
+ *
+ * 通道分配：
+ *   DMA2 Channel1 <-> SPI2_RX (DMAMUX_DMAREQ_ID_SPI2_RX)
+ *   DMA2 Channel2 <-> SPI2_TX (DMAMUX_DMAREQ_ID_SPI2_TX)
+ * 与显示屏的 EDMA_STREAM1、GPS 的 DMA1 Channel4、ADC 的 DMA1 Channel1
+ * 都不冲突。
+ */
+static uint8_t SPI_DMA_TxDummy = 0xFF;
+static uint8_t SPI_DMA_RxTrash;
+
+bool SPIClass::_initDMA()
+{
+    if(_dmaReady)
+    {
+        return true;
+    }
+
+    if(SPIx != SPI2)
+    {
+        // 目前只给 SD 卡用的 SPI2 接了 DMA2；显示屏用的 SPI1 走的是
+        // HAL_Display.cpp 里独立的 EDMA_STREAM1（帧缓冲区大、TX-only、
+        // 有自己的分块/回调逻辑，跟这里的通用双向阻塞式接口需求不同），
+        // 其余 SPI 实例暂时没有 DMA 需求。
+        return false;
+    }
+
+    crm_periph_clock_enable(CRM_DMA2_PERIPH_CLOCK, TRUE);
+
+    dma_reset(DMA2_CHANNEL1);
+    dma_reset(DMA2_CHANNEL2);
+
+    dma_init_type dma_init_struct;
+    dma_default_para_init(&dma_init_struct);
+
+    dma_init_struct.peripheral_base_addr = (uint32_t)&(SPIx->dt);
+    dma_init_struct.peripheral_inc_enable = FALSE;
+    dma_init_struct.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_BYTE;
+    dma_init_struct.memory_data_width = DMA_MEMORY_DATA_WIDTH_BYTE;
+    dma_init_struct.priority = DMA_PRIORITY_HIGH;
+    dma_init_struct.loop_mode_enable = FALSE;
+
+    // RX 通道：外设 -> 内存，具体的内存地址/长度/是否自增在每次
+    // transferDMA() 里按 rxBuf 是否为空重新配置
+    dma_init_struct.direction = DMA_DIR_PERIPHERAL_TO_MEMORY;
+    dma_init_struct.memory_base_addr = (uint32_t)&SPI_DMA_RxTrash;
+    dma_init_struct.memory_inc_enable = FALSE;
+    dma_init_struct.buffer_size = 1;
+    dma_init(DMA2_CHANNEL1, &dma_init_struct);
+
+    // TX 通道：内存 -> 外设
+    dma_init_struct.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
+    dma_init_struct.memory_base_addr = (uint32_t)&SPI_DMA_TxDummy;
+    dma_init_struct.memory_inc_enable = FALSE;
+    dma_init_struct.buffer_size = 1;
+    dma_init(DMA2_CHANNEL2, &dma_init_struct);
+
+    dmamux_enable(DMA2, TRUE);
+    dmamux_init(DMA2MUX_CHANNEL1, DMAMUX_DMAREQ_ID_SPI2_RX);
+    dmamux_init(DMA2MUX_CHANNEL2, DMAMUX_DMAREQ_ID_SPI2_TX);
+
+    spi_i2s_dma_receiver_enable(SPIx, TRUE);
+    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+
+    _dmaReady = true;
+    return true;
+}
+
+bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length, uint32_t timeoutMs)
+{
+    if(length == 0)
+    {
+        return true;
+    }
+
+    if(!_initDMA())
+    {
+        return false;
+    }
+
+    dma_channel_enable(DMA2_CHANNEL1, FALSE);
+    dma_channel_enable(DMA2_CHANNEL2, FALSE);
+    dma_flag_clear(DMA2_FDT1_FLAG);
+    dma_flag_clear(DMA2_FDT2_FLAG);
+
+    // 通过 dma_init() 整体重新配置两个通道，而不是直接改写寄存器
+    // 位域：仓库里目前没有 at32f435_437_dma.h 的完整拷贝可供核对具体
+    // 位域名字/偏移，但 dma_init_type 结构体的字段名已经在本文件和
+    // adc.c 里被反复验证过，全部走公开的 dma_init() 更保险。相对于
+    // 直接写寄存器，每次传输多付出的只是一次 dma_init() 的开销（远小
+    // 于 512 字节的实际传输时间），换来的是不会因为猜错位域布局而
+    // 写坏寄存器。
+    dma_init_type dma_init_struct;
+    dma_default_para_init(&dma_init_struct);
+
+    // RX：有真实缓冲区就自增写入，没有（调用方不关心收到什么，例如
+    // SD 卡写操作）就固定写向同一个丢弃字节，省去准备一块同样大的
+    // 垃圾缓冲区
+    dma_init_struct.direction = DMA_DIR_PERIPHERAL_TO_MEMORY;
+    dma_init_struct.peripheral_base_addr = (uint32_t)&(SPIx->dt);
+    dma_init_struct.peripheral_inc_enable = FALSE;
+    dma_init_struct.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_BYTE;
+    dma_init_struct.memory_data_width = DMA_MEMORY_DATA_WIDTH_BYTE;
+    dma_init_struct.priority = DMA_PRIORITY_HIGH;
+    dma_init_struct.loop_mode_enable = FALSE;
+    dma_init_struct.buffer_size = length;
+    if(rxBuf != NULL)
+    {
+        dma_init_struct.memory_base_addr = (uint32_t)rxBuf;
+        dma_init_struct.memory_inc_enable = TRUE;
+    }
+    else
+    {
+        dma_init_struct.memory_base_addr = (uint32_t)&SPI_DMA_RxTrash;
+        dma_init_struct.memory_inc_enable = FALSE;
+    }
+    dma_init(DMA2_CHANNEL1, &dma_init_struct);
+
+    // TX：有真实数据就自增读出，没有（调用方只是想读一块数据回来，
+    // 例如 SD 卡读操作，SPI 协议要求主机在读的同时仍要不断发时钟/占
+    // 位字节）就固定从同一个 0xFF 常量读，省去准备一块全 0xFF 缓冲区
+    dma_init_struct.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
+    if(txBuf != NULL)
+    {
+        dma_init_struct.memory_base_addr = (uint32_t)txBuf;
+        dma_init_struct.memory_inc_enable = TRUE;
+    }
+    else
+    {
+        dma_init_struct.memory_base_addr = (uint32_t)&SPI_DMA_TxDummy;
+        dma_init_struct.memory_inc_enable = FALSE;
+    }
+    dma_init(DMA2_CHANNEL2, &dma_init_struct);
+
+    // 先使能 RX 通道再使能 TX 通道：SPI 收到第一个字节之前先要有地方
+    // 接，避免出现 TX 已经把第一个字节推进移位寄存器、RX 通道却还没
+    // 准备好导致的竞争。
+    dma_channel_enable(DMA2_CHANNEL1, TRUE);
+    dma_channel_enable(DMA2_CHANNEL2, TRUE);
+
+    // 用"传输完成"标志轮询等待，而不是逐字节轮询 TDBE/RDBF——CPU 被
+    // 打扰的次数从 O(length) 降到 O(1)，等待期间可以插入其它逻辑
+    // （这里保持和仓库里其它阻塞式 API 一致的同步语义，直接轮询）。
+    uint32_t startTime = millis();
+    while(dma_flag_get(DMA2_FDT1_FLAG) == RESET)
+    {
+        if((millis() - startTime) > timeoutMs)
+        {
+            dma_channel_enable(DMA2_CHANNEL1, FALSE);
+            dma_channel_enable(DMA2_CHANNEL2, FALSE);
+            return false;
+        }
+    }
+
+    SPI_I2S_WAIT_BUSY(SPIx);
+
+    dma_flag_clear(DMA2_FDT1_FLAG);
+    dma_flag_clear(DMA2_FDT2_FLAG);
+
+    return true;
 }
 
 #if SPI_CLASS_1_ENABLE

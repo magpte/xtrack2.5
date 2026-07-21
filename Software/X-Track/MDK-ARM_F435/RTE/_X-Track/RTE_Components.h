@@ -22,6 +22,8 @@
 #define RTE_DEVICE_STDPERIPHERALS_CRM
 /* ArteryTek::Device:at32f435_437_firmware_library:dma:2.0.0 */
 #define RTE_DEVICE_STDPERIPHERALS_DMA
+/* ArteryTek::Device:at32f435_437_firmware_library:edma:2.0.0 */
+#define RTE_DEVICE_STDPERIPHERALS_EDMA
 /* ArteryTek::Device:at32f435_437_firmware_library:ertc:2.0.0 */
 #define RTE_DEVICE_STDPERIPHERALS_ERTC
 /* ArteryTek::Device:at32f435_437_firmware_library:exint:2.0.0 */

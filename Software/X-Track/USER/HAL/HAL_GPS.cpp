@@ -154,6 +154,24 @@ void HAL::GPS_Init()
 {
     GPS_SERIAL.begin(9600);
 
+#if defined(AT32F435xx)
+    // GPS 数据是持续不断的 NMEA 语句流（三星座联合定位打开后单独一条
+    // GGA+RMC 语句也有几十字节），如果还用逐字节 RDBF 中断接，MCU 平均
+    // 每隔 1 个字节的传输时间（9600bps 下约 1ms）就要进一次中断——这里
+    // 换成 DMA 循环接收：USART2 (GPS_SERIAL) -> DMA1 Channel4，数据由
+    // 硬件直接搬进 HardwareSerial 内部的环形缓冲区，CPU 只在收到一整
+    // 段数据后（IDLE 空闲线中断）被唤醒一次，而不是每个字节都被打断。
+    // 通道/请求号选择详见 HardwareSerial::enableRxDMA() 的注释，
+    // 与显示屏用的 EDMA_STREAM1、SD 卡用的 DMA2 Channel1/2、ADC 用的
+    // DMA1 Channel1 均不冲突。
+    GPS_SERIAL.enableRxDMA(
+        DMA1_CHANNEL4,
+        DMA1MUX_CHANNEL4,
+        DMAMUX_DMAREQ_ID_USART2_RX,
+        DMA1_Channel4_IRQn
+    );
+#endif
+
 #if CONFIG_GPS_TRY_MODE7_ENABLE
     // 给模块一点时间完成内部启动，再发配置指令，提高指令被正确接收的概率。
     delay(100);

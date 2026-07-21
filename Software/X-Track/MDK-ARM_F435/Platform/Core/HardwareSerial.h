@@ -117,14 +117,44 @@ public:
         return true;
     }
 
+    /*
+     * Enable DMA-driven reception into the existing _rxBuffer ring buffer.
+     * Must be called AFTER begin(). Once enabled, the USART no longer
+     * raises an interrupt per received byte (USART_RDBF_INT stays off);
+     * instead DMA drains USARTx->dt into _rxBuffer continuously in
+     * circular mode, and _rxBufferHead is derived on demand (in
+     * available()/read()/peek()/flush()) from the DMA channel's
+     * remaining-count register instead of being advanced by software.
+     * This removes the per-byte interrupt entirely for ports that stream
+     * continuously (e.g. GPS NMEA output), which is where it matters -
+     * a debug/console port with sparse traffic gets no benefit and stays
+     * on the plain byte-interrupt path used by begin().
+     *
+     * The USART IDLE-line interrupt is enabled so that a line's worth of
+     * data becomes visible to the application promptly after the sender
+     * pauses, instead of only after the ring buffer wraps.
+     */
+    bool enableRxDMA(
+        dma_channel_type* dmaChannel,
+        dmamux_channel_type* muxChannel,
+        dmamux_requst_id_sel_type muxRequestId,
+        IRQn_Type dmaIRQn,
+        uint8_t preemptionPriority = SERIAL_PREEMPTIONPRIORITY_DEFAULT,
+        uint8_t subPriority = SERIAL_SUBPRIORITY_DEFAULT
+    );
+
     void IRQHandler();
 
 private:
+    void _syncHeadFromDMA();
+
     usart_type* _USARTx;
     CallbackFunction_t _callbackFunction;
     volatile uint16_t _rxBufferHead;
     volatile uint16_t _rxBufferTail;
     uint8_t _rxBuffer[SERIAL_RX_BUFFER_SIZE];
+
+    dma_channel_type* _rxDmaChannel;
 };
 
 #if SERIAL_1_ENABLE

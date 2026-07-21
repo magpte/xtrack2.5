@@ -33,6 +33,15 @@
 #include "SdSpiBaseDriver.h"
 #include "SdFatConfig.h"
 //------------------------------------------------------------------------------
+// Set to 1 by the platform's SPI.h (currently only MDK-ARM_F435/Platform/
+// Core/SPI.h) when SPIClass provides a DMA-accelerated transferDMA()
+// method. Left at 0 for every other target (F403A build, win32 LVGL
+// simulator) so those keep using the original byte-at-a-time transfer()
+// loop below unchanged.
+#ifndef SD_SPI_HAS_DMA_TRANSFER
+#define SD_SPI_HAS_DMA_TRANSFER 0
+#endif
+//------------------------------------------------------------------------------
 /** SDCARD_SPI is defined if board has built-in SD card socket */
 #ifndef SDCARD_SPI
 #define SDCARD_SPI SPI
@@ -82,6 +91,19 @@ class SdSpiLibDriver {
   * \return Zero for no error or nonzero error code.
   */
   uint8_t receive(uint8_t* buf, size_t n) {
+#if SD_SPI_HAS_DMA_TRANSFER
+    // SD 卡一次读写至少是 512 字节的扇区，一直沿用逐字节 transfer()
+    // 循环等于 512 次软件轮询 TDBE/RDBF；这里改成一次性 DMA 批量传输
+    // （见 SPIClass::transferDMA()，目前只对 SPI2 生效——本项目里 SD
+    // 卡正好挂在 SPI2 上，见 HAL_Config.h 的 CONFIG_SD_SPI）。
+    // txBuf 传 NULL：读操作时发送方向按 SD 协议要求持续送 0xFF
+    // 占位字节，不需要单独准备一块全 0xFF 的发送缓冲区。
+    // transferDMA() 对不支持 DMA 的 SPI 实例（比如显示屏占用 EDMA 的
+    // SPI1）会直接返回 false，这里透明地退回逐字节方式，行为不变。
+    if (m_spi->transferDMA(NULL, buf, (uint32_t)n)) {
+      return 0;
+    }
+#endif  // SD_SPI_HAS_DMA_TRANSFER
     for (size_t i = 0; i < n; i++) {
       buf[i] = m_spi->transfer(0XFF);
     }
@@ -100,6 +122,13 @@ class SdSpiLibDriver {
    * \param[in] n Number of bytes to send.
    */
   void send(const uint8_t* buf, size_t n) {
+#if SD_SPI_HAS_DMA_TRANSFER
+    // rxBuf 传 NULL：写操作时收到的字节直接丢弃，不需要单独准备
+    // 一块同样大的垃圾接收缓冲区。
+    if (m_spi->transferDMA(buf, NULL, (uint32_t)n)) {
+      return;
+    }
+#endif  // SD_SPI_HAS_DMA_TRANSFER
     for (size_t i = 0; i < n; i++) {
       m_spi->transfer(buf[i]);
     }

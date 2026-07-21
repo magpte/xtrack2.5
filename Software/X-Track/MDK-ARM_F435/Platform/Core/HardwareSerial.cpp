@@ -81,8 +81,25 @@ HardwareSerial::HardwareSerial(usart_type* usart)
     , _callbackFunction(NULL)
     , _rxBufferHead(0)
     , _rxBufferTail(0)
+    , _rxDmaChannel(NULL)
 {
     memset(_rxBuffer, 0, sizeof(_rxBuffer));
+}
+
+/**
+  * @brief  从 DMA 通道的剩余计数寄存器反推 _rxBufferHead
+  * @note   仅在 enableRxDMA() 之后生效 (_rxDmaChannel != NULL)。
+  *         DMA 以循环模式把 USARTx->dt 不断写入 _rxBuffer，硬件从不
+  *         停下来通知"写到哪了"，所以头指针不是被动累加出来的，而是
+  *         每次 available()/read()/peek()/flush() 被调用时，用
+  *         "缓冲区大小 - 剩余未写字节数" 现算出来的——这是 STM32/AT32
+  *         系列做"DMA 循环接收环形缓冲区"的标准写法，好处是完全不需要
+  *         逐字节中断，DMA 传输过程中 CPU 可以做任何别的事。
+  */
+void HardwareSerial::_syncHeadFromDMA()
+{
+    uint16_t remain = dma_data_number_get(_rxDmaChannel);
+    _rxBufferHead = (uint16_t)(SERIAL_RX_BUFFER_SIZE - remain) % SERIAL_RX_BUFFER_SIZE;
 }
 
 /**
@@ -92,6 +109,28 @@ HardwareSerial::HardwareSerial(usart_type* usart)
   */
 void HardwareSerial::IRQHandler()
 {
+    if(_rxDmaChannel != NULL)
+    {
+        /* DMA RX 模式：数据搬运完全由 DMA 完成，RDBF 中断从未被使能，
+         * 这里只会因为 IDLE (空闲线) 触发进来。IDLE 表示发送方刚发完
+         * 一帧/一串数据后线路空闲了一段时间，用来让上层尽快看到刚收到
+         * 的数据，而不必等到 512 字节环形缓冲区正好写满绕回——对 GPS
+         * 这种"一波一波"发 NMEA 语句的场景，能明显降低"数据已到但还
+         * 没被应用层处理"的延迟。不需要在这里搬数据，_syncHeadFromDMA()
+         * 会在 available()/read() 里按需现算。 */
+        if(usart_flag_get(_USARTx, USART_IDLEF_FLAG) != RESET)
+        {
+            usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
+            usart_flag_clear(_USARTx, USART_IDLEF_FLAG);
+
+            if(_callbackFunction)
+            {
+                _callbackFunction(this);
+            }
+        }
+        return;
+    }
+
     if(usart_flag_get(_USARTx, USART_RDBF_FLAG) != RESET)
     {
         uint8_t c = usart_data_receive(_USARTx);
@@ -188,6 +227,87 @@ void HardwareSerial::begin(
 }
 
 /**
+  * @brief  为该串口开启 DMA 循环接收，替代逐字节 RDBF 中断
+  * @note   典型用法（以 GPS 用的 Serial2/USART2 为例，在 HAL_GPS.cpp
+  *         调用 GPS_SERIAL.begin(9600) 之后接一句）：
+  *
+  *             Serial2.enableRxDMA(
+  *                 DMA1_CHANNEL4, DMA1MUX_CHANNEL4,
+  *                 DMAMUX_DMAREQ_ID_USART2_RX, DMA1_Channel4_IRQn
+  *             );
+  *
+  *         DMA 通道号/请求号只要在项目里没被别的外设占用即可，与
+  *         HAL_Display.cpp 用的 EDMA_STREAM1（显示）、SPI.cpp 用的
+  *         DMA2 Channel1/2（SD 卡）都不冲突（ADC 占用的是 DMA1
+  *         Channel1，见 adc.c）。
+  * @retval true=成功, false=参数为空
+  */
+bool HardwareSerial::enableRxDMA(
+    dma_channel_type* dmaChannel,
+    dmamux_channel_type* muxChannel,
+    dmamux_requst_id_sel_type muxRequestId,
+    IRQn_Type dmaIRQn,
+    uint8_t preemptionPriority,
+    uint8_t subPriority
+)
+{
+    if(dmaChannel == NULL || muxChannel == NULL)
+    {
+        return false;
+    }
+
+    _rxDmaChannel = dmaChannel;
+
+    /* 逐字节中断和 DMA 接收二选一：开启 DMA 循环收之后，RDBF 中断
+     * 必须关掉，否则 USARTx->dt 会被 DMA 和 CPU 同时争着读，谁先读到
+     * 谁清标志位，两边都可能丢数据。 */
+    usart_interrupt_enable(_USARTx, USART_RDBF_INT, FALSE);
+
+    crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
+    crm_periph_clock_enable(CRM_DMA2_PERIPH_CLOCK, TRUE);
+
+    dma_reset(dmaChannel);
+
+    dma_init_type dma_init_struct;
+    dma_default_para_init(&dma_init_struct);
+
+    dma_init_struct.direction = DMA_DIR_PERIPHERAL_TO_MEMORY;
+    dma_init_struct.buffer_size = SERIAL_RX_BUFFER_SIZE;
+
+    dma_init_struct.peripheral_base_addr = (uint32_t)&(_USARTx->dt);
+    dma_init_struct.peripheral_inc_enable = FALSE;
+    dma_init_struct.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_BYTE;
+
+    dma_init_struct.memory_base_addr = (uint32_t)_rxBuffer;
+    dma_init_struct.memory_inc_enable = TRUE;
+    dma_init_struct.memory_data_width = DMA_MEMORY_DATA_WIDTH_BYTE;
+
+    dma_init_struct.priority = DMA_PRIORITY_MEDIUM;
+    /* 循环模式：DTCNT 计数到 0 后硬件自动重装，_rxBuffer 被当作真正
+     * 的环形缓冲区连续写，永不停止，不需要任何中断介入就能一直收。 */
+    dma_init_struct.loop_mode_enable = TRUE;
+
+    dma_init(dmaChannel, &dma_init_struct);
+
+    dmamux_enable(DMA1, TRUE);
+    dmamux_enable(DMA2, TRUE);
+    dmamux_init(muxChannel, muxRequestId);
+
+    usart_dma_receiver_enable(_USARTx, TRUE);
+
+    nvic_irq_enable(dmaIRQn, preemptionPriority, subPriority);
+    (void)dmaIRQn; // 当前不注册该通道自身的传输/错误中断处理函数，
+                    // 数据完全由 available()/read() 按需从计数寄存器拉取；
+                    // 预留参数是为了未来若要加半传输/错误中断时不必再改签名。
+
+    usart_interrupt_enable(_USARTx, USART_IDLE_INT, TRUE);
+
+    dma_channel_enable(dmaChannel, TRUE);
+
+    return true;
+}
+
+/**
   * @brief  关闭串口
   * @param  无
   * @retval 无
@@ -195,6 +315,15 @@ void HardwareSerial::begin(
 void HardwareSerial::end(void)
 {
     usart_interrupt_enable(_USARTx, USART_RDBF_INT, FALSE);
+
+    if(_rxDmaChannel != NULL)
+    {
+        usart_interrupt_enable(_USARTx, USART_IDLE_INT, FALSE);
+        usart_dma_receiver_enable(_USARTx, FALSE);
+        dma_channel_enable(_rxDmaChannel, FALSE);
+        _rxDmaChannel = NULL;
+    }
+
     usart_enable(_USARTx, FALSE);
 }
 
@@ -215,6 +344,10 @@ void HardwareSerial::attachInterrupt(CallbackFunction_t func)
   */
 int HardwareSerial::available(void)
 {
+    if(_rxDmaChannel != NULL)
+    {
+        _syncHeadFromDMA();
+    }
     return ((unsigned int)(SERIAL_RX_BUFFER_SIZE + _rxBufferHead - _rxBufferTail)) % SERIAL_RX_BUFFER_SIZE;
 }
 
@@ -225,6 +358,11 @@ int HardwareSerial::available(void)
   */
 int HardwareSerial::read(void)
 {
+    if(_rxDmaChannel != NULL)
+    {
+        _syncHeadFromDMA();
+    }
+
     // if the head isn't ahead of the tail, we don't have any characters
     if (_rxBufferHead == _rxBufferTail)
     {
@@ -245,6 +383,11 @@ int HardwareSerial::read(void)
   */
 int HardwareSerial::peek(void)
 {
+    if(_rxDmaChannel != NULL)
+    {
+        _syncHeadFromDMA();
+    }
+
     if (_rxBufferHead == _rxBufferTail)
     {
         return -1;
@@ -262,7 +405,18 @@ int HardwareSerial::peek(void)
   */
 void HardwareSerial::flush(void)
 {
-    _rxBufferHead = _rxBufferTail;
+    if(_rxDmaChannel != NULL)
+    {
+        /* DMA 模式下 _rxBufferHead 是由硬件计数寄存器现算出来的只读值，
+         * 不能像普通模式那样反向赋值；要丢弃已收到的数据，只能把
+         * _rxBufferTail 追到当前算出来的 head。 */
+        _syncHeadFromDMA();
+        _rxBufferTail = _rxBufferHead;
+    }
+    else
+    {
+        _rxBufferHead = _rxBufferTail;
+    }
 }
 
 /**

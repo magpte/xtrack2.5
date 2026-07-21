@@ -25,6 +25,15 @@
 
 #include "Arduino.h"
 
+/*
+ * Tells Libraries/SdFat/src/SpiDriver/SdSpiDriver.h that SPIClass below
+ * provides transferDMA() (DMA2 Channel1/2, SPI2 only - see SPI.cpp), so
+ * it can route SD card bulk reads/writes through it instead of the
+ * byte-at-a-time transfer() loop. Must be defined before SdSpiDriver.h
+ * is included; SdSpiDriver.h defaults it to 0 if nothing defines it.
+ */
+#define SD_SPI_HAS_DMA_TRANSFER 1
+
 #ifndef LSBFIRST
 #  define LSBFIRST 0
 #endif
@@ -146,16 +155,36 @@ public:
     uint8_t send(uint8_t data);
     uint8_t send(uint8_t *data, uint32_t length);
     uint8_t recv(void);
-    
+
+    /*
+     * DMA 加速的批量全双工传输（一次 DMA 搬运一整块数据，而不是像
+     * transfer()/send()/read() 那样每字节软件轮询 TDBE/RDBF 标志位）。
+     * 目前只为 SPI2（SD 卡总线，见 HAL_Config.h 里的 CONFIG_SD_SPI）
+     * 接了 DMA2 Channel1(RX)/Channel2(TX)；其它 SPI 实例调用会直接
+     * 回退到 write()/read() 的逐字节实现，行为不变、只是没有加速。
+     *
+     *   txBuf == nullptr : 发送方向填充 0xFF（SD 卡协议读操作的标准
+     *                       占位字节），不占用一块额外的发送缓冲区
+     *   rxBuf == nullptr : 接收到的数据直接丢弃（SD 卡协议写操作只
+     *                       关心发出去的数据，不关心收回来的内容）
+     *
+     * 返回 false 表示这次调用没有用上 DMA（要么不是 SPI2，要么等待
+     * 完成超时），调用方此时应自行回退到逐字节 transfer()。
+     */
+    bool transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length, uint32_t timeoutMs = 200);
+
     spi_type* getSPI()
     {
         return SPIx;
     }
 
 private:
+    bool _initDMA();
+
     spi_type* SPIx;
     spi_init_type spi_init_struct;
     uint32_t SPI_Clock;
+    bool _dmaReady;
 };
 
 #if SPI_CLASS_1_ENABLE

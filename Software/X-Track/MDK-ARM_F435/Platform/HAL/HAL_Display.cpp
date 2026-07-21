@@ -4,9 +4,41 @@
 #include "cm_backtrace/cm_backtrace.h" 
 
 #define DISP_USE_FPS_TEST    0
-#define DISP_USE_DMA         1
-#define DISP_DMA_CHANNEL     DMA1_CHANNEL3
-#define DISP_DMA_MAX_SIZE    65535
+
+/*
+ * ---------------------------------------------------------------------
+ * Display SPI1 TX acceleration - AT32F435/437 EDMA (Enhanced DMA)
+ * ---------------------------------------------------------------------
+ * Previously this driver used the classic DMA1 Channel3 (single-beat,
+ * no FIFO) to push the LVGL frame buffer out over SPI1. AT32F435/437 also
+ * has a separate, more capable EDMA controller (8 independent streams,
+ * each with its own 4-word FIFO, burst transfers of 4/8/16 beats, and
+ * the same DMAMUX flexible request routing) - see Artery AN0090
+ * "AT32F435/437 EDMA Application Note". Moving the LVGL flush path to
+ * EDMA frees DMA1/DMA2 entirely for the GPS UART and SD card SPI
+ * (see HardwareSerial.cpp / SPI.cpp), and the FIFO+burst mode reduces
+ * the number of AHB bus arbitrations needed to push a full 240x320
+ * RGB565 frame (150 KB) out over SPI1.
+ *
+ * Stream / request mapping used here (arbitrary but documented):
+ *   EDMA_STREAM1  <-> EDMAMUX_CHANNEL1 <-> EDMAMUX_DMAREQ_ID_SPI1_TX
+ *
+ * NOTE: at32f435_437_edma.h is provided by the Artery Keil device pack
+ * (installed into the Keil toolchain, not vendored in this repository),
+ * so the exact enum/field names below could not be cross-checked against
+ * the header from this build environment. They were taken verbatim from
+ * Artery's AN0090 application note (Ver 2.0.2) and from the existing,
+ * working DMA1 code in this same file (which already uses the sibling
+ * identifier DMAMUX_DMAREQ_ID_SPI1_TX for the classic DMA). If a name
+ * differs slightly in your installed pack, the compiler error will point
+ * directly at the mismatched identifier below.
+ */
+#define DISP_USE_EDMA          1
+#define DISP_EDMA_STREAM       EDMA_STREAM1
+#define DISP_EDMA_MUX_CHANNEL  EDMAMUX_CHANNEL1
+#define DISP_EDMA_IRQn         EDMA_Stream1_IRQn
+#define DISP_EDMA_FDT_FLAG     EDMA_FDT1_FLAG
+#define DISP_DMA_MAX_SIZE      65535
 
 typedef Adafruit_ST7789 SCREEN_CLASS;
 
@@ -55,6 +87,23 @@ static float Display_GetFPS(SCREEN_CLASS* scr, uint32_t loopNum)
 }
 #endif
 
+/*
+ * Re-arm the EDMA stream for the next chunk. EDMA_STREAM1's DTCNT field
+ * is 16-bit (max 65535), same limit as the classic DMA it replaces, so a
+ * full 240x320x2 = 153600 byte frame still needs to be split into 3
+ * chunks; the split/continuation bookkeeping (Disp_DMA_CurrentPoint /
+ * Disp_DMA_TragetPoint) is unchanged from the original driver.
+ *
+ * Each chunk goes through the public edma_init()/edma_stream_enable()
+ * API rather than poking stream registers directly: with FIFO+burst
+ * enabled the stream must always be (re)configured through a full
+ * edma_init() call (burst size, FIFO threshold and DTCNT interact - see
+ * AN0090 Table 3), and re-running edma_init() per chunk costs at most a
+ * few hundred CPU cycles, which is negligible next to the ~ms-scale SPI
+ * transfer time of a 64 KB chunk.
+ */
+static edma_init_type Disp_Edma_InitStruct;
+
 static void Display_SPI_DMA_Send(const void* buf, uint32_t size)
 {
     if(size > DISP_DMA_MAX_SIZE)
@@ -72,17 +121,20 @@ static void Display_SPI_DMA_Send(const void* buf, uint32_t size)
         Disp_DMA_TragetPoint = NULL;
     }
 
-    dma_channel_enable(DISP_DMA_CHANNEL, FALSE);
-    DISP_DMA_CHANNEL->maddr = (uint32_t)buf;
-    DISP_DMA_CHANNEL->dtcnt_bit.cnt = size;
-    dma_channel_enable(DISP_DMA_CHANNEL, TRUE);
+    edma_stream_enable(DISP_EDMA_STREAM, FALSE);
+
+    Disp_Edma_InitStruct.memory0_base_addr = (uint32_t)buf;
+    Disp_Edma_InitStruct.buffer_size = size;
+    edma_init(DISP_EDMA_STREAM, &Disp_Edma_InitStruct);
+
+    edma_stream_enable(DISP_EDMA_STREAM, TRUE);
 }
 
-extern "C" void DMA1_Channel3_IRQHandler(void)
+extern "C" void EDMA_Stream1_IRQHandler(void)
 {
-    if(dma_flag_get(DMA1_FDT3_FLAG) != RESET)
+    if(edma_flag_get(DISP_EDMA_FDT_FLAG) != RESET)
     {
-        dma_flag_clear(DMA1_FDT3_FLAG);
+        edma_flag_clear(DISP_EDMA_FDT_FLAG);
         if(Disp_DMA_CurrentPoint < Disp_DMA_TragetPoint)
         {
             Display_SPI_DMA_Send(Disp_DMA_CurrentPoint, Disp_DMA_TragetPoint - Disp_DMA_CurrentPoint);
@@ -101,34 +153,49 @@ extern "C" void DMA1_Channel3_IRQHandler(void)
 
 static void Display_SPI_DMA_Init()
 {
-    crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
+    crm_periph_clock_enable(CRM_EDMA_PERIPH_CLOCK, TRUE);
 
-    dma_reset(DISP_DMA_CHANNEL);
+    edma_reset(DISP_EDMA_STREAM);
 
-    dma_init_type dma_init_struct;
-    dma_default_para_init(&dma_init_struct);
+    edma_default_para_init(&Disp_Edma_InitStruct);
 
-    dma_init_struct.buffer_size = DISP_DMA_MAX_SIZE;
-    dma_init_struct.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
-    dma_init_struct.memory_base_addr = (uint32_t)NULL;
-    dma_init_struct.memory_data_width = DMA_MEMORY_DATA_WIDTH_BYTE;
-    dma_init_struct.memory_inc_enable = TRUE;
-    dma_init_struct.peripheral_base_addr = (uint32_t)&SPI1->dt;
-    dma_init_struct.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_BYTE;
-    dma_init_struct.peripheral_inc_enable = FALSE;
-    dma_init_struct.priority = DMA_PRIORITY_MEDIUM;
-    dma_init_struct.loop_mode_enable = FALSE;
+    Disp_Edma_InitStruct.direction = EDMA_DIR_MEMORY_TO_PERIPHERAL;
+    Disp_Edma_InitStruct.buffer_size = DISP_DMA_MAX_SIZE;
 
-    dma_init(DISP_DMA_CHANNEL, &dma_init_struct);
-    
-    dmamux_enable(DMA1, TRUE);
-    dmamux_init(DMA1MUX_CHANNEL3, DMAMUX_DMAREQ_ID_SPI1_TX);
+    /* Peripheral side: SPI1 data register, fixed address, single beat
+     * (the SPI FIFO only accepts one write per DMA request). */
+    Disp_Edma_InitStruct.peripheral_base_addr = (uint32_t)&SPI1->dt;
+    Disp_Edma_InitStruct.peripheral_data_width = EDMA_PERIPHERAL_DATA_WIDTH_BYTE;
+    Disp_Edma_InitStruct.peripheral_inc_enable = FALSE;
+    Disp_Edma_InitStruct.peripheral_burst_mode = EDMA_PERIPHERAL_SINGLE;
+
+    /* Memory side: LVGL frame buffer, auto-increment, burst-4. Combined
+     * with a FULL FIFO threshold this yields "4 burst transfers of 4
+     * beats" per AN0090 Table 3 (Byte / Full / MBURST=INCR4 is one of
+     * the documented-valid combinations), i.e. EDMA pulls 16 bytes out
+     * of SRAM per FIFO refill instead of 1, cutting AHB arbitration
+     * overhead roughly 4x versus the old single-beat DMA1 transfer. */
+    Disp_Edma_InitStruct.memory0_base_addr = (uint32_t)NULL;
+    Disp_Edma_InitStruct.memory_data_width = EDMA_MEMORY_DATA_WIDTH_BYTE;
+    Disp_Edma_InitStruct.memory_inc_enable = TRUE;
+    Disp_Edma_InitStruct.memory_burst_mode = EDMA_MEMORY_BURST_4;
+
+    Disp_Edma_InitStruct.fifo_mode_enable = TRUE;
+    Disp_Edma_InitStruct.fifo_threshold = EDMA_FIFO_THRESHOLD_FULL;
+
+    Disp_Edma_InitStruct.priority = EDMA_PRIORITY_HIGH;
+    Disp_Edma_InitStruct.loop_mode_enable = FALSE;
+
+    edma_init(DISP_EDMA_STREAM, &Disp_Edma_InitStruct);
+
+    edmamux_enable(TRUE);
+    edmamux_init(DISP_EDMA_MUX_CHANNEL, EDMAMUX_DMAREQ_ID_SPI1_TX);
 
     spi_i2s_dma_transmitter_enable(SPI1, TRUE);
 
-    NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+    NVIC_EnableIRQ(DISP_EDMA_IRQn);
 
-    dma_interrupt_enable(DISP_DMA_CHANNEL, DMA_FDT_INT, TRUE);
+    edma_interrupt_enable(DISP_EDMA_STREAM, EDMA_FDT_INT, TRUE);
 }
 
 void HAL::Display_Init()
@@ -169,10 +236,10 @@ void HAL::Display_DumpCrashInfo(const char* info)
       
     screen.setFont();  
     screen.setTextSize(1);  
-    screen.setCursor(0, screen.height() / 2 - 8 - 5);  // 直接使用8而不是TEXT_HEIGHT_1  
+    screen.setCursor(0, screen.height() / 2 - 8 - 5);  // 直  使  8      TEXT_HEIGHT_1  
     screen.println(info);  
       
-    // 显示调用栈信息  
+    //   示    栈  息  
     screen.setCursor(0, 60);  
     screen.println("Call Stack:");  
     uint32_t call_stack_buf[4];  
@@ -181,7 +248,7 @@ void HAL::Display_DumpCrashInfo(const char* info)
         screen.printf("%d:0x%08X\n", i, call_stack_buf[i]);  
     }  
       
-    screen.setCursor(0, screen.height() - 8 * 6);  // 直接使用8  
+    screen.setCursor(0, screen.height() - 8 * 6);  // 直  使  8  
     screen.println("Error code:");  
     screen.printf("MMFAR = 0x%08X\r\n", SCB->MMFAR);  
     screen.printf("BFAR  = 0x%08X\r\n", SCB->BFAR);  
@@ -189,7 +256,7 @@ void HAL::Display_DumpCrashInfo(const char* info)
     screen.printf("HFSR  = 0x%08X\r\n", SCB->HFSR);  
     screen.printf("DFSR  = 0x%08X\r\n", SCB->DFSR);  
       
-    screen.setCursor(0, screen.height() - 8);  // 直接使用8  
+    screen.setCursor(0, screen.height() - 8);  // 直  使  8  
     screen.print("Press KEY to reboot..");  
 }
 

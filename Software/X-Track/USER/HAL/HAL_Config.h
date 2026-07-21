@@ -119,8 +119,8 @@
 #define CONFIG_HAL_UPDATE_TIM       TIM4
 
 /* Show Stack & Heap Info */
-#define CONFIG_SHOW_STACK_INFO      1
-#define CONFIG_SHOW_HEAP_INFO       1
+#define CONFIG_SHOW_STACK_INFO      0
+#define CONFIG_SHOW_HEAP_INFO       0
 
 /* Backlight Config */
 #define CONFIG_BACKLIGHT_MIN        200  // Range [0, 1000]
