@@ -108,3 +108,8 @@ void HAL::HAL_Update()
 {
     taskManager.Running(millis());
 }
+
+void HAL::IMU_SetEnable(bool enable)
+{
+    taskManager.SetState(HAL::IMU_Update, enable);
+}

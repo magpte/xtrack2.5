@@ -60,6 +60,9 @@ int I2C_Scan();
 bool IMU_Init();
 void IMU_SetCommitCallback(CommitFunc_t func, void* userData);
 void IMU_Update();
+// 暂停/恢复 IMU 轮询任务（不是断电关闭传感器，只是不再调 IMU_Update）。
+// 用于锁屏轨迹记录模式下省电，见 Dialplate.cpp 的 LockMode_Enter/Exit。
+void IMU_SetEnable(bool enable);
 
 /* SD */
 bool SD_Init();

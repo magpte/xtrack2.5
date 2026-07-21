@@ -8,6 +8,8 @@ Dialplate::Dialplate()
     , lastFocus(nullptr)
     , isAdjustingBrightness(false)
     , brightnessValue(0)
+    , isLocked(false)
+    , savedBrightness(0)
 {
 }
 
@@ -73,6 +75,14 @@ void Dialplate::onViewWillDisappear()
     if (isAdjustingBrightness)
     {
         BrightnessAdjust_Exit();
+    }
+
+    // 正常情况下锁屏时其他按键都被屏蔽了，不应该会走到"离开页面"这一步；
+    // 这里只是防御性兜底，万一因为某种意外情况触发了页面切换，确保
+    // 背光/IMU 不会被遗留在锁屏时关闭的状态。
+    if (isLocked)
+    {
+        LockMode_Exit();
     }
 
     lv_group_t* group = lv_group_get_default();
@@ -263,6 +273,49 @@ void Dialplate::BrightnessAdjust_Step(int32_t dir)
     View.SetBrightnessValue(brightnessValue);
 }
 
+void Dialplate::LockMode_Enter()
+{
+    // 只在录制中才允许进入锁屏——不在录制的时候长按 Map 没有效果。
+    if (recState != RECORD_STATE_RUN)
+    {
+        return;
+    }
+
+    isLocked = true;
+
+    // 记下当前亮度，退出的时候恢复这个值，而不是写死恢复到某个固定
+    // 亮度（不然会覆盖掉用户在设置里调好的亮度）。
+    savedBrightness = HAL::Backlight_GetValue();
+    HAL::Backlight_SetGradual(0, 500);
+
+    // 暂停这个页面自己的 1 秒刷新定时器——速度/时长/距离这些标签既然
+    // 看不见了，没必要还每秒重新计算+触发重绘。
+    // GPS 解析、轨迹写入、看门狗完全不受影响：它们各自走的是 DataProc
+    // 自己的 LVGL 定时器和硬件定时器中断，不依赖这个页面级的定时器，
+    // 也不会因为这里暂停就跟着停。
+    lv_timer_pause(timer);
+
+    // IMU 只用来计步，录轨迹本身用不上，锁屏期间顺手关掉。
+    HAL::IMU_SetEnable(false);
+
+    HAL::Buzz_Tone(400, 30);
+
+    LV_LOG_USER("Entered lock-screen recording mode");
+}
+
+void Dialplate::LockMode_Exit()
+{
+    isLocked = false;
+
+    HAL::Backlight_SetGradual(savedBrightness, 500);
+    lv_timer_resume(timer);
+    HAL::IMU_SetEnable(true);
+
+    HAL::Buzz_Tone(600, 30);
+
+    LV_LOG_USER("Exited lock-screen recording mode");
+}
+
 void Dialplate::onEvent(lv_event_t* event)
 {
     Dialplate* instance = (Dialplate*)lv_event_get_user_data(event);
@@ -270,6 +323,23 @@ void Dialplate::onEvent(lv_event_t* event)
 
     lv_obj_t* obj = lv_event_get_current_target(event);
     lv_event_code_t code = lv_event_get_code(event);
+
+    // 锁屏期间屏幕是黑的，除了长按 Map 退出锁屏之外，其他任何按键都
+    // 不应该有反应——不然揣在口袋里被意外触碰，可能会跳转页面、
+    // 暂停录制、进入调光模式这些看不见屏幕的情况下很容易误操作的动作。
+    if (instance->isLocked)
+    {
+        // 不管这时候焦点具体在哪个按钮上（屏幕是黑的，编码器意外转动
+        // 会让焦点在 Rec/Map/Menu 之间跳，用户根本看不见跳到哪了）——
+        // 只要是长按，就退出锁屏。之前写死判断"必须是 btnMap 的长按"，
+        // 一旦焦点被意外转走，长按会落在别的按钮上被无声忽略掉，用户
+        // 会误以为设备卡死/关机了。
+        if (code == LV_EVENT_LONG_PRESSED)
+        {
+            instance->LockMode_Exit();
+        }
+        return;
+    }
 
     if (obj == instance->View.ui.btnCont.btnRec)
     {
@@ -291,7 +361,7 @@ void Dialplate::onEvent(lv_event_t* event)
         }
         else if (code == LV_EVENT_LONG_PRESSED)
         {
-            HAL::Backlight_SetGradual(1000, 1000);
+            instance->LockMode_Enter();
         }
 		}
 		

@@ -43,6 +43,8 @@ private:
     void BrightnessAdjust_Enter();
     void BrightnessAdjust_Exit();
     void BrightnessAdjust_Step(int32_t dir);
+    void LockMode_Enter();
+    void LockMode_Exit();
 
 private:
     DialplateView View;
@@ -52,6 +54,8 @@ private:
     lv_obj_t* lastFocus;
     bool isAdjustingBrightness;
     int32_t brightnessValue;
+    bool isLocked;
+    int32_t savedBrightness;   // 进锁屏前的亮度，退出时恢复，而不是写死某个值
 };
 
 }
