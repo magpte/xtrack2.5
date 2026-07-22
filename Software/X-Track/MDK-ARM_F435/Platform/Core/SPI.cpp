@@ -595,6 +595,14 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
 
     SPI_I2S_WAIT_BUSY(SPIx);
 
+    // 传输正常完成时也必须显式关闭两个通道，跟超时分支保持一致——
+    // 否则通道会带着 count=0 一直停留在"使能"状态，下一次 transferDMA()
+    // 虽然会在重新配置前先关一次没问题，但期间任何穿插的逐字节
+    // transfer()/send()/receive()（SD 命令/响应握手用的就是这个）
+    // 仍然会看到 SPI2 的 DMA 请求使能位是常开的（_initDMA() 里设的），
+    // 让还挂着的通道去抢那些字节，读写结果不可预期。
+    dma_channel_enable(DMA2_CHANNEL1, FALSE);
+    dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
 

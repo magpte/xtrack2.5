@@ -4174,6 +4174,9 @@
           <GroupName>::CMSIS</GroupName>
         </Group>
         <Group>
+          <GroupName>::Compiler</GroupName>
+        </Group>
+        <Group>
           <GroupName>::Device</GroupName>
         </Group>
       </Groups>
@@ -4191,6 +4194,11 @@
         </targetInfos>
       </package>
       <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6">
+        <targetInfos>
+          <targetInfo name="X-Track" versionMatchMode="fixed"/>
+        </targetInfos>
+      </package>
+      <package name="ARM_Compiler" schemaVersion="1.6.3" url="http://www.keil.com/pack/" vendor="Keil" version="1.6.3">
         <targetInfos>
           <targetInfo name="X-Track" versionMatchMode="fixed"/>
         </targetInfos>
@@ -4300,8 +4308,22 @@
           <targetInfo name="X-Track"/>
         </targetInfos>
       </component>
+      <component Cbundle="ARM Compiler" Cclass="Compiler" Cgroup="Event Recorder" Cvariant="DAP" Cvendor="Keil" Cversion="1.4.0" condition="Cortex-M Device">
+        <package name="ARM_Compiler" schemaVersion="1.6.3" url="http://www.keil.com/pack/" vendor="Keil" version="1.6.3"/>
+        <targetInfos>
+          <targetInfo name="X-Track"/>
+        </targetInfos>
+      </component>
     </components>
     <files>
+      <file attr="config" category="header" name="Config\EventRecorderConf.h" version="1.1.0">
+        <instance index="0">RTE\Compiler\EventRecorderConf.h</instance>
+        <component Cbundle="ARM Compiler" Cclass="Compiler" Cgroup="Event Recorder" Cvariant="DAP" Cvendor="Keil" Cversion="1.4.0" condition="Cortex-M Device"/>
+        <package name="ARM_Compiler" schemaVersion="1.6.3" url="http://www.keil.com/pack/" vendor="Keil" version="1.6.3"/>
+        <targetInfos>
+          <targetInfo name="X-Track"/>
+        </targetInfos>
+      </file>
       <file attr="config" category="source" name="Device\Firmware\Peripherals\src\at32f435_437_adc.c" version="2.0.0">
         <instance index="0">RTE\Device\-AT32F435CGU7\at32f435_437_adc.c</instance>
         <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="adc" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM"/>

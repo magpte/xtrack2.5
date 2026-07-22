@@ -21,6 +21,7 @@
  * SOFTWARE.
  */
 #include "HardwareSerial.h"
+#include "EventRecorder.h"   // 调试用，排查完可整段移除（连同下面的 EventRecord2 调用）
 
 typedef struct
 {
@@ -122,6 +123,13 @@ void HardwareSerial::IRQHandler()
         {
             usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
             usart_flag_clear(_USARTx, USART_IDLEF_FLAG);
+
+            // Event Recorder 调试用：每次 IDLE 触发记一条帯时间戳的事件，
+            // 用来跟 SD_Init() 那边的事件对齐时间轴，看 GPS 的 ISR 有没有
+            // 恰好落在 SD 卡握手的窗口里。EventRecord2() 不阻塞、ISR 里
+            // 调用安全，排查完可以整段删掉。
+            static volatile uint32_t s_idleCount = 0;
+            EventRecord2(0xA0, ++s_idleCount, (uint32_t)dma_data_number_get(_rxDmaChannel));
 
             if(_callbackFunction)
             {
@@ -295,10 +303,18 @@ bool HardwareSerial::enableRxDMA(
 
     usart_dma_receiver_enable(_USARTx, TRUE);
 
-    nvic_irq_enable(dmaIRQn, preemptionPriority, subPriority);
-    (void)dmaIRQn; // 当前不注册该通道自身的传输/错误中断处理函数，
-                    // 数据完全由 available()/read() 按需从计数寄存器拉取；
-                    // 预留参数是为了未来若要加半传输/错误中断时不必再改签名。
+    // Event Recorder 调试用：标记这个串口的 DMA 循环接收从这一刻起
+    // 真正开始跑，排查完可删掉。
+    EventRecord2(0xA1, (uint32_t)(uintptr_t)_USARTx, 0);
+
+    // 注意：这里不调用 nvic_irq_enable(dmaIRQn, ...)。当前实现完全靠轮询
+    // dma_data_number_get()（见 _syncHeadFromDMA()）来知道收到了多少数据，
+    // 没有对这条 DMA 通道调用 dma_interrupt_enable() 去武装任何传输完成/
+    // 半传输/出错中断源，也没有实现对应的 DMA1_Channel4_IRQHandler()。
+    // 之前的版本在没有实际中断源、也没有 ISR 的情况下把这个向量在 NVIC
+    // 里使能了，属于占着位置不干活的隐患；真要加半传输/错误中断，
+    // 到时候再把 nvic_irq_enable() 和对应的 IRQHandler 一起加回来。
+    (void)dmaIRQn; (void)preemptionPriority; (void)subPriority;
 
     usart_interrupt_enable(_USARTx, USART_IDLE_INT, TRUE);
 

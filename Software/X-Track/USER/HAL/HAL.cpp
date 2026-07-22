@@ -1,6 +1,7 @@
 #include "HAL.h"
 #include "App/Version.h"
 #include "MillisTaskManager/MillisTaskManager.h"
+#include "EventRecorder.h"   // 调试用，排查完可移除（连同 HAL_Init() 里那行初始化调用）
 
 static MillisTaskManager taskManager;
 
@@ -55,6 +56,10 @@ static void HAL_TimerInterrputUpdate()
 
 void HAL::HAL_Init()
 {
+    // 调试用：必须在 GPS_Init()/SD_Init() 之前、也就是 HAL_Init() 一进来
+    // 就调用，不然后面那些 EventRecord2() 全都是空调用。排查完可整段删掉。
+    EventRecorderInitialize(EventRecordAll, 1);
+
     Serial.begin(115200);
     Serial.println(VERSION_FIRMWARE_NAME);
     Serial.println("Version: " VERSION_SOFTWARE);
