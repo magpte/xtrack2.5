@@ -32,7 +32,7 @@
  * byte-at-a-time transfer() loop. Must be defined before SdSpiDriver.h
  * is included; SdSpiDriver.h defaults it to 0 if nothing defines it.
  */
-#define SD_SPI_HAS_DMA_TRANSFER 1
+#define SD_SPI_HAS_DMA_TRANSFER 0
 
 #ifndef LSBFIRST
 #  define LSBFIRST 0

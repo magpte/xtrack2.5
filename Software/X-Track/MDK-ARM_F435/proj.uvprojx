@@ -4171,10 +4171,10 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>::CMSIS</GroupName>
+          <GroupName>::Device</GroupName>
         </Group>
         <Group>
-          <GroupName>::Device</GroupName>
+          <GroupName>::CMSIS</GroupName>
         </Group>
       </Groups>
     </Target>
