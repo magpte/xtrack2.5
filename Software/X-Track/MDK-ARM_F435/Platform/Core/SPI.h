@@ -31,8 +31,19 @@
  * it can route SD card bulk reads/writes through it instead of the
  * byte-at-a-time transfer() loop. Must be defined before SdSpiDriver.h
  * is included; SdSpiDriver.h defaults it to 0 if nothing defines it.
+ *
+ * TEMPORARILY DISABLED (set to 0): on real hardware this caused data
+ * corruption during SD card identification/block I/O (card gets
+ * rejected on replug) once the DMA path was actually completing every
+ * transfer. transferDMA() itself is left in place in SPI.cpp for future
+ * debugging, but it needs to be root-caused with real observability
+ * (logic analyzer on the SPI2 lines, or working serial logs) rather
+ * than more blind guess-and-flash iterations - a wrong guess here
+ * silently corrupts card data, which is worse than just being slow.
+ * With this at 0, SD card I/O uses the original, proven byte-at-a-time
+ * transfer() path exactly as before any of this DMA work started.
  */
-#define SD_SPI_HAS_DMA_TRANSFER 1
+#define SD_SPI_HAS_DMA_TRANSFER 0
 
 #ifndef LSBFIRST
 #  define LSBFIRST 0
