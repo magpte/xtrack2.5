@@ -26,10 +26,6 @@
 #include "lvgl/lvgl.h"
 #include "lv_port/lv_port.h"
 
-#if defined(AT32F435xx)
-#include "DebugLog.h"
-#endif
-
 #if LV_USE_DEMO_BENCHMARK
 
 #include "benchmark.inc"
@@ -50,20 +46,8 @@ static void setup()
 
 static void loop()
 {
-#if defined(AT32F435xx)
-    // 主循环打点：卡死的时候看 g_DebugLog 里最后一条是 'Lhal'（说明
-    // 卡在 HAL::HAL_Update() 里，SD/GPS 相关的读写大多在这一步）还是
-    // 'Llvg'（卡在 LVGL 渲染里）——这一条比 SD 卡自己的日志更先看，
-    // 能先把"卡在哪个大模块"缩小范围，再去看该模块自己打的详细日志。
-    DEBUG_LOG(DEBUG_TAG('L','h','a','l'), 0, 0);
-#endif
     HAL::HAL_Update();
-
-#if defined(AT32F435xx)
-    DEBUG_LOG(DEBUG_TAG('L','l','v','g'), 0, 0);
-#endif
     lv_task_handler();
-
     __wfi();
 }
 

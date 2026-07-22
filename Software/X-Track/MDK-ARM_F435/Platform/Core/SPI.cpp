@@ -21,7 +21,6 @@
  * SOFTWARE.
  */
 #include "SPI.h"
-#include "DebugLog.h"
 
 #define SPI1_CLOCK                     (F_CPU)
 #define SPI2_CLOCK                     (F_CPU)
@@ -501,17 +500,9 @@ bool SPIClass::_initDMA()
     dmamux_init(DMA2MUX_CHANNEL1, DMAMUX_DMAREQ_ID_SPI2_RX);
     dmamux_init(DMA2MUX_CHANNEL2, DMAMUX_DMAREQ_ID_SPI2_TX);
 
-    // 注意：SPIx 自身的 RXDMAEN/TXDMAEN（CTRL2 里请求 DMA 的使能位）
-    // 不在这里设置——SdFat 每次访问 SD 卡都会走
-    // activate() -> beginTransaction() -> begin() -> spi_i2s_reset(SPIx)，
-    // 也就是每次读写都会把整个 SPI2 外设复位一次，CTRL2 里的这两个
-    // DMA 请求使能位会被一起清掉。这里的 _initDMA() 只跑一次（被
-    // _dmaReady 挡住），如果把这两行放在这儿，第一次传输之后 SPI 就
-    // 再也不会真正发起 DMA 请求了：DMA 通道会被正常使能、一直等，但
-    // 硬件永远不触发，直到 transferDMA() 超时退回逐字节方式——每次
-    // SD 读写都要先空等一次超时时间才退化成慢速路径，这就是之前
-    // "一读写 SD 就卡住"的真正原因。真正需要每次传输前都重新置位的
-    // 部分放到了 transferDMA() 开头。
+    spi_i2s_dma_receiver_enable(SPIx, TRUE);
+    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+
     _dmaReady = true;
     return true;
 }
@@ -523,22 +514,10 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         return true;
     }
 
-    // 入口打点：length 和 "哪个方向有真实缓冲区"(bit0=rxBuf非空,
-    // bit1=txBuf非空) 记下来，方便和后面的超时/完成日志对上号——
-    // 如果卡住了，看 g_DebugLog 里最后一条 'Dspi' 之后还有没有对应
-    // 的 'Dtmo'/'Dok!'，没有的话说明就是卡在这次调用里没出来。
-    DEBUG_LOG(DEBUG_TAG('D','s','p','i'), length, (rxBuf != NULL ? 1u : 0u) | (txBuf != NULL ? 2u : 0u));
-
     if(!_initDMA())
     {
-        DEBUG_LOG(DEBUG_TAG('D','n','o','i'), 0, 0); // _initDMA() 失败（不是 SPI2）
         return false;
     }
-
-    // 每次传输都要重新置位，原因见 _initDMA() 里的注释：
-    // beginTransaction() 每次都会 spi_i2s_reset(SPIx)，把这两个位清掉。
-    spi_i2s_dma_receiver_enable(SPIx, TRUE);
-    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
 
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
@@ -608,15 +587,6 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     {
         if((millis() - startTime) > timeoutMs)
         {
-            // 超时的关键信息：两个通道各自还剩多少字节没传完。
-            // 如果 rxRemain == length（一个字节都没收到），说明 SPI
-            // 压根没发起过 DMA 请求（RXDMAEN 没生效之类）；如果
-            // rxRemain 是个中间值，说明是传到一半断的，更像是时序/
-            // 竞争问题而不是使能位没设对。
-            uint16_t rxRemain = dma_data_number_get(DMA2_CHANNEL1);
-            uint16_t txRemain = dma_data_number_get(DMA2_CHANNEL2);
-            DEBUG_LOG(DEBUG_TAG('D','t','m','o'), rxRemain, txRemain);
-
             dma_channel_enable(DMA2_CHANNEL1, FALSE);
             dma_channel_enable(DMA2_CHANNEL2, FALSE);
             return false;
@@ -627,8 +597,6 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
 
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
-
-    DEBUG_LOG(DEBUG_TAG('D','o','k','!'), length, millis() - startTime);
 
     return true;
 }

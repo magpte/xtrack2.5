@@ -4074,16 +4074,6 @@
               <FilePath>.\Platform\Core\adc.c</FilePath>
             </File>
             <File>
-              <FileName>DebugLog.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Platform\Core\DebugLog.c</FilePath>
-            </File>
-            <File>
-              <FileName>DebugLog.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\Platform\Core\DebugLog.h</FilePath>
-            </File>
-            <File>
               <FileName>at32f435_437_clock.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Platform\Core\at32f435_437_clock.c</FilePath>
@@ -4344,7 +4334,7 @@
           <targetInfo name="X-Track"/>
         </targetInfos>
       </file>
-      <file attr="config" category="source" name="Device\Firmware\Peripherals\src\at32f435_437_edma.c" version="0.0.0">
+      <file attr="config" category="source" name="Device\Firmware\Peripherals\src\at32f435_437_edma.c" version="2.0.0">
         <instance index="0">RTE\Device\-AT32F435CGU7\at32f435_437_edma.c</instance>
         <component Cclass="Device" Cgroup="at32f435_437_firmware_library" Csub="edma" Cvendor="ArteryTek" Cversion="2.0.0" condition="AT32F435_437 STDPERIPHERALS CRM"/>
         <package name="AT32F435_437_DFP" schemaVersion="1.2" url="" vendor="ArteryTek" version="2.0.6"/>
