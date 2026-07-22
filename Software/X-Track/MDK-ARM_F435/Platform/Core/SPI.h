@@ -31,6 +31,22 @@
  * it can route SD card bulk reads/writes through it instead of the
  * byte-at-a-time transfer() loop. Must be defined before SdSpiDriver.h
  * is included; SdSpiDriver.h defaults it to 0 if nothing defines it.
+ *
+ * DISABLED (0): on-device testing showed the DMA path still causing SD
+ * card identification/read-write failures even after two rounds of
+ * fixes to the enable-bit/channel-lifecycle bugs in transferDMA() (see
+ * SPI.cpp history). Root-causing further needs real hardware
+ * observability (logic analyzer on SPI2, or the debug logging approach
+ * from the earlier "SD DMA debug" attempt) that isn't available right
+ * now. transferDMA() is left in place in SPI.cpp for whenever that
+ * becomes possible, but is not wired up.
+ *
+ * With this at 0, SD I/O uses the original byte-at-a-time transfer()
+ * loop. Combined with the write batching already in DP_Recorder.cpp
+ * (1KB app-level buffer) and SdFat's own 512-byte sector cache in
+ * FatFile::write(), this keeps actual low-level SPI transactions
+ * infrequent and bounded (~0.5-1ms per 512-byte sector at 30MHz),
+ * without needing DMA at all.
  */
 #define SD_SPI_HAS_DMA_TRANSFER 0
 
