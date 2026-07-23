@@ -80,12 +80,10 @@ void HAL::HAL_Init()
     Clock_Init();
     Buzz_init();
 
-    // 调试用：调试期间先把蜂鸣器静音，省得每次操作/每次触发事件都响。
-    // 排查完记得把下面这个宏改回 0，或者把这两行删掉恢复正常。
-#define DEBUG_MUTE_BUZZER  1
-#if DEBUG_MUTE_BUZZER
-    Buzz_SetEnable(false);
-#endif
+    // 蜂鸣器调试期间的强制静音开关挪到 HAL_Buzz.cpp 里的
+    // DEBUG_HARD_MUTE_BUZZER 了——这里单独调用 Buzz_SetEnable(false)
+    // 会被 DP_SysConfig.cpp 加载 sysConfig.soundEnable 时的调用覆盖掉，
+    // 所以直接在 Buzz_Tone() 入口拦截更可靠。
 
     // 调试用：临时开关，排查"GPS 的 USART2 IDLE 中断是否打断了 SD 卡
     // 握手"这个假设——Event Recorder 里已经看到 GPS 的第一次 IDLE 中断

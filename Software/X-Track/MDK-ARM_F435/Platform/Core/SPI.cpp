@@ -525,6 +525,12 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     // 排查完可以删掉这行和下面 0xD1 那行。
     EventRecord2(0xD0, SPIx->sts, 0);
 
+    // 调试用：把这次调用实际请求传输的长度也记下来，跟后面 0xD2
+    // 里 DMA 报告的"剩余计数"对着看——不然单看剩余计数是不是 0，
+    // 没法判断这次请求本来传的是不是就不是 512 字节（比如某次读的
+    // 其实是寄存器而不是整扇区），排查完可以删掉。
+    EventRecord2(0xD3, length, timeoutMs);
+
     if(!_initDMA())
     {
         return false;
@@ -617,6 +623,15 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     }
 
     SPI_I2S_WAIT_BUSY(SPIx);
+
+    // 调试用：FDT1（RX 通道传输完成）标志一亮就立刻看两个通道各自的
+    // 剩余计数寄存器——真正数完 length 个字节的话，这里应该都是 0。
+    // 如果不是 0，说明 DMA 提前判定"完成"了，实际根本没搬完整块数据，
+    // 这就能直接解释"返回成功、但缓冲区内容不对/是旧的"这种现象，
+    // 而且能确认问题出在 DMA 通道这一层，不是 SPI 外设或上层协议。
+    // 排查完可以把这行删掉。
+    EventRecord2(0xD2, dma_data_number_get(DMA2_CHANNEL1),
+                 dma_data_number_get(DMA2_CHANNEL2));
 
     // 调试用：传输"完成"这一刻的状态寄存器，跟进函数时的 0xD0 对比。
     // 如果这里出现溢出错误位（ROERR之类），说明 DMA 传输过程中 SPI2
