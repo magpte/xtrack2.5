@@ -7,6 +7,12 @@ static SdFat SD(&CONFIG_SD_SPI);
 static bool SD_IsReady = false;
 static uint32_t SD_CardSize = 0;
 
+// DEBUG: temporarily mute the "Error" buzzer sound on SD init failure
+// while chasing the transferDMA() bug - it's firing every boot right
+// now and gets old fast. Flip back to 1 (or delete this + the guard
+// below) once SD reliably initializes again.
+#define DEBUG_SD_ERROR_SOUND_ENABLED  0
+
 static HAL::SD_CallbackFunction_t SD_EventCallback = nullptr;
 
 /*
@@ -148,7 +154,16 @@ static void SD_Check(bool isInsert)
             SD_EventCallback(true);
         }
 
-        HAL::Audio_PlayMusic(ret ? "DeviceInsert" : "Error");
+        if(ret)
+        {
+            HAL::Audio_PlayMusic("DeviceInsert");
+        }
+#if DEBUG_SD_ERROR_SOUND_ENABLED
+        else
+        {
+            HAL::Audio_PlayMusic("Error");
+        }
+#endif
     }
     else
     {
@@ -191,4 +206,3 @@ bool HAL::SD_WriteCrashLog(const char* data)
     }  
     return false;  
 }
-

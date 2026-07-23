@@ -21,6 +21,10 @@
  * SOFTWARE.
  */
 #include "SPI.h"
+// DEBUG: only needed for the EventRecord2(0xD0/0xD1, ...) markers in
+// transferDMA() below. Remove this include along with those markers
+// once the transferDMA() data-corruption bug is found.
+#include "EventRecorder.h"
 
 #define SPI1_CLOCK                     (F_CPU)
 #define SPI2_CLOCK                     (F_CPU)
@@ -514,6 +518,13 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         return true;
     }
 
+    // 调试用：进函数第一时间先把 SPI2 的原始状态寄存器记下来，看看
+    // 有没有上一次操作遗留、一直没清掉的标志位（比如接收溢出
+    // ROERR）——如果第 2、3 次调用一进来这里就已经跟第 1 次不一样，
+    // 说明问题出在"上一次操作收尾没收干净"，而不是这次传输本身。
+    // 排查完可以删掉这行和下面 0xD1 那行。
+    EventRecord2(0xD0, SPIx->sts, 0);
+
     if(!_initDMA())
     {
         return false;
@@ -523,6 +534,18 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
+
+    // 加了这两行：disable + dma_init() 重新配置字段，看起来"应该"
+    // 足够，但 Event Recorder 实测抓到了一个具体反例——同一个通道被
+    // 反复使用时（第 2、3 次 transferDMA() 调用），目标缓冲区里最终
+    // 是上一次调用遗留的旧内容，而不是这一次真正从卡上搬回来的新
+    // 数据（两次请求不同的扇区号，读回的字节却一模一样）。这意味着
+    // 只 disable 通道、改字段、重新 dma_init()，并不能保证把 AT32
+    // 这颗 DMA 控制器内部的传输状态（比如内部影子计数器/地址寄存器）
+    // 彻底清零——显式 dma_reset() 把整个通道打回上电缺省状态，排除
+    // 这种"配置字段虽然改了、但内部状态没跟着复位"的可能性。
+    dma_reset(DMA2_CHANNEL1);
+    dma_reset(DMA2_CHANNEL2);
 
     // 通过 dma_init() 整体重新配置两个通道，而不是直接改写寄存器
     // 位域：仓库里目前没有 at32f435_437_dma.h 的完整拷贝可供核对具体
@@ -594,6 +617,13 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     }
 
     SPI_I2S_WAIT_BUSY(SPIx);
+
+    // 调试用：传输"完成"这一刻的状态寄存器，跟进函数时的 0xD0 对比。
+    // 如果这里出现溢出错误位（ROERR之类），说明 DMA 传输过程中 SPI2
+    // 曾经有字节没被及时取走导致溢出，数据从那一刻起就已经错位——
+    // 这能直接解释"传输返回成功、但内容是错的"这种现象。排查完可以
+    // 把这行和上面 0xD0 那行一起删掉。
+    EventRecord2(0xD1, SPIx->sts, 0);
 
     // 传输正常完成时也必须显式关闭两个通道，跟超时分支保持一致——
     // 否则通道会带着 count=0 一直停留在"使能"状态，下一次 transferDMA()

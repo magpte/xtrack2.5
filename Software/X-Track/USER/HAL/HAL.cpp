@@ -79,7 +79,27 @@ void HAL::HAL_Init()
     Encoder_Init();
     Clock_Init();
     Buzz_init();
+
+    // 调试用：调试期间先把蜂鸣器静音，省得每次操作/每次触发事件都响。
+    // 排查完记得把下面这个宏改回 0，或者把这两行删掉恢复正常。
+#define DEBUG_MUTE_BUZZER  1
+#if DEBUG_MUTE_BUZZER
+    Buzz_SetEnable(false);
+#endif
+
+    // 调试用：临时开关，排查"GPS 的 USART2 IDLE 中断是否打断了 SD 卡
+    // 握手"这个假设——Event Recorder 里已经看到 GPS 的第一次 IDLE 中断
+    // 恰好落在 SD_Init() 调用 SD.begin() 到失败返回之间的窗口里。
+    // 这里先把 GPS_Init() 整个跳过，如果这样 SD 卡能稳定识别，就说明
+    // GPS 中断确实是诱因；如果还是不能识别，说明问题在别处，需要继续
+    // 排查 SPI2 DMA 那条线。验证完记得把下面这个宏改回 1，或者整段
+    // 调试代码删掉。
+#define DEBUG_DISABLE_GPS_INIT  1
+#if !DEBUG_DISABLE_GPS_INIT
     GPS_Init();
+#else
+    Serial.println("DEBUG: GPS_Init() skipped for SD isolation test");
+#endif
 #if CONFIG_SENSOR_ENABLE
     if(hasI2CDevice){
         HAL_Sensor_Init();
