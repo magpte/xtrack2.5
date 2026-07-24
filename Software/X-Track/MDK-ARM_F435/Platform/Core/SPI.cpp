@@ -21,10 +21,6 @@
  * SOFTWARE.
  */
 #include "SPI.h"
-// DEBUG: only needed for the EventRecord2(0xD0/0xD1, ...) markers in
-// transferDMA() below. Remove this include along with those markers
-// once the transferDMA() data-corruption bug is found.
-#include "EventRecorder.h"
 
 #define SPI1_CLOCK                     (F_CPU)
 #define SPI2_CLOCK                     (F_CPU)
@@ -504,8 +500,10 @@ bool SPIClass::_initDMA()
     dmamux_init(DMA2MUX_CHANNEL1, DMAMUX_DMAREQ_ID_SPI2_RX);
     dmamux_init(DMA2MUX_CHANNEL2, DMAMUX_DMAREQ_ID_SPI2_TX);
 
-    spi_i2s_dma_receiver_enable(SPIx, TRUE);
-    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+    // 注意：SPIx 自身的 RXDMAEN/TXDMAEN（CTRL2 里请求 DMA 的使能位）
+    // 不在这里设置——transferDMA() 每次调用都会先完整 spi_i2s_reset()
+    // 整个 SPI2 外设再重新置位这两个位，所以这里设了也会被覆盖，
+    // 干脆不重复做。
 
     _dmaReady = true;
     return true;
@@ -518,18 +516,22 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         return true;
     }
 
-    // 调试用：进函数第一时间先把 SPI2 的原始状态寄存器记下来，看看
-    // 有没有上一次操作遗留、一直没清掉的标志位（比如接收溢出
-    // ROERR）——如果第 2、3 次调用一进来这里就已经跟第 1 次不一样，
-    // 说明问题出在"上一次操作收尾没收干净"，而不是这次传输本身。
-    // 排查完可以删掉这行和下面 0xD1 那行。
-    EventRecord2(0xD0, SPIx->sts, 0);
+    // 每次传输前先完整复位整个 SPI2 外设再按缓存的配置重新初始化。
+    // 只重置 DMA 通道（dma_reset(DMA2_CHANNELx)）不够——实测第 2、3
+    // 次复用同一个 DMA 通道时，读回来的数据会是错的/跟上一次调用
+    // 的内容重复，说明真正卡住状态的残留在 SPI2 外设内部（不是 DMA
+    // 控制器），完整 spi_i2s_reset() 才能把这层状态也清干净。
+    // spi_init_struct 是成员变量，一直缓存着 beginTransaction()/
+    // setClock() 等最后一次设置的配置，可以直接复用重新加载。
+    spi_i2s_reset(SPIx);
+    spi_init(SPIx, &spi_init_struct);
+    spi_enable(SPIx, TRUE);
 
-    // 调试用：把这次调用实际请求传输的长度也记下来，跟后面 0xD2
-    // 里 DMA 报告的"剩余计数"对着看——不然单看剩余计数是不是 0，
-    // 没法判断这次请求本来传的是不是就不是 512 字节（比如某次读的
-    // 其实是寄存器而不是整扇区），排查完可以删掉。
-    EventRecord2(0xD3, length, timeoutMs);
+    // spi_i2s_reset() 会把 RXDMAEN/TXDMAEN 这两个 DMA 请求使能位也
+    // 一起清掉，所以每次都要在这里重新置位，不能只在 _initDMA() 里
+    // 设一次。
+    spi_i2s_dma_receiver_enable(SPIx, TRUE);
+    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
 
     if(!_initDMA())
     {
@@ -541,15 +543,9 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
 
-    // 加了这两行：disable + dma_init() 重新配置字段，看起来"应该"
-    // 足够，但 Event Recorder 实测抓到了一个具体反例——同一个通道被
-    // 反复使用时（第 2、3 次 transferDMA() 调用），目标缓冲区里最终
-    // 是上一次调用遗留的旧内容，而不是这一次真正从卡上搬回来的新
-    // 数据（两次请求不同的扇区号，读回的字节却一模一样）。这意味着
-    // 只 disable 通道、改字段、重新 dma_init()，并不能保证把 AT32
-    // 这颗 DMA 控制器内部的传输状态（比如内部影子计数器/地址寄存器）
-    // 彻底清零——显式 dma_reset() 把整个通道打回上电缺省状态，排除
-    // 这种"配置字段虽然改了、但内部状态没跟着复位"的可能性。
+    // 显式 dma_reset() 把两个通道打回上电缺省状态，再用 dma_init()
+    // 整体重新配置，而不是只 disable + 改字段——避免通道内部状态
+    // （影子计数器/地址寄存器）带着上一次传输的痕迹进入这一次。
     dma_reset(DMA2_CHANNEL1);
     dma_reset(DMA2_CHANNEL2);
 
@@ -624,28 +620,9 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
 
     SPI_I2S_WAIT_BUSY(SPIx);
 
-    // 调试用：FDT1（RX 通道传输完成）标志一亮就立刻看两个通道各自的
-    // 剩余计数寄存器——真正数完 length 个字节的话，这里应该都是 0。
-    // 如果不是 0，说明 DMA 提前判定"完成"了，实际根本没搬完整块数据，
-    // 这就能直接解释"返回成功、但缓冲区内容不对/是旧的"这种现象，
-    // 而且能确认问题出在 DMA 通道这一层，不是 SPI 外设或上层协议。
-    // 排查完可以把这行删掉。
-    EventRecord2(0xD2, dma_data_number_get(DMA2_CHANNEL1),
-                 dma_data_number_get(DMA2_CHANNEL2));
-
-    // 调试用：传输"完成"这一刻的状态寄存器，跟进函数时的 0xD0 对比。
-    // 如果这里出现溢出错误位（ROERR之类），说明 DMA 传输过程中 SPI2
-    // 曾经有字节没被及时取走导致溢出，数据从那一刻起就已经错位——
-    // 这能直接解释"传输返回成功、但内容是错的"这种现象。排查完可以
-    // 把这行和上面 0xD0 那行一起删掉。
-    EventRecord2(0xD1, SPIx->sts, 0);
-
-    // 传输正常完成时也必须显式关闭两个通道，跟超时分支保持一致——
-    // 否则通道会带着 count=0 一直停留在"使能"状态，下一次 transferDMA()
-    // 虽然会在重新配置前先关一次没问题，但期间任何穿插的逐字节
-    // transfer()/send()/receive()（SD 命令/响应握手用的就是这个）
-    // 仍然会看到 SPI2 的 DMA 请求使能位是常开的（_initDMA() 里设的），
-    // 让还挂着的通道去抢那些字节，读写结果不可预期。
+    // 成功路径也必须显式关闭两个通道，跟超时分支保持一致——否则通道
+    // 会带着 count=0 一直停留在"使能"状态，直到下一次 transferDMA()
+    // 开头才被动关掉。
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);

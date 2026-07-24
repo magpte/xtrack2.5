@@ -24,10 +24,6 @@
  */
 #include <string.h>
 #include "FatVolume.h"
-// DEBUG: only needed for the EventRecord2(0xC1/0xC2, ...) markers in
-// FatCache::read() below. Remove this include along with those markers
-// once the transferDMA() data-corruption bug is found.
-#include "EventRecorder.h"
 //------------------------------------------------------------------------------
 cache_t* FatCache::read(uint32_t lbn, uint8_t option) {
   if (m_lbn != lbn) {
@@ -36,28 +32,7 @@ cache_t* FatCache::read(uint32_t lbn, uint8_t option) {
       goto fail;
     }
     if (!(option & CACHE_OPTION_NO_READ)) {
-      bool rbOk = m_vol->readBlock(lbn, m_block.data);
-      // DEBUG: dump what readBlock() actually delivered, right here,
-      // regardless of rbOk - remove once the transferDMA() bug is found.
-      // 0xC1: (rbOk, first 4 bytes of the buffer as a little-endian word).
-      //   A real FAT/MBR sector's first bytes are a short jump opcode,
-      //   commonly 0xEB, then a placeholder byte, then 0x90.
-      //   All-zero here means the buffer was never actually written by
-      //   DMA at all (channel silently didn't move any data).
-      //   Anything else that isn't a plausible jump opcode is exactly
-      //   the "garbage data" case.
-      // 0xC2: (boot signature bytes 510-511 as data[510]|(data[511]<<8),
-      //   should read 0xAA55 for ANY valid MBR or FAT boot sector,
-      //   regardless of everything else in the sector).
-      uint32_t firstWord = ((uint32_t)m_block.data[3] << 24) |
-                           ((uint32_t)m_block.data[2] << 16) |
-                           ((uint32_t)m_block.data[1] << 8) |
-                           (uint32_t)m_block.data[0];
-      uint32_t bootSig = (uint32_t)m_block.data[510] |
-                          ((uint32_t)m_block.data[511] << 8);
-      EventRecord2(0xC1, rbOk ? 1 : 0, firstWord);
-      EventRecord2(0xC2, bootSig, lbn);
-      if (!rbOk) {
+      if (!m_vol->readBlock(lbn, m_block.data)) {
         DBG_FAIL_MACRO;
         goto fail;
       }

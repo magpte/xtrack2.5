@@ -1,7 +1,6 @@
 #include "HAL.h"
 #include "App/Version.h"
 #include "MillisTaskManager/MillisTaskManager.h"
-#include "EventRecorder.h"   // 调试用，排查完可移除（连同 HAL_Init() 里那行初始化调用）
 
 static MillisTaskManager taskManager;
 
@@ -56,10 +55,6 @@ static void HAL_TimerInterrputUpdate()
 
 void HAL::HAL_Init()
 {
-    // 调试用：必须在 GPS_Init()/SD_Init() 之前、也就是 HAL_Init() 一进来
-    // 就调用，不然后面那些 EventRecord2() 全都是空调用。排查完可整段删掉。
-    EventRecorderInitialize(EventRecordAll, 1);
-
     Serial.begin(115200);
     Serial.println(VERSION_FIRMWARE_NAME);
     Serial.println("Version: " VERSION_SOFTWARE);
@@ -79,25 +74,7 @@ void HAL::HAL_Init()
     Encoder_Init();
     Clock_Init();
     Buzz_init();
-
-    // 蜂鸣器调试期间的强制静音开关挪到 HAL_Buzz.cpp 里的
-    // DEBUG_HARD_MUTE_BUZZER 了——这里单独调用 Buzz_SetEnable(false)
-    // 会被 DP_SysConfig.cpp 加载 sysConfig.soundEnable 时的调用覆盖掉，
-    // 所以直接在 Buzz_Tone() 入口拦截更可靠。
-
-    // 调试用：临时开关，排查"GPS 的 USART2 IDLE 中断是否打断了 SD 卡
-    // 握手"这个假设——Event Recorder 里已经看到 GPS 的第一次 IDLE 中断
-    // 恰好落在 SD_Init() 调用 SD.begin() 到失败返回之间的窗口里。
-    // 这里先把 GPS_Init() 整个跳过，如果这样 SD 卡能稳定识别，就说明
-    // GPS 中断确实是诱因；如果还是不能识别，说明问题在别处，需要继续
-    // 排查 SPI2 DMA 那条线。验证完记得把下面这个宏改回 1，或者整段
-    // 调试代码删掉。
-#define DEBUG_DISABLE_GPS_INIT  1
-#if !DEBUG_DISABLE_GPS_INIT
     GPS_Init();
-#else
-    Serial.println("DEBUG: GPS_Init() skipped for SD isolation test");
-#endif
 #if CONFIG_SENSOR_ENABLE
     if(hasI2CDevice){
         HAL_Sensor_Init();

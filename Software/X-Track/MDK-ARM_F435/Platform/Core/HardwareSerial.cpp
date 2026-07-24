@@ -21,7 +21,6 @@
  * SOFTWARE.
  */
 #include "HardwareSerial.h"
-#include "EventRecorder.h"   // 调试用，排查完可整段移除（连同下面的 EventRecord2 调用）
 
 typedef struct
 {
@@ -123,13 +122,6 @@ void HardwareSerial::IRQHandler()
         {
             usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
             usart_flag_clear(_USARTx, USART_IDLEF_FLAG);
-
-            // Event Recorder 调试用：每次 IDLE 触发记一条帯时间戳的事件，
-            // 用来跟 SD_Init() 那边的事件对齐时间轴，看 GPS 的 ISR 有没有
-            // 恰好落在 SD 卡握手的窗口里。EventRecord2() 不阻塞、ISR 里
-            // 调用安全，排查完可以整段删掉。
-            static volatile uint32_t s_idleCount = 0;
-            EventRecord2(0xA0, ++s_idleCount, (uint32_t)dma_data_number_get(_rxDmaChannel));
 
             if(_callbackFunction)
             {
@@ -302,10 +294,6 @@ bool HardwareSerial::enableRxDMA(
     dmamux_init(muxChannel, muxRequestId);
 
     usart_dma_receiver_enable(_USARTx, TRUE);
-
-    // Event Recorder 调试用：标记这个串口的 DMA 循环接收从这一刻起
-    // 真正开始跑，排查完可删掉。
-    EventRecord2(0xA1, (uint32_t)(uintptr_t)_USARTx, 0);
 
     // 注意：这里不调用 nvic_irq_enable(dmaIRQn, ...)。当前实现完全靠轮询
     // dma_data_number_get()（见 _syncHeadFromDMA()）来知道收到了多少数据，

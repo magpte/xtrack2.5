@@ -31,18 +31,15 @@
  * it can route SD card bulk reads/writes through it instead of the
  * byte-at-a-time transfer() loop. Must be defined before SdSpiDriver.h
  * is included; SdSpiDriver.h defaults it to 0 if nothing defines it.
- */
-/*
- * Re-enabled (1) to continue digging into transferDMA() itself now that
- * the A/B test confirmed it's the actual cause (SdFileSystem::begin()
- * fails with DMA on, succeeds with it off, everything else identical).
- * Next step: dump the raw bytes readBlock() actually gets back from
- * transferDMA() during the boot-sector read, to see whether it's
- * all-zero (DMA never moved anything), a plausible-looking sector that
- * just fails validation (logic bug, not data corruption), or genuine
- * garbage (data corruption, matching fe7436a's original hardware
- * observation). See the EventRecord2(0xC1/0xC2, ...) markers added in
- * FatVolume.cpp's FatCache::read().
+ *
+ * transferDMA() previously corrupted data on the 2nd+ call in a row
+ * (confirmed via Event Recorder tracing: DMA channel count and SPI2's
+ * status register both looked clean, but the actual bytes read back
+ * were wrong/stale starting from the second call). Root cause turned
+ * out to be residual SPI2 peripheral state that dma_reset() on the DMA
+ * channels alone couldn't clear - transferDMA() now does a full
+ * spi_i2s_reset(SPIx) + reinit at the start of every call, which fixed
+ * it. See SPI.cpp for details.
  */
 #define SD_SPI_HAS_DMA_TRANSFER 1
 

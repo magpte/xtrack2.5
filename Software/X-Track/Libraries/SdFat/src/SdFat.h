@@ -35,9 +35,6 @@
 #if INCLUDE_SDIOS
 #include "sdios.h"
 #endif  // INCLUDE_SDIOS
-// DEBUG: only needed for the two Event Recorder markers in begin() below.
-// Remove this include along with that instrumentation when done.
-#include "EventRecorder.h"
 //------------------------------------------------------------------------------
 /** SdFat version 1.1.2 */
 #define SD_FAT_VERSION 10102
@@ -332,28 +329,8 @@ class SdFat : public SdFileSystem<SdSpiCard> {
    * \return true for success else false.
    */
   bool begin(uint8_t csPin = SS, SPISettings spiSettings = SPI_FULL_SPEED) {
-    // DEBUG: split SD.begin() into two Event Recorder markers so we can
-    // see which half actually fails, instead of guessing. Revert to
-    // `return m_card.begin(...) && SdFileSystem::begin();` when done.
-    //
-    // 0xB1 = m_card.begin() result: CMD0/CMD8/ACMD41/CMD58 handshake,
-    //        never touches transferDMA().
-    // 0xB2 = SdFileSystem::begin() result: mounts the FAT volume, which
-    //        means the first genuine bulk (DMA) block read (boot
-    //        sector, CID/CSD, etc).
-    //
-    // cardErrorCode()==0 at the point SD.begin() fails means the
-    // handshake itself did NOT report an error, so the real failure is
-    // most likely in SdFileSystem::begin() - these two markers confirm
-    // that directly instead of inferring it.
-    bool cardOk = m_card.begin(&m_spi, csPin, spiSettings);
-    EventRecord2(0xB1, cardOk ? 1 : 0, m_card.errorCode());
-    if (!cardOk) {
-      return false;
-    }
-    bool fsOk = SdFileSystem::begin();
-    EventRecord2(0xB2, fsOk ? 1 : 0, 0);
-    return fsOk;
+    return m_card.begin(&m_spi, csPin, spiSettings) &&
+           SdFileSystem::begin();
   }
   /** Initialize SD card for diagnostic use only.
    *

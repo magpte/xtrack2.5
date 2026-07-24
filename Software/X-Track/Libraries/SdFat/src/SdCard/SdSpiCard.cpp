@@ -23,10 +23,6 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include "SdSpiCard.h"
-// DEBUG: only needed for the EventRecord2(0xE0, ...) marker in
-// readData() below. Remove this include along with that marker once
-// the transferDMA() data-corruption bug is found.
-#include "EventRecorder.h"
 //==============================================================================
 // debug trace macro
 #define SD_TRACE(m, b)
@@ -497,22 +493,13 @@ bool SdSpiCard::readData(uint8_t* dst, size_t count) {
   DBG_BEGIN_TIME(DBG_WAIT_READ);
   // wait for start block token
   uint16_t t0 = curTimeMS();
-  // 调试用：数一下等起始令牌轮询了几圈，排查完可以把这个变量和下面
-  // 那行 EventRecord2(0xE0, ...) 一起删掉。
-  uint32_t pollCount = 0;
   while ((m_status = spiReceive()) == 0XFF) {
-    pollCount++;
     if (isTimedOut(t0, SD_READ_TIMEOUT)) {
       error(SD_CARD_ERROR_READ_TIMEOUT);
       goto fail;
     }
   }
   DBG_END_TIME(DBG_WAIT_READ);
-  // 调试用：轮询次数 + 实际收到的令牌字节（正常应该是 DATA_START_BLOCK
-  // = 0xFE）。跟第 1 次调用对比，看第 2、3 次是不是在这一步就已经不
-  // 一样了——如果这里三次都完全一致，说明问题确实出在更底层，指令
-  // 层面已经排查不出来了。
-  EventRecord2(0xE0, pollCount, m_status);
   if (m_status != DATA_START_BLOCK) {
     error(SD_CARD_ERROR_READ);
     goto fail;
