@@ -501,16 +501,9 @@ bool SPIClass::_initDMA()
     dmamux_init(DMA2MUX_CHANNEL2, DMAMUX_DMAREQ_ID_SPI2_TX);
 
     // 注意：SPIx 自身的 RXDMAEN/TXDMAEN（CTRL2 里请求 DMA 的使能位）
-    // 不在这里设置——SdFat 每次访问 SD 卡都会走
-    // activate() -> beginTransaction() -> begin() -> spi_i2s_reset(SPIx)，
-    // 也就是每次读写都会把整个 SPI2 外设复位一次，CTRL2 里的这两个
-    // DMA 请求使能位会被一起清掉。这里的 _initDMA() 只跑一次（被
-    // _dmaReady 挡住），如果把这两行放在这儿，第一次传输之后 SPI 就
-    // 再也不会真正发起 DMA 请求了：DMA 通道会被正常使能、一直等，但
-    // 硬件永远不触发，直到 transferDMA() 超时退回逐字节方式——每次
-    // SD 读写都要先空等一次超时时间才退化成慢速路径，这就是
-    // "一读写 SD 就卡住/识别不到卡" 的真正原因。真正需要每次传输前
-    // 都重新置位的部分放到了 transferDMA() 开头。
+    // 不在这里设置——transferDMA() 每次调用都会先完整 spi_i2s_reset()
+    // 整个 SPI2 外设再重新置位这两个位，所以这里设了也会被覆盖，
+    // 干脆不重复做。
 
     _dmaReady = true;
     return true;
@@ -523,26 +516,38 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         return true;
     }
 
+    // 每次传输前先完整复位整个 SPI2 外设再按缓存的配置重新初始化。
+    // 只重置 DMA 通道（dma_reset(DMA2_CHANNELx)）不够——实测第 2、3
+    // 次复用同一个 DMA 通道时，读回来的数据会是错的/跟上一次调用
+    // 的内容重复，说明真正卡住状态的残留在 SPI2 外设内部（不是 DMA
+    // 控制器），完整 spi_i2s_reset() 才能把这层状态也清干净。
+    // spi_init_struct 是成员变量，一直缓存着 beginTransaction()/
+    // setClock() 等最后一次设置的配置，可以直接复用重新加载。
+    spi_i2s_reset(SPIx);
+    spi_init(SPIx, &spi_init_struct);
+    spi_enable(SPIx, TRUE);
+
+    // spi_i2s_reset() 会把 RXDMAEN/TXDMAEN 这两个 DMA 请求使能位也
+    // 一起清掉，所以每次都要在这里重新置位，不能只在 _initDMA() 里
+    // 设一次。
+    spi_i2s_dma_receiver_enable(SPIx, TRUE);
+    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+
     if(!_initDMA())
     {
         return false;
     }
 
-    // 先把上一次传输遗留的通道彻底关掉、标志清干净，再去碰 SPI 的
-    // DMA 请求使能位——如果颠倒顺序（先置位使能，再关通道），前一次
-    // 传输结束后仍处于"使能"状态、计数已清零的旧通道，可能会在这个
-    // 时间窗口内被新置位的请求信号触发一次无意义/未定义行为的传输，
-    // 这也是 2026-07 现场排查怀疑的一个诱因：上一版只在超时分支里关
-    // 通道，成功分支完全没关过，导致通道长期处于"用完了但没关"的状态。
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
 
-    // 每次传输都要重新置位，原因见 _initDMA() 里的注释：
-    // beginTransaction() 每次都会 spi_i2s_reset(SPIx)，把这两个位清掉。
-    spi_i2s_dma_receiver_enable(SPIx, TRUE);
-    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+    // 显式 dma_reset() 把两个通道打回上电缺省状态，再用 dma_init()
+    // 整体重新配置，而不是只 disable + 改字段——避免通道内部状态
+    // （影子计数器/地址寄存器）带着上一次传输的痕迹进入这一次。
+    dma_reset(DMA2_CHANNEL1);
+    dma_reset(DMA2_CHANNEL2);
 
     // 通过 dma_init() 整体重新配置两个通道，而不是直接改写寄存器
     // 位域：仓库里目前没有 at32f435_437_dma.h 的完整拷贝可供核对具体
@@ -615,13 +620,11 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
 
     SPI_I2S_WAIT_BUSY(SPIx);
 
-    // 成功路径之前一直没关通道，只有超时分支才关——导致每次成功传输
-    // 之后，通道都停在"使能但计数已清零"的状态，一直留到下一次
-    // transferDMA() 开头才被动关掉。两个分支都应该在函数返回前把
-    // 通道收干净，行为对称，也避免给下一次调用留下不确定的起点。
+    // 成功路径也必须显式关闭两个通道，跟超时分支保持一致——否则通道
+    // 会带着 count=0 一直停留在"使能"状态，直到下一次 transferDMA()
+    // 开头才被动关掉。
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
-
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
 

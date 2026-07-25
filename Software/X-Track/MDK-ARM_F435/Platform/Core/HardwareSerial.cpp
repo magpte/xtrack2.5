@@ -295,10 +295,14 @@ bool HardwareSerial::enableRxDMA(
 
     usart_dma_receiver_enable(_USARTx, TRUE);
 
-    nvic_irq_enable(dmaIRQn, preemptionPriority, subPriority);
-    (void)dmaIRQn; // 当前不注册该通道自身的传输/错误中断处理函数，
-                    // 数据完全由 available()/read() 按需从计数寄存器拉取；
-                    // 预留参数是为了未来若要加半传输/错误中断时不必再改签名。
+    // 注意：这里不调用 nvic_irq_enable(dmaIRQn, ...)。当前实现完全靠轮询
+    // dma_data_number_get()（见 _syncHeadFromDMA()）来知道收到了多少数据，
+    // 没有对这条 DMA 通道调用 dma_interrupt_enable() 去武装任何传输完成/
+    // 半传输/出错中断源，也没有实现对应的 DMA1_Channel4_IRQHandler()。
+    // 之前的版本在没有实际中断源、也没有 ISR 的情况下把这个向量在 NVIC
+    // 里使能了，属于占着位置不干活的隐患；真要加半传输/错误中断，
+    // 到时候再把 nvic_irq_enable() 和对应的 IRQHandler 一起加回来。
+    (void)dmaIRQn; (void)preemptionPriority; (void)subPriority;
 
     usart_interrupt_enable(_USARTx, USART_IDLE_INT, TRUE);
 

@@ -51,6 +51,12 @@ bool HAL::SD_Init()
     }
 
     Serial.print("SD: init...");
+    // 30MHz -> 15MHz：DMA 批量传输把原来逐字节软件轮询之间的间隙去掉了，
+    // 相当于同样的分频比下总线上真实跑出来的是背靠背的连续时钟，
+    // 之前"能用"可能部分吃的是那些间隙给走线/电平转换的余量。
+    // 目前没法接示波器确认信号完整性，先降速换稳定性；确认长时间读写
+    // 稳定之后如果需要更高吞吐，可以再逐步往上调（例如 20/25/30MHz）
+    // 并做长时间读写测试验证。
     retval = SD.begin(CONFIG_SD_CS_PIN, SD_SCK_MHZ(30));
 
     if(retval)
@@ -66,7 +72,8 @@ bool HAL::SD_Init()
     }
     else
     {
-        Serial.printf("failed: 0x%x\r\n", SD.cardErrorCode());
+        uint32_t err = SD.cardErrorCode();
+        Serial.printf("failed: 0x%x\r\n", err);
     }
 
     SD_IsReady = retval;
@@ -127,7 +134,14 @@ static void SD_Check(bool isInsert)
             SD_EventCallback(true);
         }
 
-        HAL::Audio_PlayMusic(ret ? "DeviceInsert" : "Error");
+        if(ret)
+        {
+            HAL::Audio_PlayMusic("DeviceInsert");
+        }
+        else
+        {
+            HAL::Audio_PlayMusic("Error");
+        }
     }
     else
     {
@@ -170,4 +184,3 @@ bool HAL::SD_WriteCrashLog(const char* data)
     }  
     return false;  
 }
-
