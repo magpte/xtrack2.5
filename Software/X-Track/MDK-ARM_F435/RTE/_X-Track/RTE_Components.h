@@ -44,9 +44,6 @@
 #define RTE_DEVICE_STDPERIPHERALS_USART
 /* ArteryTek::Device:at32f435_437_firmware_library:wdt:2.0.0 */
 #define RTE_DEVICE_STDPERIPHERALS_WDT
-/* Keil.ARM Compiler::Compiler:Event Recorder:DAP:1.4.0 */
-#define RTE_Compiler_EventRecorder
-          #define RTE_Compiler_EventRecorder_DAP
 
 
 #endif /* RTE_COMPONENTS_H */
