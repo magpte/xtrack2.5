@@ -80,6 +80,14 @@
 // 区域会没有卫星点可画，但不会报错/崩溃。
 #define CONFIG_GPS_SKY_ENABLE        1
 
+// 把 GPS 模块吐出来的原始 NMEA 语句（未经 TinyGPS++ 解析、字节原样）
+// 落盘到 SD 卡 CONFIG_NMEA_LOG_FILE_DIR_NAME 目录下，文件名按本次开机
+// 时刻命名，一次开机一个文件，供之后拖进 u-center 回放/分析用。
+// 具体收录哪些语句、按什么频率收录，见 HAL_GPS.cpp 里 NMEA_Log_Feed()
+// 和 GPS_Init() 里 PCAS03 那条指令的注释。关掉这个开关的话完全不建
+// 文件、不写 SD，跟这个功能之前不存在时行为一致。
+#define CONFIG_GPS_NMEA_LOG_ENABLE   1
+
 #define CONFIG_GPS_TX_PIN           PA3
 #define CONFIG_GPS_RX_PIN           PA2
 

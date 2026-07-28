@@ -48,6 +48,14 @@ static void loop()
 {
     HAL::HAL_Update();
     lv_task_handler();
+
+    // 主循环这一圈（HAL_Update() + lv_task_handler()）都跑完了，标记
+    // 心跳——喂狗的定时器中断（HAL.cpp 的 HAL_TimerInterrputUpdate()）
+    // 会检查这个心跳有没有在看门狗超时时间内更新过，主循环真死锁/死
+    // 循环卡在这两个调用之一里出不来的话，心跳就会停摆，看门狗最终
+    // 会把系统硬复位，而不是被定时器中断无条件喂饱。
+    HAL::WatchDog_Feed();
+
     __wfi();
 }
 

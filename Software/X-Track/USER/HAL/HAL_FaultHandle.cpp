@@ -54,6 +54,16 @@ extern "C"
     {  
     HAL::Display_DumpCrashInfo("FXXK HardFault!");  
       
+    // 下面这两个等按键的循环理论上会一直等下去，但实际上不会真的无限等待——
+    // HardFault_Handler 在 ARM Cortex-M 上的中断优先级固定是最高的，
+    // 不受 NVIC 里配置的优先级影响，比 HAL.cpp 里喂狗用的
+    // TIM4 定时器中断优先级更高。所以卡在这两个循环里的时候，
+    // TIM4 中断根本没法抢占执行，喂狗跟着停摆，
+    // IWDG 会在 CONFIG_WATCH_DOG_TIMEOUT（见 HAL_Config.h，目前 10 秒）
+    // 之后自然超时硬复位——也就是说没人按键的话，
+    // 最多 10 秒左右也会自动重启，不是真的卡死不动。
+    // 等按键这个设计本身是为了让人有机会先看到崩溃信息再重启，
+    // 不是想让设备真的死等。
     // 等待用户按键后再重启  
     while(digitalRead(CONFIG_ENCODER_PUSH_PIN) == HIGH)  
     {  

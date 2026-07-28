@@ -220,7 +220,12 @@ void Dialplate::SetBtnRecImgSrc(const char* srcName)
 }
 
 #define BRIGHTNESS_STEP  50
-#define BRIGHTNESS_MIN   0
+// 亮度内部用 0~1000 表示 0~100%（跟 HAL_Backlight.cpp 里 1000 级 PWM
+// 对应），下限故意不设成 0——0% 会把背光真的调到全黑，用编码器往回调
+// 亮度的时候容易一下子调到看不见屏幕、找不到东西再调回来。10 对应
+// display 上的 "1%"（10 * 100 / 1000 = 1），留一点点背光，屏幕内容
+// 还看得见，不会调"没"了。
+#define BRIGHTNESS_MIN   10
 #define BRIGHTNESS_MAX   1000
 
 void Dialplate::BrightnessAdjust_Enter()

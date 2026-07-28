@@ -1,6 +1,12 @@
 #include "HAL.h"
 #include "TinyGPSPlus/src/TinyGPS++.h"
 
+// atoi/memcmp/memset 等，Sky_ParseLine() 和 NMEA_Log_ShouldKeep() 都要用，
+// 放在最外层，不依赖 CONFIG_GPS_SKY_ENABLE / CONFIG_GPS_NMEA_LOG_ENABLE
+// 里的哪一个打开。
+#include <stdlib.h>
+#include <string.h>
+
 #define GPS_SERIAL             CONFIG_GPS_SERIAL
 #define DEBUG_SERIAL           CONFIG_DEBUG_SERIAL
 #define GPS_USE_TRANSPARENT    CONFIG_GPS_USE_TRANSPARENT
@@ -30,9 +36,6 @@ static TinyGPSPlus gps;
 // 整体切换成"当前快照"，没集齐之前 UI 侧看到的还是上一轮的数据，不会
 // 看到只有一部分星座、图一半新一半旧的中间状态。
 // ---------------------------------------------------------------------
-
-#include <stdlib.h>
-#include <string.h>
 
 #define SKY_LINE_MAX     96
 static char    s_skyLineBuf[SKY_LINE_MAX];
@@ -150,6 +153,78 @@ static void Sky_Feed(char c)
 }
 #endif
 
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+// ---------------------------------------------------------------------
+// 原始 NMEA 语句落盘，供后续拖进 u-center 回放/分析。跟上面 Sky_Feed
+// 一样按行缓冲，但这里要把语句原始字节（含校验和、\r\n）原封不动交
+// 给 HAL::NMEA_Log_Write()，所以不能复用 s_skyLineBuf——Sky_ParseLine()
+// 会就地把逗号替换成 '\0'，是破坏性解析，两边必须各自留一份。
+//
+// 落盘目标（对应 PCAS03 配置，见 GPS_Init()）：
+//   GGA / RMC：模块仍以 2Hz 发送（LiveMap 需要这个刷新率），这里按
+//              "逢一条丢一条"做 2:1 抽取，落盘时凑够 1Hz，不影响
+//              TinyGPS++ / LiveMap 拿到的仍然是完整 2Hz 数据流。
+//   GSA：      模块原生按 1Hz 发送（PCAS03 里新打开的），直接收录。
+//   GSV：      模块原生按 0.5Hz 发送（PCAS03 里从 5 秒一次改成 2 秒
+//              一次），直接收录。
+//   其余语句（GLL/VTG/ZDA/...）：PCAS03 已经在源头关掉了，这里的
+//              类型过滤只是双重保险。
+// ---------------------------------------------------------------------
+#define NMEA_LOG_LINE_MAX   128
+static char    s_nmeaLogLineBuf[NMEA_LOG_LINE_MAX];
+static uint8_t s_nmeaLogLineLen = 0;
+
+// 决定这一条语句要不要写进日志文件。GSA/GSV 模块本身已经是目标频率，
+// 来一条收一条；GGA/RMC 模块仍是 2 倍频率，这里做 2:1 抽取。
+static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
+{
+    if (len < 6 || line[0] != '$') return false;
+
+    const char* type = &line[3];
+
+    if (memcmp(type, "GSA", 3) == 0) return true;
+    if (memcmp(type, "GSV", 3) == 0) return true;
+
+    if (memcmp(type, "GGA", 3) == 0)
+    {
+        static bool keep = false;
+        keep = !keep;
+        return keep;
+    }
+    if (memcmp(type, "RMC", 3) == 0)
+    {
+        static bool keep = false;
+        keep = !keep;
+        return keep;
+    }
+
+    return false; // 其余语句类型不落盘
+}
+
+static void NMEA_Log_Feed(char c)
+{
+    if (s_nmeaLogLineLen < NMEA_LOG_LINE_MAX - 1)
+    {
+        s_nmeaLogLineBuf[s_nmeaLogLineLen++] = c;
+    }
+
+    if (c == '\n')
+    {
+        if (NMEA_Log_ShouldKeep(s_nmeaLogLineBuf, s_nmeaLogLineLen))
+        {
+            HAL::NMEA_Log_Write(s_nmeaLogLineBuf, s_nmeaLogLineLen);
+        }
+        s_nmeaLogLineLen = 0;
+    }
+    else if (s_nmeaLogLineLen >= NMEA_LOG_LINE_MAX - 1)
+    {
+        // 单行异常超长（正常 NMEA 语句不会到 128 字节），丢弃重新
+        // 同步到下一个换行符，避免把半条坏数据当正常语句写进日志。
+        s_nmeaLogLineLen = 0;
+    }
+}
+#endif
+
 void HAL::GPS_Init()
 {
     GPS_SERIAL.begin(9600);
@@ -187,22 +262,29 @@ void HAL::GPS_Init()
 
     // 三星座联合定位打开后，模块吐出的数据量在 9600 波特率下已经跑到
     // 理论带宽的 83% 左右（实测 784 字节/秒 vs 960 字节/秒理论上限），
-    // 余量很紧。但 TinyGPS++（当前用的解析库）从始至终只解析 GGA 和
-    // RMC 这两种语句，GSA/GSV/GLL/VTG/ZDA 全部被 gps.encode() 当无关
-    // 语句丢弃——也就是说这些字节纯粹是浪费带宽，从没被真正用上过。
-    // 用 PCAS03 只保留 GGA+RMC（GGA 本身就带卫星总数/HDOP，RMC 带速度/
-    // 航向/日期时间，GPS_Info_t 需要的字段两者全覆盖），实测能把数据量
-    // 压到 146 字节/秒，只占理论带宽的 15%，比调高波特率风险小得多
-    // （不用改 UART 驱动、不用担心缓冲区够不够），也不影响三星座定位
-    // 本身——GGA 里的卫星数字段照样是三个星座加起来的总数。
+    // 余量很紧。TinyGPS++（当前用的解析库）从始至终只解析 GGA 和 RMC
+    // 这两种语句，但现在多了两个新用途会用到别的语句类型：
+    //   1) 天球图（SystemInfos 页面）要 GSV，见 Sky_ParseLine()；
+    //   2) 原始 NMEA 落盘要 GSA/GSV，供之后拖进 u-center 回放，见
+    //      NMEA_Log_Feed()（GGA/RMC 落盘时另有 2:1 抽取，不需要模块
+    //      在源头改频率，见那边的注释）。
+    // 所以没法再像纯 GGA+RMC 那样把 GSA/GLL/VTG/ZDA 全部关掉，但仍然
+    // 按"只留真正用得上的语句类型"的原则控制数据量。
     // 格式：$PCAS03,nGGA,nGLL,nGSA,nGSV,nRMC,nVTG,nZDA,nANT,...*校验和
     // 每个字段 0=关闭，1=每个周期都输出，N=每 N 个周期输出一次。
-    // GSV（nGSV）为了天球图重新打开，但设成"每 10 个周期一次"——现在是
-    // 2Hz，10 个周期正好是 5 秒，跟 SystemInfos 天球图本来就是 5 秒刷新
-    // 一次对上，没必要跟着 2Hz 一起收 GSV（卫星在天上移动很慢，5 秒一次
-    // 完全够用）。GSA/GLL/VTG/ZDA 继续保持关闭，没有别的地方用得上。
-    // 校验和 0x33 已经手动核对过。
-    GPS_SERIAL.print("$PCAS03,1,0,0,10,1,0,0,0,0,0,,,0,0*33\r\n");
+    // 当前模块定位频率是 2Hz（下面 PCAS02,500 那条）：
+    //   nGGA=1, nRMC=1  ：不变，仍然每周期都发（2Hz）——LiveMap 需要
+    //                     这个刷新率，见 CONFIG_GPS_REFR_PERIOD 的注释。
+    //   nGSA=2          ：新打开，每 2 个周期一次，等效 1Hz，只给
+    //                     NMEA 落盘用，TinyGPS++ 不解析 GSA。
+    //   nGSV=4          ：从原来的 10（0.2Hz/5 秒一次）改成 4，等效
+    //                     0.5Hz/2 秒一次——天球图本来 5 秒刷新一次，
+    //                     现在数据更新更勤不会有副作用；NMEA 落盘要
+    //                     的正好也是 0.5Hz。
+    //   GLL/VTG/ZDA 继续保持关闭，没有别的地方用得上。
+    // 校验和 0x04 已经手动核对过（"PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0"
+    // 各字符异或结果）。
+    GPS_SERIAL.print("$PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0*04\r\n");
 
     // 把模块本身的定位频率从默认 1Hz 提到 2Hz。只改这一条，不改
     // CONFIG_GPS_REFR_PERIOD 的话，app 这边还是按 1 秒才去问一次，等于
@@ -239,6 +321,11 @@ void HAL::GPS_Update()
 #if CONFIG_GPS_SKY_ENABLE
         Sky_Feed(c);
 #endif
+
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+        NMEA_Log_Feed(c);
+#endif
+
         gps.encode(c);
     }
 

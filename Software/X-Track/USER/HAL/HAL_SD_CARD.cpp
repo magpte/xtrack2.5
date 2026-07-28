@@ -1,6 +1,7 @@
 #include "HAL.h"
 #include "Config/Config.h"
 #include "SdFat.h"
+#include <string.h>
 
 static SdFat SD(&CONFIG_SD_SPI);
 
@@ -39,6 +40,141 @@ static bool SD_CheckDir(const char* path)
     return retval;
 }
 
+// ---------------------------------------------------------------------
+// 原始 NMEA 语句落盘（供 u-center 回放）。跟 DP_Recorder.cpp 里 GPX
+// 轨迹文件的思路基本一致（写缓冲攒批 + 按时间 sync，原因见那边的
+// 注释），但这里故意没有走 lv_fs（App 层给 UI/DataProc 用的文件系统
+// 抽象），而是直接用本文件已经持有的 SdFat 对象——原始 NMEA 落盘是
+// GPS_Update() 每次收到一个字节就可能触发的高频操作，放在 HAL 层
+// 离数据源更近，不用跨层传一份数据再打包成 App 层的账户/消息。
+//
+// 文件懒加载：不在 SD_Init() 里主动开文件，而是等第一条要落盘的
+// NMEA 语句真正到达（HAL::NMEA_Log_Write() 第一次被调用）时才开，
+// 避免 GPS 还没吐出任何数据、或者这次开机 GPS 模块干脆没接好的情况下
+// 平白在 SD 卡上留一个空文件。
+// ---------------------------------------------------------------------
+#define NMEA_LOG_FILE_NAME_FMT      "/" CONFIG_NMEA_LOG_FILE_DIR_NAME "/NMEA_%04d%02d%02d_%02d%02d%02d.log"
+// 跟 DP_Recorder.cpp 的 RECORDER_WRITE_BUF_SIZE（1024）看齐，不是凑巧
+// 选一样的数字——SdFat（FatVolume::m_cache）整张卡只有一个 512 字节的
+// 扇区缓存，NMEA 日志和 GPX 轨迹这两个文件共用它。缓冲区越小，我们
+// 触发 SdFat 底层 write() 的次数就越多，两个文件的 write() 在时间上
+// 撞在一起的概率也越高——每撞一次，共享缓存就要多付一次"写回旧扇区+
+// 读入新扇区"的额外 SD 物理 I/O。调大到跟 GPX 一致，两边触发底层
+// write() 的频率更接近、次数也更少，降低撞车概率。注意这是应用层
+// 缓冲区，跟 SdFat 内部那个写死 512 字节（SD 卡物理扇区大小）的
+// FatCache 是两回事，后者没法调大。
+#define NMEA_LOG_WRITE_BUF_SIZE     1024
+#define NMEA_LOG_SYNC_INTERVAL_MS   5000
+
+static File     s_nmeaLogFile;
+static bool     s_nmeaLogFileOpen = false;
+static bool     s_nmeaLogOpenFailed = false; // 开过一次失败就不再重试，避免每条语句都去戳一次坏掉的 SD 卡
+static char     s_nmeaLogWriteBuf[NMEA_LOG_WRITE_BUF_SIZE];
+static uint32_t s_nmeaLogWriteBufLen = 0;
+static uint32_t s_nmeaLogLastSyncTick = 0;
+
+static void NMEA_Log_FlushBuffer()
+{
+    if(s_nmeaLogWriteBufLen == 0)
+    {
+        return;
+    }
+
+    s_nmeaLogFile.write((const uint8_t*)s_nmeaLogWriteBuf, s_nmeaLogWriteBufLen);
+    s_nmeaLogWriteBufLen = 0;
+}
+
+static bool NMEA_Log_Open()
+{
+    HAL::Clock_Info_t clock;
+    HAL::Clock_GetInfo(&clock);
+
+    char path[64];
+    snprintf(
+        path, sizeof(path),
+        NMEA_LOG_FILE_NAME_FMT,
+        clock.year, clock.month, clock.day,
+        clock.hour, clock.minute, clock.second
+    );
+
+    s_nmeaLogFile = SD.open(path, FILE_WRITE);
+    if(!s_nmeaLogFile)
+    {
+        Serial.printf("NMEA: log file \"%s\" open failed\r\n", path);
+        return false;
+    }
+
+    Serial.printf("NMEA: logging to \"%s\"\r\n", path);
+    s_nmeaLogWriteBufLen = 0;
+    s_nmeaLogLastSyncTick = millis();
+    return true;
+}
+
+void HAL::NMEA_Log_Write(const char* line, uint32_t len)
+{
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+    if(!SD_IsReady || s_nmeaLogOpenFailed || len == 0)
+    {
+        return;
+    }
+
+    if(!s_nmeaLogFileOpen)
+    {
+        // 目录理论上已经在 SD_Init() 里建好了，这里再兜底检查一次——
+        // 万一用户在设备开机之后才插卡（走的是 SD_Check() 那条路径），
+        // 目录创建同样会在 SD_Init() 里重新做一遍，这行更多是防御性的。
+        SD_CheckDir(CONFIG_NMEA_LOG_FILE_DIR_NAME);
+
+        if(!NMEA_Log_Open())
+        {
+            s_nmeaLogOpenFailed = true;
+            return;
+        }
+        s_nmeaLogFileOpen = true;
+    }
+
+    // 单条 NMEA 语句最长也就 82 字节（NMEA 0183 规范上限），远小于
+    // 缓冲区容量，这里不像 Recorder 那样需要处理"单次写入内容本身就
+    // 超过缓冲区"的分支，但保留判断以防万一（比如未来改成整段转发）。
+    if(len >= NMEA_LOG_WRITE_BUF_SIZE)
+    {
+        NMEA_Log_FlushBuffer();
+        s_nmeaLogFile.write((const uint8_t*)line, len);
+    }
+    else
+    {
+        if(s_nmeaLogWriteBufLen + len > NMEA_LOG_WRITE_BUF_SIZE)
+        {
+            NMEA_Log_FlushBuffer();
+        }
+        memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
+        s_nmeaLogWriteBufLen += len;
+    }
+
+    uint32_t now = millis();
+    if(now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
+    {
+        NMEA_Log_FlushBuffer();
+        s_nmeaLogFile.sync();
+        s_nmeaLogLastSyncTick = now;
+    }
+#endif
+}
+
+void HAL::NMEA_Log_Close()
+{
+    if(!s_nmeaLogFileOpen)
+    {
+        return;
+    }
+
+    NMEA_Log_FlushBuffer();
+    s_nmeaLogFile.sync();
+    s_nmeaLogFile.close();
+    s_nmeaLogFileOpen = false;
+    s_nmeaLogOpenFailed = false; // 下次开机/下次插卡应该重新尝试
+}
+
 bool HAL::SD_Init()
 {
     bool retval = true;
@@ -64,6 +200,9 @@ bool HAL::SD_Init()
         SD_CardSize = SD.card()->cardSize();
         SdFile::dateTimeCallback(SD_GetDateTime);
         SD_CheckDir(CONFIG_TRACK_RECORD_FILE_DIR_NAME);
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+        SD_CheckDir(CONFIG_NMEA_LOG_FILE_DIR_NAME);
+#endif
         Serial.printf(
             "success, Type: %s, Size: %0.2f GB\r\n",
             SD_GetTypeName(),
@@ -145,6 +284,12 @@ static void SD_Check(bool isInsert)
     }
     else
     {
+        // 卡被拔出之前先把 NMEA 日志缓冲区落盘、关文件——如果等
+        // SD_IsReady 已经置 false 之后再关，HAL::NMEA_Log_Write() 会
+        // 因为看到 SD_IsReady==false 而直接跳过，缓冲区里剩的那点数据
+        // 就再也没机会写进去了，所以顺序上必须放在这一行前面。
+        HAL::NMEA_Log_Close();
+
         SD_IsReady = false;
 
         if(SD_EventCallback)

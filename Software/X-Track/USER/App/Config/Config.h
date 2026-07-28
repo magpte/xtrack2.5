@@ -59,6 +59,12 @@
 #define CONFIG_TRACK_FILTER_OFFSET_THRESHOLD  2 // pixel
 #define CONFIG_TRACK_RECORD_FILE_DIR_NAME     "Track"
 
+// 原始 NMEA 语句日志目录，用来给 u-center 回放/分析用。文件名按开机
+// 时刻命名（见 HAL_SD_CARD.cpp 的 NMEA_Log_Open()），跟 Track 目录下
+// 按"开始录制轨迹"这个用户动作命名的 GPX 文件是两回事——NMEA 日志是
+// 只要 SD 卡在、GPS 在跑就记录，不需要用户手动开始/停止。
+#define CONFIG_NMEA_LOG_FILE_DIR_NAME         "NMEA"
+
 #define CONFIG_MAP_USE_WGS84_DEFAULT          false
 #define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPRB"
 

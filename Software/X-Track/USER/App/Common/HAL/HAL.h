@@ -53,6 +53,13 @@ void Display_SetSendFinishCallback(Display_CallbackFunc_t func);
 void FaultHandle_Init();
 bool SD_WriteCrashLog(const char* data); 
 
+// 主循环"心跳"——见 main.cpp 的 loop()，每跑完一圈（HAL_Update() +
+// lv_task_handler() 都执行完）就调用一次。HAL.cpp 里喂狗的定时器中断
+// 会检查这个心跳最近有没有更新，只有心跳没有停摆太久才真正喂狗——
+// 这样主循环真死循环/死锁的时候，看门狗还是能抓到并硬复位，不会被
+// 定时器中断无条件喂饱。详细原因见 HAL.cpp 里的注释。
+void WatchDog_Feed();
+
 /* I2C */
 int I2C_Scan();
 
@@ -72,6 +79,18 @@ float SD_GetCardSizeMB();
 const char* SD_GetTypeName();
 typedef void(*SD_CallbackFunction_t)(bool insert);
 void SD_SetEventCallback(SD_CallbackFunction_t callback);
+
+// 原始 NMEA 语句落盘（供 u-center 回放用），实现见 HAL_SD_CARD.cpp。
+// line 不需要以 '\0' 结尾，按 len 写入即可（调用方传的是 GPS_Update()
+// 里按 '\n' 分好行的原始字节，末尾自带 \r\n）。文件懒加载：第一次调用
+// 且 SD 卡就绪时才会真正建目录、开文件；不会阻塞在 GPS_Init() 阶段。
+void NMEA_Log_Write(const char* line, uint32_t len);
+
+// 把当前还没落盘的缓冲区内容写文件并 sync()，然后关闭文件——SD 卡被
+// 拔出、或者设备准备关机（见 HAL_Power.cpp 的 Power_EventMonitor()）时
+// 调用，避免最后一小段数据留在内存缓冲区里没写进去。SD 卡没打开日志
+// 文件时调用这个函数是安全的空操作。
+void NMEA_Log_Close();
 
 /* Power */
 void Power_Init();

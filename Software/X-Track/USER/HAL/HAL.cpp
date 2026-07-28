@@ -4,6 +4,12 @@
 
 static MillisTaskManager taskManager;
 
+#if CONFIG_WATCH_DOG_ENABLE
+// 主循环心跳，见 main.cpp 的 loop() 末尾对 HAL::WatchDog_Feed() 的调用，
+// 以及下面 HAL_TimerInterrputUpdate() 里怎么用它门控喂狗。
+static volatile uint32_t s_mainLoopAliveTick = 0;
+#endif
+
 static bool HAL_I2C_Init()
 {
     if(HAL::I2C_Scan() <= 0)
@@ -45,11 +51,23 @@ static void HAL_TimerInterrputUpdate()
     // 并不是真的死循环，最终还是会执行完。
     // 挪到这里之后，喂狗完全独立于主循环是否卡顿，只要这颗硬件定时器
     // 中断本身还在正常触发（这是芯片级别的，不受协作式调度影响），狗
-    // 就一直能被喂到。代价是看门狗因此没法再检测"主循环被慢操作偶尔
-    // 卡住"这种情况了——这是有意为之：这类情况应该靠别的手段处理（比如
-    // DP_Recorder.cpp 里新加的写入缓冲，减少同步的次数和阻塞概率），
-    // 看门狗只用来兜底"真的死循环/死锁"这种更严重的问题。
-    WDG_ReloadCounter();
+    // 就一直能被喂到。
+    //
+    // 但这样会带来一个真空：如果主循环是真的卡死（死循环/死锁，不是
+    // 偶尔慢一拍），既没有触发 CPU 异常（HardFault_Handler 那条路径
+    // 走不到），这个定时器中断又是普通外设中断、跟主循环状态无关、
+    // 照样正常触发——狗会被永远喂饱，IWDG 永远不超时，设备卡死了也
+    // 不会自动复位。
+    // 用 s_mainLoopAliveTick 这个心跳补上这个真空：只有主循环最近
+    // （CONFIG_WATCH_DOG_TIMEOUT 时间窗口内）确实完整跑完过一圈，才
+    // 真正喂狗；主循环卡死导致心跳长时间不更新的话，这里主动不喂，
+    // 让 IWDG 自然超时硬复位。一次性的慢操作（比如 SD sync 偶尔卡
+    // 一下）只要整体上没有超过这个时间窗口，心跳还是能追上，不会
+    // 误触发。
+    if(millis() - s_mainLoopAliveTick < CONFIG_WATCH_DOG_TIMEOUT)
+    {
+        WDG_ReloadCounter();
+    }
 #endif
 }
 
@@ -89,6 +107,10 @@ void HAL::HAL_Init()
     uint32_t timeout = WDG_Init(CONFIG_WATCH_DOG_TIMEOUT);
     // 喂狗改到 HAL_TimerInterrputUpdate() 里的硬件定时器中断执行，
     // 不再靠 taskManager 这个协作式调度器喂狗——见上面的注释说明原因。
+    // 心跳先初始化成当前时间，避免定时器一使能、第一次中断里的心跳
+    // 判断就是拿 millis() 去减一个陈旧的 0，虽然这种情况下差值本来
+    // 也小，不会真的误判，这里只是让初始状态更明确、不留歧义。
+    s_mainLoopAliveTick = millis();
     Serial.printf("WatchDog: Timeout = %dms\r\n", timeout);
 #endif
 
@@ -107,6 +129,13 @@ void HAL::HAL_Init()
 void HAL::HAL_Update()
 {
     taskManager.Running(millis());
+}
+
+void HAL::WatchDog_Feed()
+{
+#if CONFIG_WATCH_DOG_ENABLE
+    s_mainLoopAliveTick = millis();
+#endif
 }
 
 void HAL::IMU_SetEnable(bool enable)
