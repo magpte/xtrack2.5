@@ -88,6 +88,14 @@
 // 文件、不写 SD，跟这个功能之前不存在时行为一致。
 #define CONFIG_GPS_NMEA_LOG_ENABLE   1
 
+// 开机时用 RTC 时间 + 上次保存的定位点（DP_SysConfig.cpp 里的
+// sysConfig.longitude/latitude）给 GPS 模块发一条 AID-INI 辅助定位
+// 信息（CASIC 二进制协议 Class 0x0B, ID 0x01），帮它缩小搜星范围、
+// 加快这次开机的首次定位。具体实现见 HAL_GPS.cpp 的
+// HAL::GPS_SendAidingData()，触发点在 DP_SysConfig.cpp。这个开关只
+// 控制"要不要发这条辅助信息"，跟 NMEA log/GSA/GSV 那些配置无关。
+#define CONFIG_GPS_AID_ENABLE        1
+
 #define CONFIG_GPS_TX_PIN           PA3
 #define CONFIG_GPS_RX_PIN           PA2
 

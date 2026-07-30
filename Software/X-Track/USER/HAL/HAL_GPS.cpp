@@ -225,6 +225,147 @@ static void NMEA_Log_Feed(char c)
 }
 #endif
 
+// ---------------------------------------------------------------------
+// AID-INI 开机辅助定位（CASIC 二进制协议 Class 0x0B, ID 0x01）。跟上面
+// NMEA 走的文本协议完全是两套东西——这里是 CASIC 自己的二进制协议
+// （CSIP），包结构、校验和算法都不一样：
+//   0xBA 0xCE | len(2B,LE) | class(1B) | id(1B) | payload(len B) | ckSum(4B,LE)
+// 校验和算法（已经用官方协议文档 + 社区实测过的 JS 实现交叉核对过）：
+// 先把 len(2B)+class(1B)+id(1B) 拼成第一个小端 32 位字，payload 再按
+// 4 字节一组、小端拼成后续的字，全部 32 位环绕加法累加起来。
+// ---------------------------------------------------------------------
+
+// GPS 时间不跟随闰秒调整，从 1980-01-06 00:00:00 UTC 开始计数，目前
+// 比 UTC 快 18 秒——这个偏移量自 2016-12-31 那次闰秒之后一直没变过
+// （写这段代码时是 2026 年）。如果之后又插入新的闰秒，这里要跟着改。
+#define GPS_UTC_LEAP_SECONDS   18
+
+// 公历日期转"相对 1970-01-01 的天数"，用 Howard Hinnant 的
+// days_from_civil 算法（http://howardhinnant.github.io/date_algorithms.html）。
+// 没用标准库的 mktime/timegm——嵌入式 libc 对这两个函数的支持和时区
+// 处理不一定完整/一致，自己算总天数更可控，而且已经用多组日期
+// （含闰年、跨月）在 Python 里核对过结果。
+static int32_t GPS_DaysFromCivil(int32_t y, uint32_t m, uint32_t d)
+{
+    y -= (m <= 2);
+    int32_t era = (y >= 0 ? y : y - 399) / 400;
+    uint32_t yoe = (uint32_t)(y - era * 400);
+    uint32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int32_t)doe - 719468;
+}
+
+// 把 RTC 的公历时间换算成 AID-INI 需要的 GPS 周数 + 周内秒（tow）。
+static void GPS_UtcToWeekTow(const HAL::Clock_Info_t& clock, uint16_t* outWeek, double* outTow)
+{
+    // 1980-01-06（GPS 起始点）相对 1970-01-01 是第 3657 天，已经用
+    // Python 的 date 运算核对过。
+    int32_t daysSinceGpsEpoch = GPS_DaysFromCivil(clock.year, clock.month, clock.day) - 3657;
+
+    double secOfDay = clock.hour * 3600.0 + clock.minute * 60.0 + clock.second
+                    + clock.millisecond / 1000.0;
+
+    double totalSec = (double)daysSinceGpsEpoch * 86400.0 + secOfDay + GPS_UTC_LEAP_SECONDS;
+
+    uint16_t week = (uint16_t)(totalSec / 604800.0);
+    *outWeek = week;
+    *outTow  = totalSec - (double)week * 604800.0;
+}
+
+// CASIC 协议专用校验和（不是 NMEA 的 XOR），len 必须是 4 的整数倍——
+// AID-INI 是 56 字节，满足这个要求。
+static uint32_t CASIC_Checksum(uint8_t classId, uint8_t msgId, uint16_t len, const uint8_t* payload)
+{
+    uint32_t ckSum = (uint32_t)len
+                   | ((uint32_t)classId << 16)
+                   | ((uint32_t)msgId   << 24);
+
+    for (uint16_t i = 0; i < len; i += 4)
+    {
+        uint32_t word = (uint32_t)payload[i]
+                       | ((uint32_t)payload[i + 1] << 8)
+                       | ((uint32_t)payload[i + 2] << 16)
+                       | ((uint32_t)payload[i + 3] << 24);
+        ckSum += word;
+    }
+    return ckSum;
+}
+
+void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock_Info_t& clock)
+{
+#if CONFIG_GPS_AID_ENABLE
+    // RTC 没校准过（年份明显不对，比如出厂/复位后的默认值）的话，发
+    // 过去的时间辅助信息只会帮倒忙——2020 只是一个"肯定不是没校准过"
+    // 的粗略下限，不是什么精确边界，跟 DP_Clock.cpp 里同样的判断呼应。
+    if (clock.year < 2020)
+    {
+        return;
+    }
+
+    uint16_t week;
+    double tow;
+    GPS_UtcToWeekTow(clock, &week, &tow);
+
+    uint8_t payload[56];
+    memset(payload, 0, sizeof(payload));
+
+    double height = 0.0; // 没有存过海拔，标 flags 里的"高度无效"位
+    memcpy(&payload[0],  &latitude,  8);
+    memcpy(&payload[8],  &longitude, 8);
+    memcpy(&payload[16], &height,    8);
+    memcpy(&payload[24], &tow,       8);
+
+    float freqBias = 0.0f; // 没有频偏数据，flags 里对应位保持 0（无效）
+    // 上次定位点是"记忆"里的位置，不是这次刚测出来的，实际准确度取决
+    // 于这次开机前设备移动了多远。保守按 200km 估计——数量级上足够帮
+    // 模块把搜索范围从"全球"缩小到"这一片"，又不会因为估计过于自信，
+    // 在用户确实跑远了（比如坐飞机去了外地）的时候反而误导模块。
+    float posAcc  = 200000.0f;
+    // RTC 是石英钟，两次开机之间（哪怕隔了几周没用）漂移量级在秒级，
+    // 5 秒是一个安全但不算离谱保守的估计。
+    float timeAcc = 5.0f;
+    float freqAcc = 0.0f;
+    memcpy(&payload[32], &freqBias, 4);
+    memcpy(&payload[36], &posAcc,   4);
+    memcpy(&payload[40], &timeAcc,  4);
+    memcpy(&payload[44], &freqAcc,  4);
+    // payload[48..51] 是保留字段，前面 memset 已经清零
+
+    memcpy(&payload[52], &week, 2);
+    payload[54] = 3; // timeSource = 3（RTC），见协议里 NAV-SOL 的备注
+    payload[55] = 0x01   // B0 位置有效
+                | 0x02   // B1 时间有效
+                | 0x20   // B5 位置是经纬度（LLA）格式，不是 ECEF
+                | 0x40;  // B6 高度无效
+
+    const uint8_t  classId = 0x0B;
+    const uint8_t  msgId   = 0x01;
+    const uint16_t len     = sizeof(payload);
+
+    uint32_t ckSum = CASIC_Checksum(classId, msgId, len, payload);
+
+    uint8_t packet[6 + sizeof(payload) + 4];
+    packet[0] = 0xBA;
+    packet[1] = 0xCE;
+    packet[2] = (uint8_t)(len & 0xFF);
+    packet[3] = (uint8_t)(len >> 8);
+    packet[4] = classId;
+    packet[5] = msgId;
+    memcpy(&packet[6], payload, sizeof(payload));
+    packet[6 + sizeof(payload) + 0] = (uint8_t)(ckSum);
+    packet[6 + sizeof(payload) + 1] = (uint8_t)(ckSum >> 8);
+    packet[6 + sizeof(payload) + 2] = (uint8_t)(ckSum >> 16);
+    packet[6 + sizeof(payload) + 3] = (uint8_t)(ckSum >> 24);
+
+    GPS_SERIAL.write(packet, sizeof(packet));
+
+    Serial.printf(
+        "GPS: AID-INI sent (week=%u, tow=%.1f, lat=%.5f, lon=%.5f)\r\n",
+        week, tow, latitude, longitude
+    );
+#endif
+}
+
 void HAL::GPS_Init()
 {
     GPS_SERIAL.begin(9600);

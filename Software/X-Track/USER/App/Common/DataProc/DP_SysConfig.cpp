@@ -2,6 +2,7 @@
 #include "../HAL/HAL.h"
 #include "Config/Config.h"
 #include "HAL/HAL_Config.h"
+#include "Utils/Time/Time.h"
 
 using namespace DataProc;
 
@@ -32,6 +33,46 @@ static int onEvent(Account* account, Account::EventParam_t* param)
                 HAL::Power_RevertCapacity(sysConfig.designCap, sysConfig.fullChgCap);
             }
 #endif
+            // 开机时把 RTC 时间 + 上次保存的定位点告诉 GPS 模块（AID-INI
+            // 辅助定位），帮它缩小搜星范围、加快这次开机的首次定位
+            // （TTFF）。放在这里（sysConfig 刚加载完这一刻）触发，是因为
+            // 这是 App 层第一次能同时拿到"上次已知位置"（sysConfig.
+            // longitude/latitude，刚从 SD 卡加载出来）和"当前 RTC 时间"
+            // 的时机，而且这时模块大概率还没完成冷启动搜星（冷启动 TTFF
+            // 规格 ≤32 秒，这里的启动流程远用不到那么久），赶得上帮上忙。
+            //
+            // 注意："Clock" 账户 Pull 出来的是本地时间（DP_TzConv.cpp
+            // 里用 GPS UTC 时间 + sysConfig.timeZone 小时换算存进 RTC
+            // 的），不是 UTC，而 AID-INI 需要的是真 UTC（GPS 周/周内秒
+            // 是相对 UTC 算的）。这里先用 setTime/adjustTime 把时区
+            // 偏移减回去，还原成 UTC，再传给 GPS_SendAidingData()——
+            // 早前有一版忘了做这一步，直接把本地时间当 UTC 发给模块，
+            // 靠实测 NMEA log 里模块开机时回显的时间对不上真实 UTC（早了
+            // 整整一个时区）才发现，那次实测下来 TTFF 反而比不加辅助
+            // 定位还慢，应该就是喂了个偏差 8 小时的时间帮了倒忙。
+            HAL::Clock_Info_t clock;
+            if (account->Pull("Clock", &clock, sizeof(clock)) == Account::RES_OK)
+            {
+                setTime(
+                    clock.hour,
+                    clock.minute,
+                    clock.second,
+                    clock.day,
+                    clock.month,
+                    clock.year
+                );
+                adjustTime(-(int32_t)sysConfig.timeZone * SECS_PER_HOUR);
+
+                HAL::Clock_Info_t utcClock;
+                utcClock.year   = year();
+                utcClock.month  = month();
+                utcClock.day    = day();
+                utcClock.hour   = hour();
+                utcClock.minute = minute();
+                utcClock.second = second();
+
+                HAL::GPS_SendAidingData(sysConfig.latitude, sysConfig.longitude, utcClock);
+            }
         }
         else if (info->cmd == SYSCONFIG_CMD_SET_BRIGHTNESS)
         {
@@ -92,6 +133,7 @@ DATA_PROC_INIT_DEF(SysConfig)
 {
     account->Subscribe("Storage");
     account->Subscribe("GPS");
+    account->Subscribe("Clock"); // AID-INI 辅助定位需要 RTC 时间，见 SYSCONFIG_CMD_LOAD 分支
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
     account->Subscribe("Power");
 #endif

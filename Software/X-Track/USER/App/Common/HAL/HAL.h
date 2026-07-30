@@ -119,6 +119,18 @@ bool GPS_GetInfo(GPS_Info_t* info);
 bool GPS_LocationIsValid();
 double GPS_GetDistanceOffset(GPS_Info_t* info, double preLong, double preLat);
 
+// 开机辅助定位（AID-INI，CASIC 二进制协议）：把 RTC 时间和上一次已知
+// 定位点告诉 GPS 模块，帮它缩小搜星范围、加快这次开机的首次定位。
+// clock 必须是真 UTC 时间，不能是本地时间——"Clock" 账户 Pull 出来的
+// 是本地时间（DP_TzConv.cpp 加了时区偏移那份），调用前要先用
+// setTime/adjustTime 减掉 sysConfig.timeZone 小时换算回 UTC，具体做法
+// 见 DP_SysConfig.cpp 里的调用点（那边注释也记录了一次真实翻车：早前
+// 忘了转换，直接把本地时间当 UTC 发给模块，实测反而拖慢了 TTFF）。
+// clock.year 也会做一次粗略校验（是不是明显没校准过的默认值），不对
+// 的话直接跳过不发。实现细节（CASIC 协议格式、GPS 周/闰秒换算、专用
+// 校验和算法）见 HAL_GPS.cpp。
+void GPS_SendAidingData(double latitude, double longitude, const Clock_Info_t& clock);
+
 // 拿最近一次解析完整的 GSV 天球数据（方位角/仰角/信噪比/星座）。
 // 独立于 GPS_Info_t 之外，不随 2Hz 定位一起刷新——GSV 本身被节流成
 // 5 秒一次（见 HAL_GPS.cpp 里的 PCAS03 配置），跟星星在天上移动的
