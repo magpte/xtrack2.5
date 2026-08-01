@@ -116,8 +116,6 @@ void SystemInfosView::Create(lv_obj_t* root)
         "Compiler\n\n"
         "Build\n"
     );
-
-    Group_Init();
 }
 
 void SystemInfosView::Group_Init()
@@ -142,9 +140,21 @@ void SystemInfosView::Group_Init()
     lv_group_focus_obj(ui.sport.icon);
 }
 
+void SystemInfosView::Group_Deinit()
+{
+    // 必须在本页消失前（onViewWillDisappear）做，而不是等到页面卸载。
+    // PageManager 先调旧页的 onViewWillDisappear、再调新页的
+    // onViewWillAppear，页面真正被删除（onViewUnload）则是切换动画
+    // 结束之后。如果到那时候才清，Dialplate 重新把自己的按钮加进
+    // 分组并 lv_group_focus_obj() 时，焦点回调还是本页的 onFocus，
+    // 会拿 Dialplate 的按钮去算滚动位置，把 Dialplate 的 root 滚走。
+    lv_group_t* group = lv_group_get_default();
+    lv_group_set_focus_cb(group, nullptr);
+    lv_group_remove_all_objs(group);
+}
+
 void SystemInfosView::Delete()
 {
-    lv_group_set_focus_cb(lv_group_get_default(), nullptr);
     Style_Reset();
 }
 
@@ -159,6 +169,11 @@ void SystemInfosView::SetScrollToY(lv_obj_t* obj, lv_coord_t y, lv_anim_enable_t
 void SystemInfosView::onFocus(lv_group_t* g)
 {
     lv_obj_t* icon = lv_group_get_focused(g);
+    if (icon == nullptr)
+    {
+        return;
+    }
+
     lv_obj_t* cont = lv_obj_get_parent(icon);
     lv_coord_t y = lv_obj_get_y(cont);
     lv_obj_scroll_to_y(lv_obj_get_parent(cont), y, LV_ANIM_ON);
@@ -388,19 +403,11 @@ void SystemInfosView::SkyPlot_Create(lv_obj_t* par)
     lv_obj_set_style_text_color(nLabel, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_obj_align(nLabel, LV_ALIGN_TOP_MID, 0, -2);
 
-    /* 卫星点对象池：预先建好、默认全部隐藏，SetSky() 里按需定位/显示，
-     * 避免每次刷新都创建/删除对象（更省 RAM、也更快）。 */
-    for (int i = 0; i < SKY_MAX_SATELLITES; i++)
-    {
-        lv_obj_t* dot = lv_obj_create(plot);
-        lv_obj_enable_style_refresh(false);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
-        sky.dots[i] = dot;
-    }
+    /* 卫星点在 plot 的绘制事件里直接画出来，不占用对象/堆内存。
+     * DRAW_POST_END 是子对象（参考圈、十字线、N 标注）画完之后才触发的，
+     * 保证卫星点始终在最上层。 */
+    memset(&sky.info, 0, sizeof(sky.info));
+    lv_obj_add_event_cb(plot, onSkyPlotDraw, LV_EVENT_DRAW_POST_END, this);
 
     lv_obj_move_foreground(icon);
     lv_obj_enable_style_refresh(true);
@@ -412,23 +419,34 @@ void SystemInfosView::SkyPlot_Create(lv_obj_t* par)
 
 void SystemInfosView::SetSky(HAL::Sky_Info_t* info)
 {
-    lv_coord_t c = SKY_PLOT_SIZE / 2;   // 圆心 = 仰角 90°（正头顶）
+    sky.info = *info;
 
-    uint8_t shown = info->count;
-    if (shown > SKY_MAX_SATELLITES)
+    if (sky.info.count > SKY_MAX_SATELLITES)
     {
-        shown = SKY_MAX_SATELLITES;
+        sky.info.count = SKY_MAX_SATELLITES;
     }
 
-    for (int i = 0; i < SKY_MAX_SATELLITES; i++)
-    {
-        if (i >= shown)
-        {
-            lv_obj_add_flag(sky.dots[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
+    lv_obj_invalidate(sky.plot);
+}
 
-        HAL::Sky_Satellite_t* sat = &info->satellites[i];
+void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
+{
+    SystemInfosView* view = (SystemInfosView*)lv_event_get_user_data(event);
+    lv_draw_ctx_t* draw_ctx = lv_event_get_draw_ctx(event);
+
+    lv_area_t plotArea;
+    lv_obj_get_coords(view->sky.plot, &plotArea);
+
+    lv_coord_t c = SKY_PLOT_SIZE / 2;   // 圆心 = 仰角 90°（正头顶）
+
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.radius = LV_RADIUS_CIRCLE;
+    dsc.bg_opa = LV_OPA_COVER;
+
+    for (int i = 0; i < view->sky.info.count; i++)
+    {
+        HAL::Sky_Satellite_t* sat = &view->sky.info.satellites[i];
 
         // 仰角 90°（正头顶）在圆心，仰角 0°（地平线）在圆周边缘。
         float r = (float)c * (90 - sat->elevation) / 90.0f;
@@ -441,21 +459,21 @@ void SystemInfosView::SetSky(HAL::Sky_Info_t* info)
         if (snr > 40) snr = 40;
         lv_coord_t dotSize = SKY_DOT_MIN + (SKY_DOT_MAX - SKY_DOT_MIN) * snr / 40;
 
-        lv_color_t color;
         switch (sat->constellation)
         {
-        case HAL::SKY_CONSTELLATION_GPS:     color = lv_palette_main(LV_PALETTE_GREEN); break;
-        case HAL::SKY_CONSTELLATION_BDS:     color = lv_palette_main(LV_PALETTE_RED); break;
-        case HAL::SKY_CONSTELLATION_GLONASS: color = lv_palette_main(LV_PALETTE_BLUE); break;
-        default:                             color = lv_palette_main(LV_PALETTE_GREY); break;
+        case HAL::SKY_CONSTELLATION_GPS:     dsc.bg_color = lv_palette_main(LV_PALETTE_GREEN); break;
+        case HAL::SKY_CONSTELLATION_BDS:     dsc.bg_color = lv_palette_main(LV_PALETTE_RED); break;
+        case HAL::SKY_CONSTELLATION_GLONASS: dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE); break;
+        default:                             dsc.bg_color = lv_palette_main(LV_PALETTE_GREY); break;
         }
 
-        lv_obj_t* dot = sky.dots[i];
-        lv_obj_set_size(dot, dotSize, dotSize);
-        lv_obj_set_pos(dot, x - dotSize / 2, y - dotSize / 2);
-        lv_obj_set_style_bg_color(dot, color, 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+        lv_area_t dotArea;
+        dotArea.x1 = plotArea.x1 + x - dotSize / 2;
+        dotArea.y1 = plotArea.y1 + y - dotSize / 2;
+        dotArea.x2 = dotArea.x1 + dotSize - 1;
+        dotArea.y2 = dotArea.y1 + dotSize - 1;
+
+        lv_draw_rect(draw_ctx, &dsc, &dotArea);
     }
 }
 

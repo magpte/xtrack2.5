@@ -4,7 +4,8 @@
 using namespace Page;
 
 SystemInfos::SystemInfos()
-    : skyUpdateCounter(0)
+    : timer(nullptr)
+    , skyUpdateCounter(0)
 {
 }
 
@@ -44,6 +45,8 @@ void SystemInfos::onViewWillAppear()
 {
     Model.SetStatusBarStyle(DataProc::STATUS_BAR_STYLE_BLACK);
 
+    View.Group_Init();
+
     timer = lv_timer_create(onTimerUpdate, 1000, this);
     lv_timer_ready(timer);
     skyUpdateCounter = 0;
@@ -62,12 +65,18 @@ void SystemInfos::onViewDidAppear()
 
 void SystemInfos::onViewWillDisappear()
 {
+    View.Group_Deinit();
+
     lv_obj_fade_out(_root, 300, 0);
 }
 
 void SystemInfos::onViewDidDisappear()
 {
-    lv_timer_del(timer);
+    if (timer)
+    {
+        lv_timer_del(timer);
+        timer = nullptr;
+    }
 }
 
 void SystemInfos::onViewUnload()
