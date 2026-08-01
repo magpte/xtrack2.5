@@ -2,7 +2,12 @@
 #include "lvgl/lvgl.h"
 #include "HAL/HAL.h"
 
-#define SCREEN_BUFFER_SIZE (CONFIG_SCREEN_HOR_RES * CONFIG_SCREEN_VER_RES)
+/* 双缓冲，每块 200 行（不是整屏 320 行）。整屏两块要占 300KB，384KB
+ * SRAM 里只剩 44KB 给 LVGL 堆和其他所有东西，SystemInfos 这种页面很容易
+ * 把 LVGL 堆用满。刷新是按脏区域走的（disp_flush_cb 每次都会重设窗口），
+ * 缓冲区小于整屏只是让一次大范围重绘分成两批发送，总像素量不变。 */
+#define SCREEN_BUFFER_LINES 200
+#define SCREEN_BUFFER_SIZE (CONFIG_SCREEN_HOR_RES * SCREEN_BUFFER_LINES)
 
 static lv_disp_drv_t* disp_drv_p = NULL;
 
