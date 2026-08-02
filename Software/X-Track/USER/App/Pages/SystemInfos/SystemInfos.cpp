@@ -47,7 +47,8 @@ void SystemInfos::onViewWillAppear()
 
     View.Group_Init();
 
-    timer = lv_timer_create(onTimerUpdate, 1000, this);
+    // 【修改点1】：将 LVGL 定时器从 1000ms 改为 200ms，以 5Hz 频率轮询来避免跳秒
+    timer = lv_timer_create(onTimerUpdate, 200, this);
     lv_timer_ready(timer);
     skyUpdateCounter = 0;
 
@@ -99,12 +100,10 @@ void SystemInfos::Update()
 {
     char buf[64];
 
-    /* Sport */
-    float trip;
-    float maxSpd;
-    Model.GetSportInfo(&trip, buf, sizeof(buf), &maxSpd);
-    View.SetSport(trip, buf, maxSpd);
-
+    /* =======================================================
+     * 1. 高频刷新 (200ms / 5Hz)：仅针对时间高度敏感的数据
+     * ======================================================= */
+    
     /* GPS */
     float lat;
     float lng;
@@ -114,55 +113,72 @@ void SystemInfos::Update()
     Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
     View.SetGPS(lat, lng, alt, buf, course, speed);
 
-    /* IMU */
-    int steps;
-    Model.GetIMUInfo(&steps, buf, sizeof(buf));
-    View.SetIMU(steps, buf);
-
     /* RTC */
     Model.GetRTCInfo(buf, sizeof(buf));
     View.SetRTC(buf);
 
-    /* Power */
-    int usage;
-    float voltage;
-    Model.GetBatteryInfo(&usage, &voltage, buf, sizeof(buf));
-    View.SetBattery(usage, voltage, buf);
+    /* =======================================================
+     * 2. 中频刷新 (1000ms / 1Hz)：针对常规且耗费解析算力的数据
+     * ======================================================= */
+    // 因为定时器是 200ms，当计数器对 5 取余为 0 时，恰好是 1000ms
+    if (skyUpdateCounter % 5 == 0) 
+    {
+        /* Sport */
+        float trip;
+        float maxSpd;
+        Model.GetSportInfo(&trip, buf, sizeof(buf), &maxSpd);
+        View.SetSport(trip, buf, maxSpd);
 
-    /* Storage */
-    bool detect;
-    const char* type = "-";
-    Model.GetStorageInfo(&detect, &type, buf, sizeof(buf));
-    View.SetStorage(
-        detect ? "OK" : "ERROR",
-        buf,
-        type,
-        VERSION_FILESYSTEM
-    );
+        /* IMU */
+        int steps;
+        Model.GetIMUInfo(&steps, buf, sizeof(buf));
+        View.SetIMU(steps, buf);
 
-    /* System */
-    DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
-    View.SetSystem(
-        VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
-        VERSION_AUTHOR_NAME,
-        VERSION_LVGL,
-        buf,
-        VERSION_COMPILER,
-        VERSION_BUILD_TIME
-    );
+        /* Power */
+        int usage;
+        float voltage;
+        Model.GetBatteryInfo(&usage, &voltage, buf, sizeof(buf));
+        View.SetBattery(usage, voltage, buf);
 
-    /* Sky View —— 每 5 秒才刷新一次，跟 GSV 数据本身的节流频率对上，
-     * 不需要跟着 Update() 的 1 秒周期一起跑。counter 从 0 开始，
-     * 第一次调用（counter==0）就会刷新，页面刚打开就能看到数据，
-     * 不用干等最多 5 秒。 */
+        /* Storage */
+        bool detect;
+        const char* type = "-";
+        Model.GetStorageInfo(&detect, &type, buf, sizeof(buf));
+        View.SetStorage(
+            detect ? "OK" : "ERROR",
+            buf,
+            type,
+            VERSION_FILESYSTEM
+        );
+
+        /* System */
+        DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
+        View.SetSystem(
+            VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
+            VERSION_AUTHOR_NAME,
+            VERSION_LVGL,
+            buf,
+            VERSION_COMPILER,
+            VERSION_BUILD_TIME
+        );
+    }
+
+    /* =======================================================
+     * 3. 低频刷新 (5000ms / 0.2Hz)：针对慢速更新的天球图数据
+     * ======================================================= */
+    /* Sky View —— 每 5 秒刷新一次，跟 GSV 数据本身的节流频率对上 */
     if (skyUpdateCounter == 0)
     {
         HAL::Sky_Info_t sky;
         Model.GetSkyInfo(&sky);
         View.SetSky(&sky);
     }
+    
+    /* 更新计数器 */
     skyUpdateCounter++;
-    if (skyUpdateCounter >= 5)
+    
+    // 【修改点2】：现在按 200ms 一次计算，25次正好是 5000ms
+    if (skyUpdateCounter >= 25) 
     {
         skyUpdateCounter = 0;
     }
