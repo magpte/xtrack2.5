@@ -30,10 +30,12 @@ Usage:
 recreated under <output_dir> with the extension changed to .rle (so a
 /14/3376/5432.png or /14/3376/5432.bin tile becomes /14/3376/5432.rle).
 """
+import argparse
 import os
 import struct
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 
 try:
     from PIL import Image
@@ -125,8 +127,11 @@ def load_source_image(src_path):
     return Image.open(src_path).convert("RGB")
 
 
-def encode_tile(src_path, dst_path):
-    img = load_source_image(src_path)
+def encode_image_bytes(img):
+    """Core encoder: takes a PIL RGB Image, returns the encoded RLE2 tile
+    as a bytes object. No file I/O here -- this is what lets
+    tile_bundle.py encode straight into a bundle without ever writing an
+    intermediate .rle file to disk."""
     w, h = img.size
 
     # Quantize down to <=256 colors. Cartographic tiles usually have far
@@ -134,87 +139,123 @@ def encode_tile(src_path, dst_path):
     # lossless or near-lossless for that style of tile.
     pal_img = img.convert("P", palette=Image.ADAPTIVE, colors=MAX_PALETTE)
     palette_rgb = pal_img.getpalette()[: MAX_PALETTE * 3]
-    indices = list(pal_img.getdata())  # one byte per pixel, row-major
+    indices = np.asarray(pal_img, dtype=np.uint8).reshape(-1)  # row-major, flat
 
     # Remap to only the colors actually used, so paletteCount can be < 256
     # and the palette table in the file stays as small as possible.
-    used = sorted(set(indices))
-    remap = {old: new for new, old in enumerate(used)}
-    indices = [remap[i] for i in indices]
+    # np.unique's return_inverse does the same job as a
+    # sorted(set(...)) + dict + list-comprehension remap, but as one
+    # vectorized C-level call instead of a pure-Python loop over every
+    # pixel.
+    used, indices = np.unique(indices, return_inverse=True)
+    indices = indices.astype(np.uint8)
     palette_count = len(used)
 
+    n = len(indices)
     checkpoint_count = (h + CHECKPOINT_INTERVAL - 1) // CHECKPOINT_INTERVAL
+    checkpoint_pixels = (np.arange(checkpoint_count, dtype=np.int64) * CHECKPOINT_INTERVAL) * w
 
-    # First pass: build the run-stream bytes in memory, splitting a run
-    # not just at MAX_RUN pixels but also at every checkpoint-row boundary
-    # (a multiple of w * CHECKPOINT_INTERVAL pixels). This guarantees a
-    # checkpoint's stored offset always lands exactly on the start of a
-    # run, so the decoder can seek there and resume cleanly without
-    # needing to know how much of a run was "already consumed" by an
-    # earlier row.
+    # Find every position where the run-length-encoded *content* would
+    # naturally need a new run (the pixel value changed), in one
+    # vectorized pass instead of scanning pixel-by-pixel in Python.
+    change_points = np.where(np.diff(indices) != 0)[0] + 1
+    # Mandatory split points = natural color changes, union checkpoint-row
+    # starts (so a checkpoint's offset always lands exactly on a run
+    # start -- the decoder relies on this to resume cleanly after a seek).
+    split_points = np.unique(np.concatenate(([0], change_points, checkpoint_pixels[1:])))
+
+    run_starts = split_points
+    run_ends = np.concatenate((split_points[1:], [n]))
+    run_lengths = run_ends - run_starts
+    run_values = indices[run_starts]
+
+    # At this point every remaining run is already capped to a single
+    # checkpoint block and a single color -- the only thing left to
+    # enforce is MAX_RUN (255). Most runs need no further subdivision, so
+    # this Python loop runs over a few hundred/thousand *runs*, not over
+    # every pixel.
     run_stream = bytearray()
     checkpoint_offsets = [0] * checkpoint_count
-    checkpoint_rows = [c * CHECKPOINT_INTERVAL for c in range(checkpoint_count)]
-    next_checkpoint = 0
+    checkpoint_iter = 0
 
-    i = 0
-    n = len(indices)
-    while i < n:
-        row_of_i = i // w
-        # Record a checkpoint the first time we reach (or pass) its row.
-        # Because we also split runs at checkpoint boundaries below, i
-        # will land exactly on a checkpoint row's first pixel when it
-        # gets here, never partway through it.
-        while (
-            next_checkpoint < checkpoint_count
-            and row_of_i >= checkpoint_rows[next_checkpoint]
-        ):
-            checkpoint_offsets[next_checkpoint] = len(run_stream)
-            next_checkpoint += 1
+    for start, length, val in zip(run_starts.tolist(), run_lengths.tolist(), run_values.tolist()):
+        while checkpoint_iter < checkpoint_count and start >= checkpoint_pixels[checkpoint_iter]:
+            checkpoint_offsets[checkpoint_iter] = len(run_stream)
+            checkpoint_iter += 1
 
-        j = i + 1
-        while j < n and indices[j] == indices[i] and (j - i) < MAX_RUN:
-            # Don't let this run cross into the next checkpoint's row.
-            if next_checkpoint < checkpoint_count and (j // w) >= checkpoint_rows[next_checkpoint]:
-                break
-            j += 1
-        run_len = j - i
-        run_stream += struct.pack("<BB", run_len, indices[i])
-        i = j
+        remaining = length
+        while remaining > 0:
+            chunk = remaining if remaining < MAX_RUN else MAX_RUN
+            run_stream.append(chunk)
+            run_stream.append(val)
+            remaining -= chunk
 
-    # Any trailing checkpoints (e.g. a short final partial row) just point
-    # past the end of the stream -- they should never actually be sought
-    # to in practice since they're beyond the tile's real content.
-    while next_checkpoint < checkpoint_count:
-        checkpoint_offsets[next_checkpoint] = len(run_stream)
-        next_checkpoint += 1
+    while checkpoint_iter < checkpoint_count:
+        checkpoint_offsets[checkpoint_iter] = len(run_stream)
+        checkpoint_iter += 1
 
-    with open(dst_path, "wb") as f:
-        f.write(MAGIC)
-        f.write(struct.pack("<HHHHH", w, h, palette_count, CHECKPOINT_INTERVAL, checkpoint_count))
+    out = bytearray()
+    out += MAGIC
+    out += struct.pack("<HHHHH", w, h, palette_count, CHECKPOINT_INTERVAL, checkpoint_count)
 
-        for old_idx in used:
-            r = palette_rgb[old_idx * 3]
-            g = palette_rgb[old_idx * 3 + 1]
-            b = palette_rgb[old_idx * 3 + 2]
-            f.write(struct.pack("<H", rgb888_to_rgb565(r, g, b)))
+    for old_idx in used.tolist():
+        r = palette_rgb[old_idx * 3]
+        g = palette_rgb[old_idx * 3 + 1]
+        b = palette_rgb[old_idx * 3 + 2]
+        out += struct.pack("<H", rgb888_to_rgb565(r, g, b))
 
-        for offset in checkpoint_offsets:
-            f.write(struct.pack("<I", offset))
+    for offset in checkpoint_offsets:
+        out += struct.pack("<I", offset)
 
-        f.write(run_stream)
+    out += run_stream
+    return bytes(out)
 
+
+def encode_tile_bytes(src_path):
+    """Load+encode a tile from any supported source format (.png/.jpg/
+    .bin), returning (raw_size, encoded_bytes). This is the function
+    tile_bundle.py calls directly so it can go straight from source
+    images to a bundle file without an intermediate .rle file."""
+    img = load_source_image(src_path)
+    w, h = img.size
+    encoded = encode_image_bytes(img)
     raw_size = w * h * 2  # what the existing raw .bin tile would cost
-    rle_size = os.path.getsize(dst_path)
-    return raw_size, rle_size
+    return raw_size, encoded
+
+
+def encode_tile(src_path, dst_path):
+    """File-to-file convenience wrapper around encode_tile_bytes(), for
+    standalone use (python tile_rle_encode.py <in> <out>)."""
+    raw_size, encoded = encode_tile_bytes(src_path)
+    with open(dst_path, "wb") as f:
+        f.write(encoded)
+    return raw_size, len(encoded)
+
+
+
+def _encode_one(args):
+    """Module-level worker for ProcessPoolExecutor (must be a plain
+    top-level function so it can be pickled/sent to worker processes,
+    including on Windows where multiprocessing uses 'spawn')."""
+    src_path, dst_path = args
+    try:
+        raw_size, rle_size = encode_tile(src_path, dst_path)
+        return (src_path, raw_size, rle_size, None)
+    except Exception as exc:  # corrupt/unreadable tile -- report, don't crash the worker
+        return (src_path, 0, 0, str(exc))
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <input_dir> <output_dir>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_dir")
+    parser.add_argument("output_dir")
+    parser.add_argument(
+        "--workers", type=int, default=os.cpu_count(),
+        help=f"parallel worker processes (default: all {os.cpu_count()} CPUs detected)",
+    )
+    args = parser.parse_args()
 
-    src_dir, dst_dir = sys.argv[1], sys.argv[2]
+    src_dir, dst_dir = args.input_dir, args.output_dir
 
     # Pre-scan so we can show "N / total" rather than just a climbing counter.
     all_src_paths = []
@@ -224,6 +265,17 @@ def main():
                 all_src_paths.append(os.path.join(root, name))
 
     total_files = len(all_src_paths)
+    if total_files == 0:
+        print("No tiles found under", src_dir)
+        return
+
+    tasks = []
+    for src_path in all_src_paths:
+        rel = os.path.relpath(src_path, src_dir)
+        dst_path = os.path.join(dst_dir, os.path.splitext(rel)[0] + ".rle")
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        tasks.append((src_path, dst_path))
+
     total_raw = total_rle = 0
     count = 0
     failed = []
@@ -231,34 +283,32 @@ def main():
     worst_path = None
     start = time.time()
 
-    for src_path in all_src_paths:
-        rel = os.path.relpath(src_path, src_dir)
-        dst_path = os.path.join(dst_dir, os.path.splitext(rel)[0] + ".rle")
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    print(f"Encoding {total_files} tiles with {args.workers} worker process(es)...", file=sys.stderr)
 
-        try:
-            raw_size, rle_size = encode_tile(src_path, dst_path)
-        except Exception as exc:  # corrupt/unreadable tile -- skip, don't abort the batch
-            failed.append((rel, str(exc)))
-            continue
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        for src_path, raw_size, rle_size, err in pool.map(_encode_one, tasks, chunksize=16):
+            rel = os.path.relpath(src_path, src_dir)
+            if err:
+                failed.append((rel, err))
+                continue
 
-        total_raw += raw_size
-        total_rle += rle_size
-        count += 1
+            total_raw += raw_size
+            total_rle += rle_size
+            count += 1
 
-        ratio = rle_size / raw_size if raw_size else 0
-        if ratio > worst_ratio:
-            worst_ratio = ratio
-            worst_path = rel
+            ratio = rle_size / raw_size if raw_size else 0
+            if ratio > worst_ratio:
+                worst_ratio = ratio
+                worst_path = rel
 
-        if count % 100 == 0 or count == total_files:
-            elapsed = time.time() - start
-            rate = count / elapsed if elapsed > 0 else 0
-            print(f"  {count}/{total_files} tiles ({rate:.0f}/s)", file=sys.stderr)
+            if count % 100 == 0 or count == total_files:
+                elapsed = time.time() - start
+                rate = count / elapsed if elapsed > 0 else 0
+                print(f"  {count}/{total_files} tiles ({rate:.0f}/s)", file=sys.stderr)
 
     elapsed = time.time() - start
     if count:
-        print(f"\nEncoded {count}/{total_files} tiles in {elapsed:.1f}s")
+        print(f"\nEncoded {count}/{total_files} tiles in {elapsed:.1f}s ({count/elapsed:.0f} tiles/sec)")
         print(f"Raw (.bin-equivalent): {total_raw / 1024:.1f} KB")
         print(
             f"RLE total:             {total_rle / 1024:.1f} KB "
