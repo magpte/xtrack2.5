@@ -12,6 +12,8 @@ class SystemInfosView
 public:
     void Create(lv_obj_t* root);
     void Delete();
+    void Group_Init();
+    void Group_Deinit();
 
 public:
     typedef struct
@@ -39,7 +41,12 @@ public:
         lv_obj_t* cont;
         lv_obj_t* icon;
         lv_obj_t* plot;
-        lv_obj_t* dots[SKY_MAX_SATELLITES];
+        // 卫星点直接画在 plot 上（见 onSkyPlotDraw），不再为每颗卫星建
+        // 一个 lv_obj——32 个对象要占掉将近 10KB 的 LVGL 堆（总共只有
+        // LV_MEM_SIZE = 40KB），这一页加上后台缓存的 Dialplate 就足以
+        // 把堆用到 85% 以上，之后任何一次绘制/动画分配失败都会变成
+        // 空指针解引用（固件里 LV_USE_ASSERT_MALLOC 是关的）。
+        HAL::Sky_Info_t info;
     } sky_t;
 
     sky_t sky;
@@ -87,6 +94,7 @@ public:
     void SetSky(HAL::Sky_Info_t* info);
 
     void SetScrollToY(lv_obj_t* obj, lv_coord_t y, lv_anim_enable_t en);
+    static void onSkyPlotDraw(lv_event_t* event);
     static void onFocus(lv_group_t* e);
 
 private:
@@ -99,7 +107,6 @@ private:
     } style;
 
 private:
-    void Group_Init();
     void Style_Init();
     void Style_Reset();
     void Item_Create(

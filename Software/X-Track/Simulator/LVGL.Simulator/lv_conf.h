@@ -58,7 +58,16 @@
 #endif
 #if LV_MEM_CUSTOM == 0
     /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
-    #define LV_MEM_SIZE (40U * 1024U)          /*[bytes]*/
+    /* 每个目标的 RAM 预算不一样，所以池子大小从工程的 Define 里给：
+     * F403A 只有 224KB SRAM，维持 40KB；F435 有 384KB，见
+     * MDK-ARM_F435/proj.uvprojx 里的 CONFIG_LVGL_MEM_SIZE_KB。
+     * 40KB 对 SystemInfos（天球图）+ 后台缓存的 Dialplate 来说余量很小，
+     * 而固件里 LV_USE_ASSERT_MALLOC 是关的（见下面 ARDUINO 分支），
+     * 分配失败不会断言，只会变成空指针解引用。 */
+    #ifndef CONFIG_LVGL_MEM_SIZE_KB
+    #  define CONFIG_LVGL_MEM_SIZE_KB 40
+    #endif
+    #define LV_MEM_SIZE (CONFIG_LVGL_MEM_SIZE_KB * 1024U)          /*[bytes]*/
 
     /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
     #define LV_MEM_ADR 0     /*0: unused*/
