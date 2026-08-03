@@ -36,10 +36,11 @@ private:
     SystemInfosModel Model;
     lv_timer_t* timer;
 
-    // Update() 本身按 1 秒一次跑（timer 的周期），天球图数据本来就被
-    // GPS 那边节流成 5 秒才刷新一次（见 HAL_GPS.cpp 的 PCAS03 配置），
-    // 没必要跟着 1 秒一起问，这个计数器用来把天球图的刷新频率降到
-    // 每 5 次 Update() 才问一次。
+    // 天球图（Sky View）的刷新节流计数器：GSV 数据本身更新很慢
+    // （模块 0.5Hz 发送，HAL 侧还要集齐三颗星座才切换快照），没必要
+    // 每 200ms 都刷新，这个计数器把天球图的刷新频率降到每 25 次
+    // Update()（即 5 秒）才问一次。计数器无条件递增，不管当前焦点
+    // 是不是 Sky View，避免切换回来时出现等待延迟。
     uint8_t skyUpdateCounter;
 };
 

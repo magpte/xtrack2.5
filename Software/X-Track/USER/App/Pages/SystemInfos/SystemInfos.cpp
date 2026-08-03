@@ -47,7 +47,9 @@ void SystemInfos::onViewWillAppear()
 
     View.Group_Init();
 
-    // 【修改点1】：将 LVGL 定时器从 1000ms 改为 200ms，以 5Hz 频率轮询来避免跳秒
+    // 200ms 定时器（5Hz 轮询），每次只刷新当前焦点条目的数据。
+    // 对于时间类条目（GPS UTC、RTC）5Hz 足以保证秒数平滑递增，
+    // 而每次回调只处理一组数据，执行时间极短，不会出现跳周期。
     timer = lv_timer_create(onTimerUpdate, 200, this);
     lv_timer_ready(timer);
     skyUpdateCounter = 0;
@@ -100,47 +102,66 @@ void SystemInfos::Update()
 {
     char buf[64];
 
-    /* =======================================================
-     * 1. 高频刷新 (200ms / 5Hz)：仅针对时间高度敏感的数据
-     * ======================================================= */
-    
-    /* GPS */
-    float lat;
-    float lng;
-    float alt;
-    float course;
-    float speed;
-    Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
-    View.SetGPS(lat, lng, alt, buf, course, speed);
+    /* 根据当前焦点条目，只刷新用户正在看的那一组数据。
+     * 每个条目占满整屏（snap scrolling），不同条目之间互不可见，
+     * 没必要把所有 7~8 组数据都 Pull + 更新 label——不可见的数据
+     * 白白占用 CPU/总线时间，而且在中频/低频刷新叠加的那一拍，
+     * 回调总耗时可能超过 200ms 定时器周期，导致 LVGL 跳过下一个
+     * 周期，用户就会看到时间 2 秒 2 秒地跳。 */
 
-    /* RTC */
-    Model.GetRTCInfo(buf, sizeof(buf));
-    View.SetRTC(buf);
+    lv_group_t* group = lv_group_get_default();
+    lv_obj_t* focused = group ? lv_group_get_focused(group) : nullptr;
 
-    /* =======================================================
-     * 2. 中频刷新 (1000ms / 1Hz)：针对常规且耗费解析算力的数据
-     * ======================================================= */
-    // 因为定时器是 200ms，当计数器对 5 取余为 0 时，恰好是 1000ms
-    if (skyUpdateCounter % 5 == 0) 
+    if (focused == View.ui.sport.icon)
     {
-        /* Sport */
         float trip;
         float maxSpd;
         Model.GetSportInfo(&trip, buf, sizeof(buf), &maxSpd);
         View.SetSport(trip, buf, maxSpd);
-
-        /* IMU */
+    }
+    else if (focused == View.ui.gps.icon)
+    {
+        float lat;
+        float lng;
+        float alt;
+        float course;
+        float speed;
+        Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
+        View.SetGPS(lat, lng, alt, buf, course, speed);
+    }
+    else if (focused == View.sky.icon)
+    {
+        /* Sky View 数据本身是 GSV 语句，模块按 0.5Hz 发送，HAL 侧
+         * 还需要集齐三个星座才切换快照，实际有效更新远低于 5Hz。
+         * 保持 5 秒的低频刷新（skyUpdateCounter == 0 时），既跟数据
+         * 源节奏匹配，又避免每 200ms 都 memcpy + invalidate。 */
+        if (skyUpdateCounter == 0)
+        {
+            HAL::Sky_Info_t sky;
+            Model.GetSkyInfo(&sky);
+            View.SetSky(&sky);
+        }
+    }
+    else if (focused == View.ui.imu.icon)
+    {
         int steps;
         Model.GetIMUInfo(&steps, buf, sizeof(buf));
         View.SetIMU(steps, buf);
-
-        /* Power */
+    }
+    else if (focused == View.ui.rtc.icon)
+    {
+        Model.GetRTCInfo(buf, sizeof(buf));
+        View.SetRTC(buf);
+    }
+    else if (focused == View.ui.battery.icon)
+    {
         int usage;
         float voltage;
         Model.GetBatteryInfo(&usage, &voltage, buf, sizeof(buf));
         View.SetBattery(usage, voltage, buf);
-
-        /* Storage */
+    }
+    else if (focused == View.ui.storage.icon)
+    {
         bool detect;
         const char* type = "-";
         Model.GetStorageInfo(&detect, &type, buf, sizeof(buf));
@@ -150,8 +171,9 @@ void SystemInfos::Update()
             type,
             VERSION_FILESYSTEM
         );
-
-        /* System */
+    }
+    else if (focused == View.ui.system.icon)
+    {
         DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
         View.SetSystem(
             VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
@@ -163,22 +185,11 @@ void SystemInfos::Update()
         );
     }
 
-    /* =======================================================
-     * 3. 低频刷新 (5000ms / 0.2Hz)：针对慢速更新的天球图数据
-     * ======================================================= */
-    /* Sky View —— 每 5 秒刷新一次，跟 GSV 数据本身的节流频率对上 */
-    if (skyUpdateCounter == 0)
-    {
-        HAL::Sky_Info_t sky;
-        Model.GetSkyInfo(&sky);
-        View.SetSky(&sky);
-    }
-    
-    /* 更新计数器 */
+    /* skyUpdateCounter 无条件递增/回绕，即使当前不在 Sky View 页面。
+     * 否则离开 Sky 再回来时计数器停在上次的值，要等剩余的周期数
+     * 才会触发第一次刷新，体验上像是"回来后要等几秒才出数据"。 */
     skyUpdateCounter++;
-    
-    // 【修改点2】：现在按 200ms 一次计算，25次正好是 5000ms
-    if (skyUpdateCounter >= 25) 
+    if (skyUpdateCounter >= 25)
     {
         skyUpdateCounter = 0;
     }
