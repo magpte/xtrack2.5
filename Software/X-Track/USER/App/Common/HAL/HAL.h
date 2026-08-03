@@ -129,7 +129,13 @@ double GPS_GetDistanceOffset(GPS_Info_t* info, double preLong, double preLat);
 // clock.year 也会做一次粗略校验（是不是明显没校准过的默认值），不对
 // 的话直接跳过不发。实现细节（CASIC 协议格式、GPS 周/闰秒换算、专用
 // 校验和算法）见 HAL_GPS.cpp。
-void GPS_SendAidingData(double latitude, double longitude, const Clock_Info_t& clock);
+//
+// lastFixUnix：上次成功定位时的 UTC unix 时间戳（秒），来自
+//   sysConfig.lastFixUnix，0 表示从未有过有效定位。
+// nowUnix：本次开机时的 UTC unix 时间戳（秒）。两者的差值用于动态
+//   选择 posAcc/timeAcc：距上次定位越近 → 估计越精确 → TTFF 越短。
+void GPS_SendAidingData(double latitude, double longitude, const Clock_Info_t& clock,
+                        uint32_t lastFixUnix = 0, uint32_t nowUnix = 0);
 
 // 拿最近一次解析完整的 GSV 天球数据（方位角/仰角/信噪比/星座）。
 // 独立于 GPS_Info_t 之外，不随 2Hz 定位一起刷新——GSV 本身被节流成

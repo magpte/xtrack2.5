@@ -71,7 +71,16 @@ static int onEvent(Account* account, Account::EventParam_t* param)
                 utcClock.minute = minute();
                 utcClock.second = second();
 
-                HAL::GPS_SendAidingData(sysConfig.latitude, sysConfig.longitude, utcClock);
+                // 当前 UTC unix 时间戳，与 lastFixUnix 的差值供
+                // GPS_SendAidingData() 动态计算 posAcc/timeAcc。
+                uint32_t nowUnix = (uint32_t)now();
+                HAL::GPS_SendAidingData(
+                    sysConfig.latitude,
+                    sysConfig.longitude,
+                    utcClock,
+                    sysConfig.lastFixUnix,
+                    nowUnix
+                );
             }
         }
         else if (info->cmd == SYSCONFIG_CMD_SET_BRIGHTNESS)
@@ -104,7 +113,23 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             if(gpsInfo.isVaild)
             {
                 sysConfig.longitude = (float)gpsInfo.longitude;
-                sysConfig.latitude = (float)gpsInfo.latitude;
+                sysConfig.latitude  = (float)gpsInfo.latitude;
+
+                // GPS 有效时同时记录当前 UTC unix 时间戳，供下次开机时
+                // 动态计算 posAcc/timeAcc（距上次定位越近，精度估计越紧，
+                // 模块搜星范围越小，TTFF 越短）。
+                // 这里用 RTC 转回 UTC：Clock 账户存的是本地时间，先
+                // 减时区偏移再算 unix 时间戳，和 LOAD 分支里做法一致。
+                HAL::Clock_Info_t clock;
+                if (account->Pull("Clock", &clock, sizeof(clock)) == Account::RES_OK)
+                {
+                    setTime(
+                        clock.hour, clock.minute, clock.second,
+                        clock.day,  clock.month,  clock.year
+                    );
+                    adjustTime(-(int32_t)sysConfig.timeZone * SECS_PER_HOUR);
+                    sysConfig.lastFixUnix = (uint32_t)now();
+                }
             }
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
             HAL::Power_Info_t powerInfo;
@@ -164,8 +189,9 @@ do{ \
     sysConfig.fullChgCap  = CONFIG_GAUGE_FULL_CHG_CAP_DEFAULT;
 #endif
 
-    STORAGE_VALUE_REG(account, sysConfig.longitude, STORAGE_TYPE_FLOAT);
-    STORAGE_VALUE_REG(account, sysConfig.latitude, STORAGE_TYPE_FLOAT);
+    STORAGE_VALUE_REG(account, sysConfig.longitude,    STORAGE_TYPE_FLOAT);
+    STORAGE_VALUE_REG(account, sysConfig.latitude,     STORAGE_TYPE_FLOAT);
+    STORAGE_VALUE_REG(account, sysConfig.lastFixUnix,  STORAGE_TYPE_INT);
 
     STORAGE_VALUE_REG(account, sysConfig.soundEnable, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.screenBrightness, STORAGE_TYPE_INT);

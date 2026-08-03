@@ -126,6 +126,10 @@ typedef struct
     bool mapWGS84;
     uint16_t designCap;
     uint16_t fullChgCap;
+    // 上次成功定位时的 UTC unix 时间戳（秒）。
+    // 0 表示从未有过有效定位。开机时用当前 RTC 时间与这个值的差值，
+    // 动态收紧 AID-INI 里的 posAcc/timeAcc，让 GPS 模块能更快搜星。
+    uint32_t lastFixUnix;
 } SysConfig_Info_t;
 
 /* TrackFilter */

@@ -291,7 +291,8 @@ static uint32_t CASIC_Checksum(uint8_t classId, uint8_t msgId, uint16_t len, con
     return ckSum;
 }
 
-void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock_Info_t& clock)
+void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock_Info_t& clock,
+                             uint32_t lastFixUnix, uint32_t nowUnix)
 {
 #if CONFIG_GPS_AID_ENABLE
     // RTC 没校准过（年份明显不对，比如出厂/复位后的默认值）的话，发
@@ -306,6 +307,66 @@ void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock
     double tow;
     GPS_UtcToWeekTow(clock, &week, &tow);
 
+    // ------------------------------------------------------------------
+    // 动态 posAcc / timeAcc：根据上次成功定位距今多久，分档选择精度估计。
+    //
+    // posAcc（位置精度，单位 m）决定模块要在多大的"置信圆"里搜卫星。
+    // 圆越小，候选星越少，搜星越快，TTFF 越短。但如果估计过于自信、
+    // 而用户实际上已经跑远了（比如坐飞机去了外地），反而会让模块在一
+    // 个错误的地方死磕，适得其反。分档策略：
+    //   < 1 小时  → 5 km：正常骑行/步行，移动距离很有限，估计可以很紧
+    //   < 6 小时  → 30 km：稍长一些，但跑不出一个城市范围
+    //   < 24 小时 → 100 km：隔天开机，可能坐过车，给一个省级范围
+    //   其他/未知 → 200 km：保守的全局 fallback，跟改动前行为一致
+    //
+    // timeAcc（时间精度，单位 s）决定模块在多宽的多普勒频偏范围内搜信号。
+    // RTC 是石英钟，长期不用偏差会积累，但几小时内漂移量级远不到 1 秒。
+    // 时间差越短 → RTC 偏差越小 → timeAcc 可以更紧：
+    //   < 6 小时  → 1 s：RTC 漂移极有限，几十毫秒量级
+    //   < 24 小时 → 2 s：隔天，偏差通常 < 1 秒，留余量
+    //   其他/未知 → 5 s：保守估计（跟改动前行为一致）
+    // ------------------------------------------------------------------
+    float posAcc;
+    float timeAcc;
+    const char* tier;
+
+    // lastFixUnix == 0 说明从未有过有效定位，或者 nowUnix 无效
+    if (lastFixUnix == 0 || nowUnix == 0 || nowUnix <= lastFixUnix)
+    {
+        posAcc  = 200000.0f;
+        timeAcc = 5.0f;
+        tier    = "none(cold)";
+    }
+    else
+    {
+        uint32_t elapsed = nowUnix - lastFixUnix; // 单位：秒
+
+        if (elapsed < 3600U)           // < 1 小时
+        {
+            posAcc  = 5000.0f;
+            timeAcc = 1.0f;
+            tier    = "<1h";
+        }
+        else if (elapsed < 21600U)     // 1~6 小时
+        {
+            posAcc  = 30000.0f;
+            timeAcc = 1.0f;
+            tier    = "1-6h";
+        }
+        else if (elapsed < 86400U)     // 6~24 小时
+        {
+            posAcc  = 100000.0f;
+            timeAcc = 2.0f;
+            tier    = "6-24h";
+        }
+        else                           // > 24 小时
+        {
+            posAcc  = 200000.0f;
+            timeAcc = 5.0f;
+            tier    = ">24h";
+        }
+    }
+
     uint8_t payload[56];
     memset(payload, 0, sizeof(payload));
 
@@ -316,15 +377,7 @@ void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock
     memcpy(&payload[24], &tow,       8);
 
     float freqBias = 0.0f; // 没有频偏数据，flags 里对应位保持 0（无效）
-    // 上次定位点是"记忆"里的位置，不是这次刚测出来的，实际准确度取决
-    // 于这次开机前设备移动了多远。保守按 200km 估计——数量级上足够帮
-    // 模块把搜索范围从"全球"缩小到"这一片"，又不会因为估计过于自信，
-    // 在用户确实跑远了（比如坐飞机去了外地）的时候反而误导模块。
-    float posAcc  = 200000.0f;
-    // RTC 是石英钟，两次开机之间（哪怕隔了几周没用）漂移量级在秒级，
-    // 5 秒是一个安全但不算离谱保守的估计。
-    float timeAcc = 5.0f;
-    float freqAcc = 0.0f;
+    float freqAcc  = 0.0f;
     memcpy(&payload[32], &freqBias, 4);
     memcpy(&payload[36], &posAcc,   4);
     memcpy(&payload[40], &timeAcc,  4);
@@ -360,8 +413,8 @@ void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock
     GPS_SERIAL.write(packet, sizeof(packet));
 
     Serial.printf(
-        "GPS: AID-INI sent (week=%u, tow=%.1f, lat=%.5f, lon=%.5f)\r\n",
-        week, tow, latitude, longitude
+        "GPS: AID-INI sent (week=%u, tow=%.1f, lat=%.5f, lon=%.5f, tier=%s, posAcc=%.0fm, timeAcc=%.0fs)\r\n",
+        week, tow, latitude, longitude, tier, (double)posAcc, (double)timeAcc
     );
 #endif
 }

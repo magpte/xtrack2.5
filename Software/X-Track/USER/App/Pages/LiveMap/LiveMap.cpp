@@ -105,12 +105,17 @@ void LiveMap::onViewDidAppear()
     lv_img_rle_cache_init();
 #endif
 
+    // 优化1：timer 周期从 100ms 改为 CONFIG_GPS_REFR_PERIOD（500ms）。
+    // 原来用 100ms 是为了让 zoom 条"3 秒后自动隐藏"的判断能及时触发，
+    // 但这导致 Update() 以 10Hz 被唤醒，即使地图根本没更新也要跑一遍
+    // lv_tick_elaps() 比较。现在 zoom 隐藏改用 lv_anim 延迟回调处理，
+    // 不再需要高频轮询——timer 可以直接对齐 GPS 刷新周期。
     priv.timer = lv_timer_create([](lv_timer_t* timer)
     {
         LiveMap* instance = (LiveMap*)timer->user_data;
         instance->Update();
     },
-    100,
+    CONFIG_GPS_REFR_PERIOD,
     this);
     priv.lastMapUpdateTime = 0;
     lv_obj_clear_flag(View.ui.map.cont, LV_OBJ_FLAG_HIDDEN);
@@ -120,6 +125,15 @@ void LiveMap::onViewDidAppear()
     priv.lastTileContOriPoint.y = 0;
     priv.isStationary = false;   // 每次进入页面先按正常刷新频率来，避免上次退出时
                                   // 恰好处于静止状态被错误带入这次的第一帧判断
+
+    // 优化2：初始化为 INT32_MIN，保证第一帧一定会刷新 map.cont 位置。
+    priv.lastContOffset.x = INT32_MIN;
+    priv.lastContOffset.y = INT32_MIN;
+
+    // 优化3：初始化为明显不可能出现的值，保证第一帧一定会刷新箭头。
+    priv.lastArrowX     = INT16_MIN;
+    priv.lastArrowY     = INT16_MIN;
+    priv.lastArrowAngle = INT16_MIN;
 
     priv.isTrackAvtive = Model.GetTrackFilterActive();
     if (!priv.isTrackAvtive)
@@ -172,12 +186,11 @@ void LiveMap::AttachEvent(lv_obj_t* obj)
 
 void LiveMap::Update()
 {
-    // 静止时把检查间隔从 CONFIG_GPS_REFR_PERIOD（默认 1000ms）拉长到
-    // CONFIG_GPS_REFR_PERIOD_STATIONARY（默认 3000ms），减少 CheckPosition()
-    // 的调用频率——包括其中的瓦片坐标换算、SportInfo 文本刷新，以及最容易
-    // 被 GPS 噪声在瓦片边界附近反复触发的 MapTileContReload()。
-    // 一旦速度重新超过退出阈值（在 CheckPosition() 里判断），下一次检查
-    // 就会立刻恢复到 CONFIG_GPS_REFR_PERIOD。
+    // timer 已经对齐到 CONFIG_GPS_REFR_PERIOD（优化1），静止时额外跳过
+    // CheckPosition()：直接把 timer 周期改成 STATIONARY 值太粗暴，
+    // 用节流计数更灵活（万一将来 timer 周期和 GPS 周期再次分开）。
+    // 静止时每隔 CONFIG_GPS_REFR_PERIOD_STATIONARY / CONFIG_GPS_REFR_PERIOD
+    // 次 timer 才真正跑一次 CheckPosition()，动起来立刻恢复全速。
     uint32_t period = priv.isStationary
                        ? CONFIG_GPS_REFR_PERIOD_STATIONARY
                        : CONFIG_GPS_REFR_PERIOD;
@@ -188,22 +201,41 @@ void LiveMap::Update()
         SportInfoUpdate();
         priv.lastMapUpdateTime = lv_tick_get();
     }
-    else if (lv_tick_elaps(priv.lastContShowTime) >= 3000)
-    {
-        lv_obj_add_state(View.ui.zoom.cont, LV_STATE_USER_1);
-    }
+    // 优化1：zoom 自动隐藏逻辑已移至 UpdateDelay() 里用 lv_anim 延迟处理，
+    // 这里不再需要 else 分支轮询 lastContShowTime，减少每次 timer 唤醒的开销。
 }
 
 void LiveMap::UpdateDelay(uint32_t ms)
 {
-    // 换算基准是 CONFIG_GPS_REFR_PERIOD（现在是 500ms，配合模块提到的 2Hz
-    // 定位频率），不能再写死 1000，不然这里的换算会跟实际周期对不上。
-    // 如果调用时恰好处于静止节流状态（周期是
-    // CONFIG_GPS_REFR_PERIOD_STATIONARY），这个换算依然会不对，导致缩放条
-    // 这类主动交互的响应被拖慢到静止周期那么久——用户正在动缩放条本身就
-    // 说明不是"闲置"，所以这里顺带退出静止状态。
+    // 用户正在操作缩放条，退出静止状态以立即恢复正常刷新频率。
     priv.isStationary = false;
     priv.lastMapUpdateTime = lv_tick_get() - CONFIG_GPS_REFR_PERIOD + ms;
+
+    // 优化1：zoom 条自动隐藏改用 lv_anim 延迟回调，不再依赖 timer 轮询
+    // lastContShowTime。每次调用 UpdateDelay()（即用户转动缩放滑块时）
+    // 先取消上一次还在倒计时的隐藏动画，再重新开一个 3 秒延迟：
+    //   - 如果 3 秒内没再操作 → 延迟到期，zoom 条自动滑出隐藏
+    //   - 如果 3 秒内又操作了 → 旧延迟被取消，重新计时，不会误隐藏
+    // 这样彻底去掉了原来为判断"3 秒是否到了"而维持的高频轮询分支。
+    lv_obj_clear_state(View.ui.zoom.cont, LV_STATE_USER_1); // 先确保可见
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, View.ui.zoom.cont);
+    // exec_cb 设为 nullptr：这个动画只用来做延迟触发，不需要逐帧改任何属性；
+    // 真正的"隐藏"在 ready_cb 里通过设置 LV_STATE_USER_1 完成（View 里已经
+    // 为这个 state 配置了 x 偏移 + opa 渐出的 CSS transition，见
+    // LiveMapView.cpp ZoomCtrl_Create()）。
+    lv_anim_set_exec_cb(&a, nullptr);
+    lv_anim_set_values(&a, 0, 0);
+    lv_anim_set_time(&a, 0);       // 动画本身时长为 0
+    lv_anim_set_delay(&a, 3000);   // 延迟 3 秒后触发 ready_cb
+    lv_anim_set_ready_cb(&a, [](lv_anim_t* anim)
+    {
+        lv_obj_t* cont = (lv_obj_t*)anim->var;
+        lv_obj_add_state(cont, LV_STATE_USER_1);
+    });
+    lv_anim_start(&a);
 }
 
 void LiveMap::SportInfoUpdate()
@@ -321,12 +353,21 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
     TileConv::Point_t curPoint = { mapX, mapY };
     Model.tileConv.GetOffset(&offset, &curPoint);
 
-    /* arrow */
+    /* arrow — 优化3：pos 和 angle 都没变时跳过，避免 lv_img_set_angle 的旋转计算 */
     lv_obj_t* img = View.ui.map.imgArrow;
     Model.tileConv.GetFocusOffset(&offset);
-    lv_coord_t x = offset.x - lv_obj_get_width(img) / 2;
-    lv_coord_t y = offset.y - lv_obj_get_height(img) / 2;
-    View.SetImgArrowStatus(x, y, course);
+    lv_coord_t arrowX    = offset.x - lv_obj_get_width(img) / 2;
+    lv_coord_t arrowY    = offset.y - lv_obj_get_height(img) / 2;
+    int16_t    arrowAngle = (int16_t)(course * 10.0f);
+    if (arrowX     != priv.lastArrowX ||
+        arrowY     != priv.lastArrowY ||
+        arrowAngle != priv.lastArrowAngle)
+    {
+        priv.lastArrowX     = arrowX;
+        priv.lastArrowY     = arrowY;
+        priv.lastArrowAngle = arrowAngle;
+        View.SetImgArrowStatus(arrowX, arrowY, course);
+    }
 
     /* active line */
     if (priv.isTrackAvtive)
@@ -334,12 +375,15 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
         View.SetLineActivePoint((lv_coord_t)offset.x, (lv_coord_t)offset.y);
     }
 
-    /* map cont */
+    /* map cont — 优化2：offset 没变时跳过 lv_obj_set_pos，避免 LVGL 脏区标记 */
     Model.tileConv.GetTileContainerOffset(&offset);
-
-    lv_coord_t baseX = (LV_HOR_RES - CONFIG_LIVE_MAP_VIEW_WIDTH) / 2;
-    lv_coord_t baseY = (LV_VER_RES - CONFIG_LIVE_MAP_VIEW_HEIGHT) / 2;
-    lv_obj_set_pos(View.ui.map.cont, baseX - offset.x, baseY - offset.y);
+    if (offset.x != priv.lastContOffset.x || offset.y != priv.lastContOffset.y)
+    {
+        priv.lastContOffset = offset;
+        lv_coord_t baseX = (LV_HOR_RES - CONFIG_LIVE_MAP_VIEW_WIDTH) / 2;
+        lv_coord_t baseY = (LV_VER_RES - CONFIG_LIVE_MAP_VIEW_HEIGHT) / 2;
+        lv_obj_set_pos(View.ui.map.cont, baseX - offset.x, baseY - offset.y);
+    }
 }
 
 void LiveMap::MapTileContReload()
@@ -449,8 +493,8 @@ void LiveMap::onEvent(lv_event_t* event)
             int32_t levelMax = instance->Model.mapConv.GetLevelMax();
             lv_label_set_text_fmt(instance->View.ui.zoom.labelInfo, "%d/%d", level, levelMax);
 
-            lv_obj_clear_state(instance->View.ui.zoom.cont, LV_STATE_USER_1);
-            instance->priv.lastContShowTime = lv_tick_get();
+            // lv_obj_clear_state 和 zoom 3 秒自动隐藏的计时已统一由
+            // UpdateDelay() 里的 lv_anim 机制处理（优化1），此处不再重复。
             instance->UpdateDelay(200);
         }
         else if (code == LV_EVENT_PRESSED)

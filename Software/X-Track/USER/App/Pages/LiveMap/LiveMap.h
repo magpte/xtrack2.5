@@ -30,12 +30,24 @@ private:
     struct
     {
         uint32_t lastMapUpdateTime;
-        uint32_t lastContShowTime;
         lv_timer_t* timer;
         TileConv::Point_t lastTileContOriPoint;
         bool isTrackAvtive;
         bool isStationary;   // 迟滞判断后的"静止"状态，见 CheckPosition()
+
+        // 优化2：缓存上次 map.cont 的 tile 容器偏移，只有实际变化时才
+        // 调 lv_obj_set_pos，避免静止时每帧都触发 LVGL 脏区标记。
+        // 初始化成 INT32_MIN 保证第一帧一定会刷新。
+        TileConv::Point_t lastContOffset;
+
+        // 优化3：缓存上次箭头的位置和旋转角度（×10，同 lv_img_set_angle），
+        // 只有发生变化时才调 SetImgArrowStatus，避免静止时重复触发图片
+        // 旋转运算（lv_img_set_angle 内部有三角函数和像素变换）。
+        lv_coord_t lastArrowX;
+        lv_coord_t lastArrowY;
+        int16_t    lastArrowAngle; // lv_img_set_angle 单位：0.1°
     } priv;
+
 
     static uint16_t mapLevelCurrent;
 
