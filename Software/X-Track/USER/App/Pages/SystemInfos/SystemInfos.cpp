@@ -145,8 +145,12 @@ void SystemInfos::Update()
     else if (focused == View.ui.imu.icon)
     {
         int steps;
-        Model.GetIMUInfo(&steps, buf, sizeof(buf));
-        View.SetIMU(steps, buf);
+        /* Pull 未就绪时 GetIMUInfo 返回 false，直接跳过 SetIMU，
+         * 保持屏幕上一次有效数据不变，消除每帧先闪全零再刷新的现象。 */
+        if (Model.GetIMUInfo(&steps, buf, sizeof(buf)))
+        {
+            View.SetIMU(steps, buf);
+        }
     }
     else if (focused == View.ui.rtc.icon)
     {

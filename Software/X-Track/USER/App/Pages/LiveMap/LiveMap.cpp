@@ -1,5 +1,14 @@
 #include "LiveMap.h"
 #include "Config/Config.h"
+// ARMCC 在 C++ 模式下编译 <stdint.h> 时，INT32_MIN/INT16_MIN 等极值宏
+// 需要 __STDC_LIMIT_MACROS 才会导出（C++ 历史遗留问题）。
+// 这里直接用保护宏手动定义，跨工具链最可靠。
+#ifndef INT32_MIN
+#  define INT32_MIN  (-2147483647L - 1)
+#endif
+#ifndef INT16_MIN
+#  define INT16_MIN  (-32767 - 1)
+#endif
 
 #if CONFIG_MAP_IMG_RLE_ENABLE
 #include "Utils/lv_img_rle/lv_img_rle.h"

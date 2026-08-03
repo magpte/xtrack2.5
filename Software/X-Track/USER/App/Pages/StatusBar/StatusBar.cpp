@@ -27,13 +27,18 @@
 
 /* TEST BRANCH: 跨页面性能监控 overlay (电流/CPU/内存)
  * 改为 0 即可彻底关掉，正式版去掉此段即可 */
-#define CONFIG_PERF_MONITOR_ENABLE 1
+#define CONFIG_PERF_MONITOR_ENABLE 0
 
 #define BATT_USAGE_HEIGHT (lv_obj_get_style_height(ui.battery.img, 0) - 6)
 #define BATT_USAGE_WIDTH  (lv_obj_get_style_width(ui.battery.img, 0) - 4)
 
 #define STATUS_BAR_ROW_HEIGHT 25
+#if CONFIG_PERF_MONITOR_ENABLE
+/* TEST BRANCH: 第二行显示性能数据，StatusBar 需要两倍高度 */
 #define STATUS_BAR_HEIGHT     (STATUS_BAR_ROW_HEIGHT * 2)
+#else
+#define STATUS_BAR_HEIGHT     STATUS_BAR_ROW_HEIGHT
+#endif
 
 static Account* actStatusBar;
 
@@ -124,7 +129,7 @@ static lv_obj_t* StatusBar_RecAnimLabelCreate(lv_obj_t* par)
     lv_anim_label_set_time(alabel, 500);
     lv_anim_label_add_style(alabel, &style_label);
 
-    lv_obj_align(alabel, LV_ALIGN_RIGHT_MID, -45, -(STATUS_BAR_ROW_HEIGHT / 2));
+    lv_obj_align(alabel, LV_ALIGN_RIGHT_MID, -45, 0);
     //lv_obj_set_style_border_color(alabel, lv_color_white(), 0);
     //lv_obj_set_style_border_width(alabel, 1, 0);
 
@@ -267,7 +272,7 @@ static lv_obj_t* StatusBar_SdCardImage_Create(lv_obj_t* par)
 {
     lv_obj_t* img = lv_img_create(par);
     lv_img_set_src(img, ResourcePool::GetImage("sd_card"));
-    lv_obj_align(img, LV_ALIGN_LEFT_MID, 55, -(STATUS_BAR_ROW_HEIGHT / 2) - 1);
+    lv_obj_align(img, LV_ALIGN_LEFT_MID, 55, 0);
 
     lv_obj_set_style_translate_y(img, -STATUS_BAR_HEIGHT, LV_STATE_DISABLED);
 
@@ -326,7 +331,7 @@ lv_obj_t* Page::StatusBar_Create(lv_obj_t* par)
     /* satellite */
     lv_obj_t* img = lv_img_create(cont);
     lv_img_set_src(img, ResourcePool::GetImage("satellite"));
-    lv_obj_align(img, LV_ALIGN_LEFT_MID, 14, -(STATUS_BAR_ROW_HEIGHT / 2));
+    lv_obj_align(img, LV_ALIGN_LEFT_MID, 14, 0);
     ui.satellite.img = img;
 
     lv_obj_t* label = lv_label_create(cont);
@@ -342,7 +347,7 @@ lv_obj_t* Page::StatusBar_Create(lv_obj_t* par)
     label = lv_label_create(cont);
     lv_obj_add_style(label, &style_label, 0);
     lv_label_set_text(label, "00:00");
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -(STATUS_BAR_ROW_HEIGHT / 2));
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
     ui.labelClock = label;
 
     /* recorder */
@@ -370,7 +375,7 @@ lv_obj_t* Page::StatusBar_Create(lv_obj_t* par)
     /* battery */
     img = lv_img_create(cont);
     lv_img_set_src(img, ResourcePool::GetImage("battery"));
-    lv_obj_align(img, LV_ALIGN_RIGHT_MID, -35, -(STATUS_BAR_ROW_HEIGHT / 2));
+    lv_obj_align(img, LV_ALIGN_RIGHT_MID, -35, 0);
     lv_img_t* img_ext = (lv_img_t*)img;
     lv_obj_set_size(img, img_ext->w, img_ext->h);
     ui.battery.img = img;

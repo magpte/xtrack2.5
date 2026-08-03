@@ -67,14 +67,19 @@ void SystemInfosModel::GetGPSInfo(
     *speed = gps.speed;
 }
 
-void SystemInfosModel::GetIMUInfo(
+bool SystemInfosModel::GetIMUInfo(
     int* step,
     char* info, uint32_t len
 )
 {
     HAL::IMU_Info_t imu = { 0 };
 
-    account->Pull("IMU", &imu, sizeof(imu));
+    if (account->Pull("IMU", &imu, sizeof(imu)) != Account::RES_OK)
+    {
+        /* Pull 未就绪时保留上次数据，避免每帧先显示全零再跳回正确值 */
+        return false;
+    }
+
     *step = imu.steps;
     snprintf(
         info,
@@ -87,6 +92,7 @@ void SystemInfosModel::GetIMUInfo(
         imu.gy,
         imu.gz
     );
+    return true;
 }
 
 void SystemInfosModel::GetRTCInfo(

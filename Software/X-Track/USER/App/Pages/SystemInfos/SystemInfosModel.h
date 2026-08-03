@@ -27,7 +27,7 @@ public:
         float* speed
     );
 
-    void GetIMUInfo(
+    bool GetIMUInfo(
         int* step,
         char* info, uint32_t len
     );
