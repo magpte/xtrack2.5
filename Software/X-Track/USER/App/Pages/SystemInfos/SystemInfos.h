@@ -42,6 +42,16 @@ private:
     // Update()（即 5 秒）才问一次。计数器无条件递增，不管当前焦点
     // 是不是 Sky View，避免切换回来时出现等待延迟。
     uint8_t skyUpdateCounter;
+
+    typedef struct
+    {
+        bool valid;
+        lv_obj_t* lastFocused;
+        char itemStr[128];
+        uint8_t buffer[3900]; // 4KB SRAM 脏缓存空间，消除 5Hz 定时器盲目刷新与重绘
+    } SystemInfosCache_t;
+
+    SystemInfosCache_t cache;
 };
 
 }

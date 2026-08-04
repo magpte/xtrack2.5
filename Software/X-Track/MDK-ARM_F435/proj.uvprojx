@@ -336,7 +336,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls>--gnu  --diag_warning=4017</MiscControls>
-              <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_LVGL_MEM_SIZE_KB=96</Define>
+              <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_LVGL_MEM_SIZE_KB=120</Define>
               <Undefine></Undefine>
               <IncludePath>..\ArduinoAPI;.\Platform\Core;.\Platform;..\Libraries;..\Libraries\SdFat\src;..\USER\App;..\USER;..\Simulator\LVGL.Simulator</IncludePath>
             </VariousControls>

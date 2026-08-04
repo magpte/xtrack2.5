@@ -31,8 +31,8 @@ using namespace DataProc;
 // 配合这次一起做的另一项改动：把喂狗从协作式任务调度器挪到硬件定时器
 // 中断里（见 HAL.cpp），两者是互补关系，不是互相替代。
 // ---------------------------------------------------------------------
-#define RECORDER_WRITE_BUF_SIZE     1024
-#define RECORDER_SYNC_INTERVAL_MS   30000
+#define RECORDER_WRITE_BUF_SIZE     8192
+#define RECORDER_SYNC_INTERVAL_MS   60000
 
 typedef struct
 {

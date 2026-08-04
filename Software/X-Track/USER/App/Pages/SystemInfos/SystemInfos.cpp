@@ -53,6 +53,8 @@ void SystemInfos::onViewWillAppear()
     timer = lv_timer_create(onTimerUpdate, 200, this);
     lv_timer_ready(timer);
     skyUpdateCounter = 0;
+    cache.valid = false;
+    cache.lastFocused = nullptr;
 
     View.SetScrollToY(_root, -LV_VER_RES, LV_ANIM_OFF);
     lv_obj_set_style_opa(_root, LV_OPA_TRANSP, 0);
@@ -101,40 +103,47 @@ void SystemInfos::AttachEvent(lv_obj_t* obj)
 void SystemInfos::Update()
 {
     char buf[64];
+    char tmpStr[128];
 
     /* 根据当前焦点条目，只刷新用户正在看的那一组数据。
      * 每个条目占满整屏（snap scrolling），不同条目之间互不可见，
-     * 没必要把所有 7~8 组数据都 Pull + 更新 label——不可见的数据
-     * 白白占用 CPU/总线时间，而且在中频/低频刷新叠加的那一拍，
-     * 回调总耗时可能超过 200ms 定时器周期，导致 LVGL 跳过下一个
-     * 周期，用户就会看到时间 2 秒 2 秒地跳。 */
+     * 利用 4KB SRAM 脏数据缓存，只在信息真正发生改变时才驱动 LVGL 更新。 */
 
     lv_group_t* group = lv_group_get_default();
     lv_obj_t* focused = group ? lv_group_get_focused(group) : nullptr;
+
+    if (!cache.valid || focused != cache.lastFocused)
+    {
+        cache.valid = true;
+        cache.lastFocused = focused;
+        cache.itemStr[0] = '\0';
+    }
 
     if (focused == View.ui.sport.icon)
     {
         float trip;
         float maxSpd;
         Model.GetSportInfo(&trip, buf, sizeof(buf), &maxSpd);
-        View.SetSport(trip, buf, maxSpd);
+        snprintf(tmpStr, sizeof(tmpStr), "%.2f|%s|%.2f", trip, buf, maxSpd);
+        if (strcmp(cache.itemStr, tmpStr) != 0)
+        {
+            strcpy(cache.itemStr, tmpStr);
+            View.SetSport(trip, buf, maxSpd);
+        }
     }
     else if (focused == View.ui.gps.icon)
     {
-        float lat;
-        float lng;
-        float alt;
-        float course;
-        float speed;
+        float lat, lng, alt, course, speed;
         Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
-        View.SetGPS(lat, lng, alt, buf, course, speed);
+        snprintf(tmpStr, sizeof(tmpStr), "%.5f|%.5f|%.1f|%s|%.1f|%.1f", lat, lng, alt, buf, course, speed);
+        if (strcmp(cache.itemStr, tmpStr) != 0)
+        {
+            strcpy(cache.itemStr, tmpStr);
+            View.SetGPS(lat, lng, alt, buf, course, speed);
+        }
     }
     else if (focused == View.sky.icon)
     {
-        /* Sky View 数据本身是 GSV 语句，模块按 0.5Hz 发送，HAL 侧
-         * 还需要集齐三个星座才切换快照，实际有效更新远低于 5Hz。
-         * 保持 5 秒的低频刷新（skyUpdateCounter == 0 时），既跟数据
-         * 源节奏匹配，又避免每 200ms 都 memcpy + invalidate。 */
         if (skyUpdateCounter == 0)
         {
             HAL::Sky_Info_t sky;
@@ -145,53 +154,71 @@ void SystemInfos::Update()
     else if (focused == View.ui.imu.icon)
     {
         int steps;
-        /* Pull 未就绪时 GetIMUInfo 返回 false，直接跳过 SetIMU，
-         * 保持屏幕上一次有效数据不变，消除每帧先闪全零再刷新的现象。 */
         if (Model.GetIMUInfo(&steps, buf, sizeof(buf)))
         {
-            View.SetIMU(steps, buf);
+            snprintf(tmpStr, sizeof(tmpStr), "%d|%s", steps, buf);
+            if (strcmp(cache.itemStr, tmpStr) != 0)
+            {
+                strcpy(cache.itemStr, tmpStr);
+                View.SetIMU(steps, buf);
+            }
         }
     }
     else if (focused == View.ui.rtc.icon)
     {
         Model.GetRTCInfo(buf, sizeof(buf));
-        View.SetRTC(buf);
+        if (strcmp(cache.itemStr, buf) != 0)
+        {
+            strcpy(cache.itemStr, buf);
+            View.SetRTC(buf);
+        }
     }
     else if (focused == View.ui.battery.icon)
     {
         int usage;
         float voltage;
         Model.GetBatteryInfo(&usage, &voltage, buf, sizeof(buf));
-        View.SetBattery(usage, voltage, buf);
+        snprintf(tmpStr, sizeof(tmpStr), "%d|%.2f|%s", usage, voltage, buf);
+        if (strcmp(cache.itemStr, tmpStr) != 0)
+        {
+            strcpy(cache.itemStr, tmpStr);
+            View.SetBattery(usage, voltage, buf);
+        }
     }
     else if (focused == View.ui.storage.icon)
     {
         bool detect;
         const char* type = "-";
         Model.GetStorageInfo(&detect, &type, buf, sizeof(buf));
-        View.SetStorage(
-            detect ? "OK" : "ERROR",
-            buf,
-            type,
-            VERSION_FILESYSTEM
-        );
+        snprintf(tmpStr, sizeof(tmpStr), "%d|%s|%s|%s", detect, buf, type, VERSION_FILESYSTEM);
+        if (strcmp(cache.itemStr, tmpStr) != 0)
+        {
+            strcpy(cache.itemStr, tmpStr);
+            View.SetStorage(
+                detect ? "OK" : "ERROR",
+                buf,
+                type,
+                VERSION_FILESYSTEM
+            );
+        }
     }
     else if (focused == View.ui.system.icon)
     {
         DataProc::MakeTimeString(lv_tick_get(), buf, sizeof(buf));
-        View.SetSystem(
-            VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
-            VERSION_AUTHOR_NAME,
-            VERSION_LVGL,
-            buf,
-            VERSION_COMPILER,
-            VERSION_BUILD_TIME
-        );
+        if (strcmp(cache.itemStr, buf) != 0)
+        {
+            strcpy(cache.itemStr, buf);
+            View.SetSystem(
+                VERSION_FIRMWARE_NAME " " VERSION_SOFTWARE,
+                VERSION_AUTHOR_NAME,
+                VERSION_LVGL,
+                buf,
+                VERSION_COMPILER,
+                VERSION_BUILD_TIME
+            );
+        }
     }
 
-    /* skyUpdateCounter 无条件递增/回绕，即使当前不在 Sky View 页面。
-     * 否则离开 Sky 再回来时计数器停在上次的值，要等剩余的周期数
-     * 才会触发第一次刷新，体验上像是"回来后要等几秒才出数据"。 */
     skyUpdateCounter++;
     if (skyUpdateCounter >= 25)
     {

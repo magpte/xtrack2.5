@@ -60,6 +60,7 @@ void Dialplate::onViewWillAppear()
 
     Model.SetStatusBarStyle(DataProc::STATUS_BAR_STYLE_TRANSP);
 
+    cache.valid = false;
     Update();
 
     View.AppearAnimStart();
@@ -115,25 +116,53 @@ void Dialplate::AttachEvent(lv_obj_t* obj)
 
 void Dialplate::Update()
 {
-    char buf[16];
-    lv_label_set_text_fmt(View.ui.topInfo.labelSpeed, "%02d", (int)Model.GetSpeed());
+    char tmpBuf[64];
 
-    lv_label_set_text_fmt(View.ui.bottomInfo.labelInfoGrp[0].lableValue, "%0.1f km/h", Model.GetAvgSpeed());
-    lv_label_set_text(
-        View.ui.bottomInfo.labelInfoGrp[1].lableValue,
-        DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, buf, sizeof(buf))
-    );
-    lv_label_set_text_fmt(
-        View.ui.bottomInfo.labelInfoGrp[2].lableValue,
-        "%0.1f km",
-        Model.sportStatusInfo.singleDistance / 1000
-    );
-    lv_label_set_text_fmt(
-        View.ui.bottomInfo.labelInfoGrp[3].lableValue,
-        "%0.1f %s",
-        Model.GetCourse(),  
-        Model.GetCourseDirection()  
-    );
+    if (!cache.valid)
+    {
+        memset(&cache, 0, sizeof(cache));
+        cache.valid = true;
+    }
+
+    // 1. Top Speed Label
+    snprintf(tmpBuf, sizeof(tmpBuf), "%02d", (int)Model.GetSpeed());
+    if (strcmp(cache.speedStr, tmpBuf) != 0)
+    {
+        strcpy(cache.speedStr, tmpBuf);
+        lv_label_set_text(View.ui.topInfo.labelSpeed, cache.speedStr);
+    }
+
+    // 2. Avg Speed Label
+    snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km/h", Model.GetAvgSpeed());
+    if (strcmp(cache.avgSpeedStr, tmpBuf) != 0)
+    {
+        strcpy(cache.avgSpeedStr, tmpBuf);
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[0].lableValue, cache.avgSpeedStr);
+    }
+
+    // 3. Time Label
+    DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, tmpBuf, sizeof(tmpBuf));
+    if (strcmp(cache.timeStr, tmpBuf) != 0)
+    {
+        strcpy(cache.timeStr, tmpBuf);
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[1].lableValue, cache.timeStr);
+    }
+
+    // 4. Distance Label
+    snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km", Model.sportStatusInfo.singleDistance / 1000.0f);
+    if (strcmp(cache.distStr, tmpBuf) != 0)
+    {
+        strcpy(cache.distStr, tmpBuf);
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[2].lableValue, cache.distStr);
+    }
+
+    // 5. Course Label
+    snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f %s", Model.GetCourse(), Model.GetCourseDirection());
+    if (strcmp(cache.courseStr, tmpBuf) != 0)
+    {
+        strcpy(cache.courseStr, tmpBuf);
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[3].lableValue, cache.courseStr);
+    }
 }
 
 void Dialplate::onTimerUpdate(lv_timer_t* timer)
