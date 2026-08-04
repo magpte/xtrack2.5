@@ -53,6 +53,12 @@
 #define CONFIG_LIVE_MAP_STATIONARY_ENTER_KPH  1.0f
 #define CONFIG_LIVE_MAP_STATIONARY_EXIT_KPH   2.5f
 
+// 像素死区过滤阈值（单位：像素）。当地图容器的微小偏移小于该值时，忽略 lv_obj_set_pos() 重绘
+#define CONFIG_LIVE_MAP_DEADBAND_THRESHOLD    2
+
+// 轨迹渲染时的屏幕空间抽稀间距阈值（单位：像素）
+#define CONFIG_TRACK_LINE_SIMPLIFY_MIN_DIST   2
+
 #define CONFIG_GPS_LONGITUDE_DEFAULT          113.055735f
 #define CONFIG_GPS_LATITUDE_DEFAULT           23.011105f
 

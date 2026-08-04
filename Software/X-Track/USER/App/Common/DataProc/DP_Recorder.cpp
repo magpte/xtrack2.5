@@ -47,44 +47,59 @@ typedef struct
     uint32_t lastSyncTick;     // 上一次真正 sync() 落盘的时刻（lv_tick_get()）
 } Recorder_t;
 
-// 把缓冲区里已经攒的内容真正写进文件（一次 lv_fs_write，不是每个点一次）。
-// 只在这里才会真正触碰文件系统的写入接口。
-static lv_fs_res_t Recorder_FlushBuffer(Recorder_t* recorder)
+#define SD_SECTOR_SIZE              512
+
+// 把缓冲区里已经攒的内容写进文件。
+// forceAll = false 时按照 512 字节物理扇区对齐，仅将整扇区数据落盘，尾部零头留在缓冲区中，消除 Flash Read-Modify-Write。
+// forceAll = true 时（如停止录制、文件同步或超出容量）将缓冲区全部内容落盘。
+static lv_fs_res_t Recorder_FlushBuffer(Recorder_t* recorder, bool forceAll = false)
 {
     if (recorder->writeBufLen == 0)
     {
         return LV_FS_RES_OK;  // 没什么好写的，不做无意义的空写入
     }
 
+    uint32_t flushLen = recorder->writeBufLen;
+    if (!forceAll)
+    {
+        flushLen = (recorder->writeBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
+    }
+
+    if (flushLen == 0)
+    {
+        return LV_FS_RES_OK;
+    }
+
     lv_fs_res_t res = lv_fs_write(
                            &(recorder->file),
                            recorder->writeBuf,
-                           recorder->writeBufLen,
+                           flushLen,
                            NULL
                        );
 
-    recorder->writeBufLen = 0;
+    recorder->writeBufLen -= flushLen;
+    if (recorder->writeBufLen > 0)
+    {
+        memmove(recorder->writeBuf, recorder->writeBuf + flushLen, recorder->writeBufLen);
+    }
+
     return res;
 }
 
-// 把一段字符串追加进缓冲区；如果这段内容本身就装不下（或者加进去会
-// 超出缓冲区容量），先把缓冲区里已有的内容落盘腾地方，再重新尝试。
-// 单次字符串长度理论上不会超过缓冲区容量（GPX 的开头/结尾标签、单个
-// trkpt 都远小于 1KB），如果真的遇到异常长的字符串，直接绕过缓冲区
-// 直写，不丢数据、只是退化成跟原来一样的直接写入。
+// 把一段字符串追加进缓冲区；如果加进去会超出缓冲区容量，先把缓冲区里的整扇区数据落盘腾地方。
 static lv_fs_res_t Recorder_BufferedWrite(Recorder_t* recorder, const char* str)
 {
     uint32_t len = (uint32_t)strlen(str);
 
     if (len >= RECORDER_WRITE_BUF_SIZE)
     {
-        Recorder_FlushBuffer(recorder);
+        Recorder_FlushBuffer(recorder, true);
         return lv_fs_write(&(recorder->file), str, len, NULL);
     }
 
     if (recorder->writeBufLen + len > RECORDER_WRITE_BUF_SIZE)
     {
-        lv_fs_res_t res = Recorder_FlushBuffer(recorder);
+        lv_fs_res_t res = Recorder_FlushBuffer(recorder, false);
         if (res != LV_FS_RES_OK)
         {
             return res;
@@ -239,7 +254,7 @@ static void Recorder_RecStop(Recorder_t* recorder)
     // 停止录制是唯一真正"不能再拖"的时刻——不管缓冲区里还剩多少没写、
     // 上次 sync 是多久之前，这里必须把剩下的内容全部落盘并真正 sync()，
     // 不然缓冲区里攒着的最后一批轨迹点会随着文件关闭而丢失。
-    Recorder_FlushBuffer(recorder);
+    Recorder_FlushBuffer(recorder, true);
 
     SdFile* sdFile = (SdFile*)(file_p->file_d);
     if (sdFile != NULL)

@@ -1,5 +1,7 @@
 #include "LiveMap.h"
 #include "Config/Config.h"
+#include <stdlib.h>
+#include <math.h>
 // ARMCC 在 C++ 模式下编译 <stdint.h> 时，INT32_MIN/INT16_MIN 等极值宏
 // 需要 __STDC_LIMIT_MACROS 才会导出（C++ 历史遗留问题）。
 // 这里直接用保护宏手动定义，跨工具链最可靠。
@@ -81,6 +83,7 @@ void LiveMap::onViewLoad()
     Model.pointFilter.userData = this;
 
     /* Line filter */
+    Model.lineFilter.SetMinDistance(CONFIG_TRACK_LINE_SIMPLIFY_MIN_DIST);
     Model.lineFilter.SetOutputPointCallback(onTrackLineEvent);
     Model.lineFilter.userData = this;
 }
@@ -408,9 +411,11 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
         View.SetLineActivePoint((lv_coord_t)offset.x, (lv_coord_t)offset.y);
     }
 
-    /* map cont — 优化2：offset 没变时跳过 lv_obj_set_pos，避免 LVGL 脏区标记 */
+    /* map cont — 像素死区过滤优化：偏移量改动小于死区阈值时跳过 lv_obj_set_pos，避免 LVGL 脏区标记与无谓全屏重绘 */
     Model.tileConv.GetTileContainerOffset(&offset);
-    if (offset.x != priv.lastContOffset.x || offset.y != priv.lastContOffset.y)
+    if (priv.lastContOffset.x == INT32_MIN ||
+        LV_ABS(offset.x - priv.lastContOffset.x) >= CONFIG_LIVE_MAP_DEADBAND_THRESHOLD ||
+        LV_ABS(offset.y - priv.lastContOffset.y) >= CONFIG_LIVE_MAP_DEADBAND_THRESHOLD)
     {
         priv.lastContOffset = offset;
         lv_coord_t baseX = (LV_HOR_RES - CONFIG_LIVE_MAP_VIEW_WIDTH) / 2;

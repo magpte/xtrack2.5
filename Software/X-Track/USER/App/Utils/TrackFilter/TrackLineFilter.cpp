@@ -51,6 +51,7 @@ void TrackLineFilter::Reset()
     priv.pointCnt = 0;
     priv.pointOutputCnt = 0;
     priv.inArea = false;
+    priv.hasLastOutput = false;
     SendEvent(EVENT_RESET, nullptr);
 }
 
@@ -63,17 +64,43 @@ void TrackLineFilter::PushPoint(const Point_t* point)
             const Point_t* p = priv.pointCnt > 0 ? &priv.prePoint : point;
             SendEvent(EVENT_START_LINE, p);
             priv.inArea = true;
+            OutputPoint(p);
+            priv.lastOutputPoint = *p;
+            priv.hasLastOutput = true;
         }
 
-        OutputPoint(point);
+        bool shouldOutput = true;
+        if (priv.minDistSq > 0 && priv.hasLastOutput)
+        {
+            int32_t dx = point->x - priv.lastOutputPoint.x;
+            int32_t dy = point->y - priv.lastOutputPoint.y;
+            if (dx * dx + dy * dy < priv.minDistSq)
+            {
+                shouldOutput = false;
+            }
+        }
+
+        if (shouldOutput)
+        {
+            OutputPoint(point);
+            priv.lastOutputPoint = *point;
+            priv.hasLastOutput = true;
+        }
     }
     else
     {
         if (priv.inArea)
         {
+            // 如果最后一个区域内的点因抽稀未能输出，补全终点以保证线段完整
+            if (priv.hasLastOutput && (priv.prePoint.x != priv.lastOutputPoint.x || priv.prePoint.y != priv.lastOutputPoint.y))
+            {
+                OutputPoint(&priv.prePoint);
+                priv.lastOutputPoint = priv.prePoint;
+            }
             SendEvent(EVENT_END_LINE, point);
             priv.lineCount++;
             priv.inArea = false;
+            priv.hasLastOutput = false;
         }
     }
     priv.prePoint = *point;
@@ -87,6 +114,10 @@ void TrackLineFilter::PushPointForce(const Point_t* point)
 
 void TrackLineFilter::PushEnd()
 {
+    if (priv.inArea && priv.hasLastOutput && (priv.prePoint.x != priv.lastOutputPoint.x || priv.prePoint.y != priv.lastOutputPoint.y))
+    {
+        OutputPoint(&priv.prePoint);
+    }
     const Point_t* p = priv.pointCnt > 0 ? &priv.prePoint : nullptr;
     SendEvent(EVENT_END_LINE, p);
 }
@@ -99,6 +130,11 @@ void TrackLineFilter::SetClipArea(const Area_t* area)
 void TrackLineFilter::SetOutputPointCallback(Callback_t callback)
 {
     priv.outputCallback = callback;
+}
+
+void TrackLineFilter::SetMinDistance(int32_t minDist)
+{
+    priv.minDistSq = minDist > 0 ? (minDist * minDist) : 0;
 }
 
 bool TrackLineFilter::GetIsPointInArea(const Area_t* area, const Point_t* point)

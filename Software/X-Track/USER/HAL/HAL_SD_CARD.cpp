@@ -65,6 +65,7 @@ static bool SD_CheckDir(const char* path)
 // FatCache 是两回事，后者没法调大。
 #define NMEA_LOG_WRITE_BUF_SIZE     8192
 #define NMEA_LOG_SYNC_INTERVAL_MS   60000
+#define SD_SECTOR_SIZE              512
 
 static File     s_nmeaLogFile;
 static bool     s_nmeaLogFileOpen = false;
@@ -74,16 +75,33 @@ static char     s_nmeaLogWriteBuf[NMEA_LOG_WRITE_BUF_SIZE];
 static uint32_t s_nmeaLogWriteBufLen = 0;
 static uint32_t s_nmeaLogLastSyncTick = 0;
 
-static void NMEA_Log_FlushBuffer()
+static void NMEA_Log_FlushBuffer(bool forceAll = false)
 {
     if(s_nmeaLogWriteBufLen == 0)
     {
         return;
     }
 
-    s_nmeaLogFile.write((const uint8_t*)s_nmeaLogWriteBuf, s_nmeaLogWriteBufLen);
-    s_nmeaLogWriteBufLen = 0;
+    uint32_t flushLen = s_nmeaLogWriteBufLen;
+    if (!forceAll)
+    {
+        // 512 字节物理扇区对齐：只写入整扇区部分，尾部零头留在缓冲区中，消除 Read-Modify-Write 额外 Flash I/O
+        flushLen = (s_nmeaLogWriteBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
+    }
+
+    if (flushLen == 0)
+    {
+        return;
+    }
+
+    s_nmeaLogFile.write((const uint8_t*)s_nmeaLogWriteBuf, flushLen);
     s_nmeaLogNeedSync = true;
+
+    s_nmeaLogWriteBufLen -= flushLen;
+    if (s_nmeaLogWriteBufLen > 0)
+    {
+        memmove(s_nmeaLogWriteBuf, s_nmeaLogWriteBuf + flushLen, s_nmeaLogWriteBufLen);
+    }
 }
 
 static bool NMEA_Log_Open()
@@ -141,7 +159,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
     // 超过缓冲区"的分支，但保留判断以防万一（比如未来改成整段转发）。
     if(len >= NMEA_LOG_WRITE_BUF_SIZE)
     {
-        NMEA_Log_FlushBuffer();
+        NMEA_Log_FlushBuffer(true);
         s_nmeaLogFile.write((const uint8_t*)line, len);
         s_nmeaLogNeedSync = true;
     }
@@ -149,7 +167,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
     {
         if(s_nmeaLogWriteBufLen + len > NMEA_LOG_WRITE_BUF_SIZE)
         {
-            NMEA_Log_FlushBuffer();
+            NMEA_Log_FlushBuffer(false);
         }
         memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
         s_nmeaLogWriteBufLen += len;
@@ -160,7 +178,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
     {
         if(s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
         {
-            NMEA_Log_FlushBuffer();
+            NMEA_Log_FlushBuffer(true);
             s_nmeaLogFile.sync();
             s_nmeaLogNeedSync = false;
         }
@@ -176,7 +194,7 @@ void HAL::NMEA_Log_Close()
         return;
     }
 
-    NMEA_Log_FlushBuffer();
+    NMEA_Log_FlushBuffer(true);
     s_nmeaLogFile.sync();
     s_nmeaLogFile.close();
     s_nmeaLogFileOpen = false;
