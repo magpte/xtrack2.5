@@ -46,6 +46,13 @@ private:
         lv_coord_t lastArrowX;
         lv_coord_t lastArrowY;
         int16_t    lastArrowAngle; // lv_img_set_angle 单位：0.1°
+
+        // 热点6：SportInfo 数值缓存，只有数值实际变化时才调 lv_label_set_text_fmt
+        // （字符串格式化 + label 失效 + 重绘），避免每 GPS 周期无意义刷新。
+        // 初始化为不可能出现的值，保证第一帧一定会刷新（见 onViewDidAppear）。
+        int      lastSpeedKph;        // 缓存上次速度（整数，km/h），初始 -1
+        float    lastSingleDistance;  // 缓存上次里程（米），初始 -1.0f
+        uint32_t lastSingleTime;      // 缓存上次骑行时间（秒），初始 UINT32_MAX
     } priv;
 
 

@@ -186,9 +186,9 @@ typedef struct {
     uint16_t width;
     uint16_t height;
     uint16_t paletteCount;
-    uint16_t palette[RLE_MAX_PALETTE];   // 512 B -- self-contained, independent of s_meta's
-                                          // cache state so a pixel-cache hit never depends on
-                                          // whether s_meta currently happens to hold this tile
+    lv_color_t palette[RLE_MAX_PALETTE]; // 热点1: 预转换为 lv_color_t，cache 命中时直接
+                                          // 查表写 dest，无需逐像素 rgb565_to_lv_color。
+                                          // RAM 不变（LV_COLOR_DEPTH==16 下 sizeof==2）
     uint8_t* pixels;              // width*height palette-index bytes, or NULL if not allocated
 } PixelCacheSlot_t;
 
@@ -755,17 +755,15 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
     // ---- Fast path: pixel cache hit --------------------------------------
-    // No bundle open, no SD read, no run-stream decode at all -- just a
-    // palette-index -> RGB565 lookup and a row copy. This is what makes
-    // repeat redraws of a tile (arrow/track-line/overlay moving on top of
-    // an unchanged map) cheap.
+    // 热点1 优化后：palette 已在 pixel_cache_claim 时预转换为 lv_color_t，
+    // 命中时无需 rgb565_to_lv_color，也无需 line_buf 中间缓冲——
+    // 直接对 dest 按像素查表写入，省掉整行 memcpy 和 512B 栈开销。
     PixelCacheSlot_t* cached = pixel_cache_find(src);
     if (cached != NULL)
     {
         lv_coord_t disp_width = lv_area_get_width(dsc->disp_area);
         lv_coord_t blit_width = lv_area_get_width(dsc->src_area);
         lv_coord_t x_offset   = dsc->src_area->x1;
-        lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
 
         for (int row = dsc->src_area->y1; row <= dsc->src_area->y2; row++)
         {
@@ -774,14 +772,13 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 continue;
             }
 
-            const uint8_t* srcRow = &cached->pixels[(uint32_t)row * cached->width];
+            // srcRow 直接偏移 x_offset，col 循环从 0 开始，避免 [x_offset+col] 加法
+            const uint8_t* srcRow = &cached->pixels[(uint32_t)row * cached->width + x_offset];
+            lv_color_t*    dest   = dsc->dest_buf + (row - dsc->src_area->y1) * disp_width;
             for (lv_coord_t col = 0; col < blit_width; col++)
             {
-                line_buf[col] = rgb565_to_lv_color(cached->palette[srcRow[x_offset + col]]);
+                dest[col] = cached->palette[srcRow[col]];
             }
-
-            lv_color_t* dest = dsc->dest_buf + (row - dsc->src_area->y1) * disp_width;
-            lv_memcpy(dest, line_buf, (uint32_t)blit_width * sizeof(lv_color_t));
         }
 
         return LV_RES_OK;
@@ -825,8 +822,12 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         slot->width        = s_meta.width;
         slot->height       = s_meta.height;
         slot->paletteCount = s_meta.paletteCount;
-        memcpy(slot->palette, s_meta.palette,
-               (size_t)s_meta.paletteCount * sizeof(uint16_t));
+        // 热点1: 一次性将 uint16 RGB565 palette 转换为 lv_color_t 并存入 slot，
+        // 之后 cache 命中路径直接查表，不再逐像素调 rgb565_to_lv_color。
+        for (uint16_t pi = 0; pi < s_meta.paletteCount; pi++)
+        {
+            slot->palette[pi] = rgb565_to_lv_color(s_meta.palette[pi]);
+        }
     }
 
     // ---- Step 4: pick decode start row -----------------------------------
@@ -863,6 +864,11 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     }
 
     // ---- Step 6: decode ---------------------------------------------------
+    // 热点2 优化：将 slot != NULL 判断提到循环外，形成两条完全独立的热路径：
+    //   路径 A（有 cache slot）：内层循环无条件写 slot->pixels，解码整个 tile。
+    //   路径 B（无 cache slot）：内层循环无 slot 写入，越过 clip_y2 后立即 goto
+    //                           退出，避免继续扫描剩余 tile 数据。
+    // 两条路径的内层 for 循环都消除了原来每像素一次的条件判断。
     lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
 
     uint16_t        width        = s_meta.width;
@@ -877,62 +883,93 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     lv_coord_t disp_width = lv_area_get_width(dsc->disp_area);
     lv_coord_t blit_width = lv_area_get_width(dsc->src_area);
     lv_coord_t x_offset   = dsc->src_area->x1;
+    lv_coord_t clip_y1    = dsc->src_area->y1;
+    lv_coord_t clip_y2    = dsc->src_area->y2;
 
-    while (pixel_idx < total_pixels)
+    if (slot != NULL)
     {
-        uint8_t run_len = 0, idx = 0;
-        if (!reader_read_pair(&reader, &run_len, &idx))
+        // 路径 A：填充 pixel cache + 输出 clip 行。
+        // 解码从 row=0 到 tile 底部；内层循环无分支，始终写 slot->pixels。
+        while (pixel_idx < total_pixels)
         {
-            LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
-            break;
-        }
-
-        if (run_len == 0 || idx >= paletteCount)
-        {
-            LV_LOG_WARN("RLE: corrupt run (len=%d idx=%d) in '%s'", run_len, idx, src);
-            break;
-        }
-
-        lv_color_t c = rgb565_to_lv_color(palette[idx]);
-
-        for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
-        {
-            line_buf[col++] = c;
-
-            if (slot != NULL)
+            uint8_t run_len = 0, idx = 0;
+            if (!reader_read_pair(&reader, &run_len, &idx))
             {
-                slot->pixels[pixel_idx] = idx;
+                LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
+                break;
             }
-
-            pixel_idx++;
-
-            if (col == width)
+            if (run_len == 0 || idx >= paletteCount)
             {
-                if (row >= dsc->src_area->y1 && row <= dsc->src_area->y2)
-                {
-                    lv_color_t* dest = dsc->dest_buf
-                                       + (row - dsc->src_area->y1) * disp_width;
-                    lv_memcpy(dest, &line_buf[x_offset],
-                              (uint32_t)blit_width * sizeof(lv_color_t));
-                }
-                col = 0;
-                row++;
+                LV_LOG_WARN("RLE: corrupt run (len=%d idx=%d) in '%s'", run_len, idx, src);
+                break;
+            }
+            lv_color_t c = rgb565_to_lv_color(palette[idx]);
 
-                // Without a cache slot to populate, stop as soon as we've
-                // covered the rows the caller actually asked for (original
-                // behavior). With a slot, keep going to the tile's bottom
-                // so the cache is fully usable for future, different clips.
-                if (slot == NULL && row > dsc->src_area->y2)
+            for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
+            {
+                line_buf[col]            = c;
+                slot->pixels[pixel_idx]  = idx;   // 无条件写，无分支
+                col++;
+                pixel_idx++;
+
+                if (col == width)
                 {
-                    break;
+                    if (row >= clip_y1 && row <= clip_y2)
+                    {
+                        lv_color_t* dest = dsc->dest_buf + (row - clip_y1) * disp_width;
+                        lv_memcpy(dest, &line_buf[x_offset],
+                                  (uint32_t)blit_width * sizeof(lv_color_t));
+                    }
+                    col = 0;
+                    row++;
                 }
             }
+        }
+        if (pixel_idx >= total_pixels)
+        {
+            slot->valid = true;
         }
     }
-
-    if (slot != NULL && pixel_idx >= total_pixels)
+    else
     {
-        slot->valid = true;
+        // 路径 B：无 pixel cache，仅解码 clip 区域，越过 clip_y2 立即退出。
+        // 内层循环无 slot 写入，用 goto 从嵌套循环中干净退出。
+        while (pixel_idx < total_pixels)
+        {
+            uint8_t run_len = 0, idx = 0;
+            if (!reader_read_pair(&reader, &run_len, &idx))
+            {
+                LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
+                break;
+            }
+            if (run_len == 0 || idx >= paletteCount)
+            {
+                LV_LOG_WARN("RLE: corrupt run (len=%d idx=%d) in '%s'", run_len, idx, src);
+                break;
+            }
+            lv_color_t c = rgb565_to_lv_color(palette[idx]);
+
+            for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
+            {
+                line_buf[col] = c;
+                col++;
+                pixel_idx++;
+
+                if (col == width)
+                {
+                    if (row >= clip_y1 && row <= clip_y2)
+                    {
+                        lv_color_t* dest = dsc->dest_buf + (row - clip_y1) * disp_width;
+                        lv_memcpy(dest, &line_buf[x_offset],
+                                  (uint32_t)blit_width * sizeof(lv_color_t));
+                    }
+                    col = 0;
+                    row++;
+                    if (row > clip_y2) goto rle_decode_done;  // clip 区已完成，立即退出
+                }
+            }
+        }
+        rle_decode_done:;
     }
 
     return LV_RES_OK;

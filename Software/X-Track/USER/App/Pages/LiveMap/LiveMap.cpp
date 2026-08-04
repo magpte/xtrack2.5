@@ -144,6 +144,11 @@ void LiveMap::onViewDidAppear()
     priv.lastArrowY     = INT16_MIN;
     priv.lastArrowAngle = INT16_MIN;
 
+    // 热点6：同理，初始化为不可能值，第一帧强制刷新 SportInfo 所有 label。
+    priv.lastSpeedKph       = -1;
+    priv.lastSingleDistance = -1.0f;
+    priv.lastSingleTime     = (uint32_t)-1;
+
     priv.isTrackAvtive = Model.GetTrackFilterActive();
     if (!priv.isTrackAvtive)
     {
@@ -249,23 +254,42 @@ void LiveMap::UpdateDelay(uint32_t ms)
 
 void LiveMap::SportInfoUpdate()
 {
-    lv_label_set_text_fmt(
-        View.ui.sportInfo.labelSpeed,
-        "%02d",
-        (int)Model.sportStatusInfo.speedKph
-    );
+    // 热点6：只有数值实际变化时才调 lv_label_set_text_fmt，
+    // 避免每 GPS 周期都触发字符串格式化 + label 失效 + 重绘。
+    // 采用与 arrow 位置缓存相同的模式（见 priv.lastArrowX/Y/Angle）。
 
-    lv_label_set_text_fmt(
-        View.ui.sportInfo.labelTrip,
-        "%0.1f km",
-        Model.sportStatusInfo.singleDistance / 1000
-    );
+    int speedKph = (int)Model.sportStatusInfo.speedKph;
+    if (speedKph != priv.lastSpeedKph)
+    {
+        priv.lastSpeedKph = speedKph;
+        lv_label_set_text_fmt(
+            View.ui.sportInfo.labelSpeed,
+            "%02d",
+            speedKph
+        );
+    }
 
-    char buf[16];
-    lv_label_set_text(
-        View.ui.sportInfo.labelTime,
-        DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, buf, sizeof(buf))
-    );
+    float dist = Model.sportStatusInfo.singleDistance;
+    if (dist != priv.lastSingleDistance)
+    {
+        priv.lastSingleDistance = dist;
+        lv_label_set_text_fmt(
+            View.ui.sportInfo.labelTrip,
+            "%0.1f km",
+            dist / 1000
+        );
+    }
+
+    uint32_t t = Model.sportStatusInfo.singleTime;
+    if (t != priv.lastSingleTime)
+    {
+        priv.lastSingleTime = t;
+        char buf[16];
+        lv_label_set_text(
+            View.ui.sportInfo.labelTime,
+            DataProc::MakeTimeString(t, buf, sizeof(buf))
+        );
+    }
 }
 
 void LiveMap::CheckPosition()
