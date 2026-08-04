@@ -69,6 +69,7 @@ static bool SD_CheckDir(const char* path)
 static File     s_nmeaLogFile;
 static bool     s_nmeaLogFileOpen = false;
 static bool     s_nmeaLogOpenFailed = false; // 开过一次失败就不再重试，避免每条语句都去戳一次坏掉的 SD 卡
+static bool     s_nmeaLogNeedSync = false;   // 标记是否有物理写入，避免无数据时空刷 sync() 导致的 Flash 磨损与主线程卡顿
 static char     s_nmeaLogWriteBuf[NMEA_LOG_WRITE_BUF_SIZE];
 static uint32_t s_nmeaLogWriteBufLen = 0;
 static uint32_t s_nmeaLogLastSyncTick = 0;
@@ -82,6 +83,7 @@ static void NMEA_Log_FlushBuffer()
 
     s_nmeaLogFile.write((const uint8_t*)s_nmeaLogWriteBuf, s_nmeaLogWriteBufLen);
     s_nmeaLogWriteBufLen = 0;
+    s_nmeaLogNeedSync = true;
 }
 
 static bool NMEA_Log_Open()
@@ -106,6 +108,7 @@ static bool NMEA_Log_Open()
 
     Serial.printf("NMEA: logging to \"%s\"\r\n", path);
     s_nmeaLogWriteBufLen = 0;
+    s_nmeaLogNeedSync = false;
     s_nmeaLogLastSyncTick = millis();
     return true;
 }
@@ -140,6 +143,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
     {
         NMEA_Log_FlushBuffer();
         s_nmeaLogFile.write((const uint8_t*)line, len);
+        s_nmeaLogNeedSync = true;
     }
     else
     {
@@ -154,8 +158,12 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
     uint32_t now = millis();
     if(now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
     {
-        NMEA_Log_FlushBuffer();
-        s_nmeaLogFile.sync();
+        if(s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
+        {
+            NMEA_Log_FlushBuffer();
+            s_nmeaLogFile.sync();
+            s_nmeaLogNeedSync = false;
+        }
         s_nmeaLogLastSyncTick = now;
     }
 #endif
@@ -173,6 +181,7 @@ void HAL::NMEA_Log_Close()
     s_nmeaLogFile.close();
     s_nmeaLogFileOpen = false;
     s_nmeaLogOpenFailed = false; // 下次开机/下次插卡应该重新尝试
+    s_nmeaLogNeedSync = false;
 }
 
 bool HAL::SD_Init()

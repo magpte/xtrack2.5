@@ -13,13 +13,22 @@
 
 static TinyGPSPlus gps;
 
+#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
+// ---------------------------------------------------------------------
+// 统一 NMEA 行缓冲区，供给 Sky_ParseLine() 和 NMEA_Log_ProcessLine() 使用。
+// 避免两边各自维持一套 byte-by-byte 拼行逻辑。
+// ---------------------------------------------------------------------
+#define NMEA_LINE_MAX     128
+static char    s_nmeaLineBuf[NMEA_LINE_MAX];
+static uint8_t s_nmeaLineLen = 0;
+#endif
+
 #if CONFIG_GPS_SKY_ENABLE
 // ---------------------------------------------------------------------
 // GSV（卫星方位角/仰角/信噪比）解析
 // ---------------------------------------------------------------------
 // TinyGPS++ 从头到尾只解析 GGA/RMC，完全不认识 GSV，所以这部分需要自己
-// 手写一个小解析器，跟上面 NMEA_Log_Feed 一样复用"按行缓冲、凑够一条
-// 完整语句再处理"的思路。
+// 手写一个小解析器，复用"按行缓冲、凑够一条完整语句再处理"的思路。
 //
 // GSV 语句格式（以 $GPGSV,3,1,10,03,05,325,,10,46,176,23,...*CS 为例）：
 //   [0] 语句名（含 talker ID，比如 GP/BD/GL）
@@ -36,10 +45,6 @@ static TinyGPSPlus gps;
 // 整体切换成"当前快照"，没集齐之前 UI 侧看到的还是上一轮的数据，不会
 // 看到只有一部分星座、图一半新一半旧的中间状态。
 // ---------------------------------------------------------------------
-
-#define SKY_LINE_MAX     96
-static char    s_skyLineBuf[SKY_LINE_MAX];
-static uint8_t s_skyLineLen = 0;
 
 static HAL::Sky_Info_t s_skyBuilding;
 static HAL::Sky_Info_t s_skyCurrent;
@@ -132,33 +137,11 @@ static void Sky_ParseLine(char* line)
         s_skySeenGPS = s_skySeenBDS = s_skySeenGLONASS = false;
     }
 }
-
-static void Sky_Feed(char c)
-{
-    if (s_skyLineLen < SKY_LINE_MAX - 1)
-    {
-        s_skyLineBuf[s_skyLineLen++] = c;
-    }
-
-    if (c == '\n')
-    {
-        s_skyLineBuf[s_skyLineLen] = '\0';
-        Sky_ParseLine(s_skyLineBuf);
-        s_skyLineLen = 0;
-    }
-    else if (s_skyLineLen >= SKY_LINE_MAX - 1)
-    {
-        s_skyLineLen = 0;
-    }
-}
 #endif
 
 #if CONFIG_GPS_NMEA_LOG_ENABLE
 // ---------------------------------------------------------------------
-// 原始 NMEA 语句落盘，供后续拖进 u-center 回放/分析。跟上面 Sky_Feed
-// 一样按行缓冲，但这里要把语句原始字节（含校验和、\r\n）原封不动交
-// 给 HAL::NMEA_Log_Write()，所以不能复用 s_skyLineBuf——Sky_ParseLine()
-// 会就地把逗号替换成 '\0'，是破坏性解析，两边必须各自留一份。
+// 原始 NMEA 语句落盘，供后续拖进 u-center 回放/分析。
 //
 // 落盘目标（对应 PCAS03 配置，见 GPS_Init()）：
 //   GGA / RMC：模块仍以 2Hz 发送（LiveMap 需要这个刷新率），这里按
@@ -170,9 +153,6 @@ static void Sky_Feed(char c)
 //   其余语句（GLL/VTG/ZDA/...）：PCAS03 已经在源头关掉了，这里的
 //              类型过滤只是双重保险。
 // ---------------------------------------------------------------------
-#define NMEA_LOG_LINE_MAX   128
-static char    s_nmeaLogLineBuf[NMEA_LOG_LINE_MAX];
-static uint8_t s_nmeaLogLineLen = 0;
 
 // 决定这一条语句要不要写进日志文件。GSA/GSV 模块本身已经是目标频率，
 // 来一条收一条；GGA/RMC 模块仍是 2 倍频率，这里做 2:1 抽取。
@@ -182,16 +162,17 @@ static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
 
     const char* type = &line[3];
 
-    if (memcmp(type, "GSA", 3) == 0) return true;
-    if (memcmp(type, "GSV", 3) == 0) return true;
+    // 用字符匹配替代 memcmp，免去嵌入式库函数调用开销
+    if (type[0] == 'G' && type[1] == 'S' && type[2] == 'A') return true;
+    if (type[0] == 'G' && type[1] == 'S' && type[2] == 'V') return true;
 
-    if (memcmp(type, "GGA", 3) == 0)
+    if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A')
     {
         static bool keep = false;
         keep = !keep;
         return keep;
     }
-    if (memcmp(type, "RMC", 3) == 0)
+    if (type[0] == 'R' && type[1] == 'M' && type[2] == 'C')
     {
         static bool keep = false;
         keep = !keep;
@@ -201,26 +182,44 @@ static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
     return false; // 其余语句类型不落盘
 }
 
-static void NMEA_Log_Feed(char c)
+static void NMEA_Log_ProcessLine(const char* line, uint8_t len)
 {
-    if (s_nmeaLogLineLen < NMEA_LOG_LINE_MAX - 1)
+    if (NMEA_Log_ShouldKeep(line, len))
     {
-        s_nmeaLogLineBuf[s_nmeaLogLineLen++] = c;
+        HAL::NMEA_Log_Write(line, len);
+    }
+}
+#endif
+
+#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
+static void NMEA_FeedLine(char c)
+{
+    if (s_nmeaLineLen < NMEA_LINE_MAX - 1)
+    {
+        s_nmeaLineBuf[s_nmeaLineLen++] = c;
     }
 
     if (c == '\n')
     {
-        if (NMEA_Log_ShouldKeep(s_nmeaLogLineBuf, s_nmeaLogLineLen))
-        {
-            HAL::NMEA_Log_Write(s_nmeaLogLineBuf, s_nmeaLogLineLen);
-        }
-        s_nmeaLogLineLen = 0;
+        s_nmeaLineBuf[s_nmeaLineLen] = '\0';
+
+        // 先执行不破坏字符串结构的 NMEA Log 写入处理
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+        NMEA_Log_ProcessLine(s_nmeaLineBuf, s_nmeaLineLen);
+#endif
+
+        // 再执行会就地替换逗号为 '\0' 的 Sky Parse 解析
+#if CONFIG_GPS_SKY_ENABLE
+        Sky_ParseLine(s_nmeaLineBuf);
+#endif
+
+        s_nmeaLineLen = 0;
     }
-    else if (s_nmeaLogLineLen >= NMEA_LOG_LINE_MAX - 1)
+    else if (s_nmeaLineLen >= NMEA_LINE_MAX - 1)
     {
         // 单行异常超长（正常 NMEA 语句不会到 128 字节），丢弃重新
         // 同步到下一个换行符，避免把半条坏数据当正常语句写进日志。
-        s_nmeaLogLineLen = 0;
+        s_nmeaLineLen = 0;
     }
 }
 #endif
@@ -512,12 +511,8 @@ void HAL::GPS_Update()
         DEBUG_SERIAL.write(c);
 #endif
 
-#if CONFIG_GPS_SKY_ENABLE
-        Sky_Feed(c);
-#endif
-
-#if CONFIG_GPS_NMEA_LOG_ENABLE
-        NMEA_Log_Feed(c);
+#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
+        NMEA_FeedLine(c);
 #endif
 
         gps.encode(c);
