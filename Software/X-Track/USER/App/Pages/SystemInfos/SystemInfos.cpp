@@ -117,6 +117,7 @@ void SystemInfos::Update()
         cache.valid = true;
         cache.lastFocused = focused;
         cache.itemStr[0] = '\0';
+        skyUpdateCounter = 0;
     }
 
     if (focused == View.ui.sport.icon)
