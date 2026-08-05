@@ -47,6 +47,7 @@ public:
         // 把堆用到 85% 以上，之后任何一次绘制/动画分配失败都会变成
         // 空指针解引用（固件里 LV_USE_ASSERT_MALLOC 是关的）。
         HAL::Sky_Info_t info;
+        float course;
     } sky_t;
 
     sky_t sky;
@@ -92,6 +93,7 @@ public:
         const char* bulidTime
     );
     void SetSky(HAL::Sky_Info_t* info);
+    void SetSkyCourse(float course);
 
     void SetScrollToY(lv_obj_t* obj, lv_coord_t y, lv_anim_enable_t en);
     static void onSkyPlotDraw(lv_event_t* event);

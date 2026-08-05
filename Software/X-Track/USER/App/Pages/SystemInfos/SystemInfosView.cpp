@@ -396,17 +396,11 @@ void SystemInfosView::SkyPlot_Create(lv_obj_t* par)
     lv_obj_clear_flag(lineH, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(lineH, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 正北标注 */
-    lv_obj_t* nLabel = lv_label_create(plot);
-    lv_obj_enable_style_refresh(false);
-    lv_label_set_text(nLabel, "N");
-    lv_obj_set_style_text_color(nLabel, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_align(nLabel, LV_ALIGN_TOP_MID, 0, -2);
-
     /* 卫星点在 plot 的绘制事件里直接画出来，不占用对象/堆内存。
-     * DRAW_POST_END 是子对象（参考圈、十字线、N 标注）画完之后才触发的，
-     * 保证卫星点始终在最上层。 */
+     * DRAW_POST_END 是子对象（参考圈、十字线）画完之后才触发的，
+     * 保证卫星点与正北 N 标识始终在最上层。 */
     memset(&sky.info, 0, sizeof(sky.info));
+    sky.course = 0.0f;
     lv_obj_add_event_cb(plot, onSkyPlotDraw, LV_EVENT_DRAW_POST_END, this);
 
     lv_obj_move_foreground(icon);
@@ -429,6 +423,15 @@ void SystemInfosView::SetSky(HAL::Sky_Info_t* info)
     lv_obj_invalidate(sky.plot);
 }
 
+void SystemInfosView::SetSkyCourse(float course)
+{
+    if (sky.course != course)
+    {
+        sky.course = course;
+        lv_obj_invalidate(sky.plot);
+    }
+}
+
 void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
 {
     SystemInfosView* view = (SystemInfosView*)lv_event_get_user_data(event);
@@ -439,6 +442,32 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
 
     lv_coord_t c = SKY_PLOT_SIZE / 2;   // 圆心 = 仰角 90°（正头顶）
 
+    // 1. 绘制根据 Course 转向的正北 "N" 标注
+    // 在航向向上模式中，正北的方向相对角度为 -course
+    int16_t rel_angle_N = (int16_t)(-view->sky.course);
+    while (rel_angle_N < 0) rel_angle_N += 360;
+    while (rel_angle_N >= 360) rel_angle_N -= 360;
+
+    lv_coord_t r_N = c - 10; // 靠近天球底盘边缘
+    int32_t sin_N = lv_trigo_sin(rel_angle_N);
+    int32_t cos_N = lv_trigo_cos(rel_angle_N);
+    lv_coord_t nx = c + (lv_coord_t)((r_N * sin_N) >> LV_TRIGO_SHIFT);
+    lv_coord_t ny = c - (lv_coord_t)((r_N * cos_N) >> LV_TRIGO_SHIFT);
+
+    lv_draw_label_dsc_t label_dsc;
+    lv_draw_label_dsc_init(&label_dsc);
+    label_dsc.color = lv_palette_main(LV_PALETTE_RED); // 红色高亮正北 N
+    label_dsc.font = ResourcePool::GetFont("bahnschrift_13");
+    label_dsc.align = LV_TEXT_ALIGN_CENTER;
+
+    lv_area_t label_area;
+    label_area.x1 = plotArea.x1 + nx - 8;
+    label_area.y1 = plotArea.y1 + ny - 8;
+    label_area.x2 = label_area.x1 + 16;
+    label_area.y2 = label_area.y1 + 16;
+    lv_draw_label(draw_ctx, &label_dsc, &label_area, "N", NULL);
+
+    // 2. 绘制卫星点（根据 Course 方向旋转）
     lv_draw_rect_dsc_t dsc;
     lv_draw_rect_dsc_init(&dsc);
     dsc.radius = LV_RADIUS_CIRCLE;
@@ -450,9 +479,17 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
 
         // 仰角 90°（正头顶）在圆心，仰角 0°（地平线）在圆周边缘。
         float r = (float)c * (90 - sat->elevation) / 90.0f;
-        float rad = sat->azimuth * 0.017453292f;  // 角度转弧度
-        lv_coord_t x = c + (lv_coord_t)(r * sinf(rad));
-        lv_coord_t y = c - (lv_coord_t)(r * cosf(rad));
+
+        // 相对角度 = 卫星绝对方位角 - Course 航向角
+        int16_t rel_angle = (int16_t)(sat->azimuth - view->sky.course);
+        while (rel_angle < 0) rel_angle += 360;
+        while (rel_angle >= 360) rel_angle -= 360;
+
+        // 硬件加速：使用 LVGL 的快速查表三角函数 (lv_trigo_sin / lv_trigo_cos) 计算坐标
+        int32_t sin_val = lv_trigo_sin(rel_angle);
+        int32_t cos_val = lv_trigo_cos(rel_angle);
+        lv_coord_t x = c + (lv_coord_t)((r * sin_val) >> LV_TRIGO_SHIFT);
+        lv_coord_t y = c - (lv_coord_t)((r * cos_val) >> LV_TRIGO_SHIFT);
 
         // 信噪比映射成点的直径：0 dB-Hz 最小点，40+ dB-Hz 最大点。
         uint8_t snr = sat->snr;

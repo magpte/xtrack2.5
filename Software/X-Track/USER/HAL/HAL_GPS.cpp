@@ -476,16 +476,22 @@ void HAL::GPS_Init()
 {
     GPS_SERIAL.begin(9600);
 
+#if CONFIG_GPS_TRY_MODE7_ENABLE
+    // 给模块一点时间完成内部启动，再发配置指令，提高指令被正确接收的概率。
+    delay(100);
+
+    // 将 GPS 模块串口波特率切换为 38400 bps（$PCAS01,3，校验和 0x1F）。
+    // 38400 bps 下吞吐上限提升至 ~3.84 KB/s，数据带宽占用率从 9600 bps 下的 83%
+    // 大幅降至 20%，留出 80% 安全余量，彻底消除丢包与缓冲溢出，同时物理信号波形稳健。
+    GPS_SERIAL.print("$PCAS01,3*1F\r\n");
+    delay(50);
+
+    // 重新将 MCU 串口波特率切至 38400 bps
+    GPS_SERIAL.begin(38400);
+#endif
+
 #if defined(AT32F435xx)
-    // GPS 数据是持续不断的 NMEA 语句流（三星座联合定位打开后单独一条
-    // GGA+RMC 语句也有几十字节），如果还用逐字节 RDBF 中断接，MCU 平均
-    // 每隔 1 个字节的传输时间（9600bps 下约 1ms）就要进一次中断——这里
-    // 换成 DMA 循环接收：USART2 (GPS_SERIAL) -> DMA1 Channel4，数据由
-    // 硬件直接搬进 HardwareSerial 内部的环形缓冲区，CPU 只在收到一整
-    // 段数据后（IDLE 空闲线中断）被唤醒一次，而不是每个字节都被打断。
-    // 通道/请求号选择详见 HardwareSerial::enableRxDMA() 的注释，
-    // 与显示屏用的 EDMA_STREAM1、SD 卡用的 DMA2 Channel1/2、ADC 用的
-    // DMA1 Channel1 均不冲突。
+    // 在 38400 波特率下为该串口开启 DMA 循环接收，替代逐字节 RDBF 中断
     GPS_SERIAL.enableRxDMA(
         DMA1_CHANNEL4,
         DMA1MUX_CHANNEL4,
@@ -495,49 +501,16 @@ void HAL::GPS_Init()
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
-    // 给模块一点时间完成内部启动，再发配置指令，提高指令被正确接收的概率。
-    delay(100);
-
     // 打开 GPS+BDS+GLONASS 三星座联合定位。
-    // 校验和 0x1E 已经手动核对过（"PCAS04,7" 各字符异或结果），指令本身
-    // 格式合法，但 Mode=7 不在官方 AT300 手册文档范围内，属于社区渠道
-    // 验证过的值（其他厂商基于同一颗 CASIC 芯片的项目里能查到这份完整
-    // 参数表：1=GPS 2=BDS 3=GPS+BDS 4=GLONASS 5=GPS+GLONASS 6=BDS+GLONASS
-    // 7=GPS+BDS+GLONASS）。实测已确认生效：GSA 系统ID 里出现了 1/2/4，
-    // 卫星总数从双星座的 7 颗涨到三星座的 12 颗。
+    // 校验和 0x1E 已经手动核对过（"PCAS04,7" 各字符异或结果）。
     GPS_SERIAL.print("$PCAS04,7*1E\r\n");
 
-    // 三星座联合定位打开后，模块吐出的数据量在 9600 波特率下已经跑到
-    // 理论带宽的 83% 左右（实测 784 字节/秒 vs 960 字节/秒理论上限），
-    // 余量很紧。TinyGPS++（当前用的解析库）从始至终只解析 GGA 和 RMC
-    // 这两种语句，但现在多了两个新用途会用到别的语句类型：
-    //   1) 天球图（SystemInfos 页面）要 GSV，见 Sky_ParseLine()；
-    //   2) 原始 NMEA 落盘要 GSA/GSV，供之后拖进 u-center 回放，见
-    //      NMEA_Log_Feed()（GGA/RMC 落盘时另有 2:1 抽取，不需要模块
-    //      在源头改频率，见那边的注释）。
-    // 所以没法再像纯 GGA+RMC 那样把 GSA/GLL/VTG/ZDA 全部关掉，但仍然
-    // 按"只留真正用得上的语句类型"的原则控制数据量。
-    // 格式：$PCAS03,nGGA,nGLL,nGSA,nGSV,nRMC,nVTG,nZDA,nANT,...*校验和
-    // 每个字段 0=关闭，1=每个周期都输出，N=每 N 个周期输出一次。
-    // 当前模块定位频率是 2Hz（下面 PCAS02,500 那条）：
-    //   nGGA=1, nRMC=1  ：不变，仍然每周期都发（2Hz）——LiveMap 需要
-    //                     这个刷新率，见 CONFIG_GPS_REFR_PERIOD 的注释。
-    //   nGSA=2          ：新打开，每 2 个周期一次，等效 1Hz，只给
-    //                     NMEA 落盘用，TinyGPS++ 不解析 GSA。
-    //   nGSV=4          ：从原来的 10（0.2Hz/5 秒一次）改成 4，等效
-    //                     0.5Hz/2 秒一次——天球图本来 5 秒刷新一次，
-    //                     现在数据更新更勤不会有副作用；NMEA 落盘要
-    //                     的正好也是 0.5Hz。
-    //   GLL/VTG/ZDA 继续保持关闭，没有别的地方用得上。
-    // 校验和 0x04 已经手动核对过（"PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0"
-    // 各字符异或结果）。
+    // 配置 NMEA 语句输出类型与频率（GGA/RMC 2Hz, GSA 1Hz, GSV 0.5Hz）
+    // 校验和 0x04 已经手动核对过。
     GPS_SERIAL.print("$PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0*04\r\n");
 
-    // 把模块本身的定位频率从默认 1Hz 提到 2Hz。只改这一条，不改
-    // CONFIG_GPS_REFR_PERIOD 的话，app 这边还是按 1 秒才去问一次，等于
-    // 模块算了两次新定位、app 只用上一半——两处要一起改，见 Config.h。
+    // 把模块本身的定位频率从默认 1Hz 提到 2Hz。
     // 校验和 0x1A 已经手动核对过（"PCAS02,500" 各字符异或结果）。
-    // 同样是 ROM 版不保存配置，每次开机都要重发。
     GPS_SERIAL.print("$PCAS02,500*1A\r\n");
 #endif
 

@@ -145,6 +145,13 @@ void SystemInfos::Update()
     }
     else if (focused == View.sky.icon)
     {
+        if (skyUpdateCounter % 5 == 0)
+        {
+            float lat, lng, alt, course, speed;
+            Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
+            View.SetSkyCourse(course);
+        }
+
         if (skyUpdateCounter == 0)
         {
             HAL::Sky_Info_t sky;
