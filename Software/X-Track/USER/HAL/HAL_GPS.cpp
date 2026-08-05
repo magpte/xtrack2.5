@@ -18,7 +18,7 @@ static TinyGPSPlus gps;
 // 统一 NMEA 行缓冲区，供给 Sky_ParseLine() 和 NMEA_Log_ProcessLine() 使用。
 // 避免两边各自维持一套 byte-by-byte 拼行逻辑。
 // ---------------------------------------------------------------------
-#define NMEA_LINE_MAX     128
+#define NMEA_LINE_MAX     192
 static char    s_nmeaLineBuf[NMEA_LINE_MAX];
 static uint8_t s_nmeaLineLen = 0;
 #endif
@@ -154,29 +154,69 @@ static void Sky_ParseLine(char* line)
 //              类型过滤只是双重保险。
 // ---------------------------------------------------------------------
 
+// 校验 NMEA 语句的异或校验和（$ 与 * 之间的字符异或和是否等于 * 后面的 2 位 Hex）
+static bool NMEA_ValidateChecksum(const char* line, uint8_t len)
+{
+    if (len < 9 || line[0] != '$') return false; // 最短有效语句：$XXYYY*CS\r\n
+
+    const char* star = strchr(line, '*');
+    if (!star || (uint8_t)(star - line + 3) > len) return false;
+
+    uint8_t calculated = 0;
+    for (const char* p = line + 1; p < star; p++)
+    {
+        calculated ^= (uint8_t)(*p);
+    }
+
+    char h1 = star[1];
+    char h2 = star[2];
+    auto hexVal = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0xFF;
+    };
+
+    uint8_t v1 = hexVal(h1);
+    uint8_t v2 = hexVal(h2);
+    if (v1 == 0xFF || v2 == 0xFF) return false;
+
+    return calculated == ((v1 << 4) | v2);
+}
+
 // 决定这一条语句要不要写进日志文件。GSA/GSV 模块本身已经是目标频率，
 // 来一条收一条；GGA/RMC 模块仍是 2 倍频率，这里做 2:1 抽取。
 static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
 {
     if (len < 6 || line[0] != '$') return false;
 
-    const char* type = &line[3];
+    // 先做 NMEA XOR 校验和完整性校验，排除 UART 传输噪点/脏数据，避免坏行落盘
+    if (!NMEA_ValidateChecksum(line, len)) return false;
 
-    // 用字符匹配替代 memcmp，免去嵌入式库函数调用开销
+    const char* comma = strchr(line, ',');
+    if (!comma) return false;
+    uint8_t tagLen = (uint8_t)(comma - line - 1);
+    if (tagLen < 3) return false;
+
+    const char* type = comma - 3;
+
     if (type[0] == 'G' && type[1] == 'S' && type[2] == 'A') return true;
     if (type[0] == 'G' && type[1] == 'S' && type[2] == 'V') return true;
 
+    // GGA 与 RMC 共享同一个周期抽样决策变量 s_keepCurrentEpoch。
+    // 每当同一周期的起始语句 GGA 到达时统一翻转决策，
+    // 随后的 RMC 直接复用该决策，确保 GGA 与 RMC 永远在同一周期内同留同丢，
+    // 彻底消除因独立标志位失步导致的 0.5s 时间跳动与语句成对缺失问题。
+    static bool s_keepCurrentEpoch = false;
+
     if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A')
     {
-        static bool keep = false;
-        keep = !keep;
-        return keep;
+        s_keepCurrentEpoch = !s_keepCurrentEpoch;
+        return s_keepCurrentEpoch;
     }
     if (type[0] == 'R' && type[1] == 'M' && type[2] == 'C')
     {
-        static bool keep = false;
-        keep = !keep;
-        return keep;
+        return s_keepCurrentEpoch;
     }
 
     return false; // 其余语句类型不落盘
@@ -194,9 +234,29 @@ static void NMEA_Log_ProcessLine(const char* line, uint8_t len)
 #if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
 static void NMEA_FeedLine(char c)
 {
+    static bool s_nmeaLineDiscard = false;
+
+    if (s_nmeaLineDiscard)
+    {
+        if (c == '\n')
+        {
+            s_nmeaLineDiscard = false;
+            s_nmeaLineLen = 0;
+        }
+        return;
+    }
+
     if (s_nmeaLineLen < NMEA_LINE_MAX - 1)
     {
         s_nmeaLineBuf[s_nmeaLineLen++] = c;
+    }
+    else
+    {
+        // 单行异常超长（超过 192 字节），标记进入丢弃模式，丢弃该坏行的后半段，
+        // 直到下一个 '\n' 为止，彻底消除截断尾巴（如 ",,,30,0*4D"）被当作新行落盘的问题。
+        s_nmeaLineDiscard = true;
+        s_nmeaLineLen = 0;
+        return;
     }
 
     if (c == '\n')
@@ -213,12 +273,6 @@ static void NMEA_FeedLine(char c)
         Sky_ParseLine(s_nmeaLineBuf);
 #endif
 
-        s_nmeaLineLen = 0;
-    }
-    else if (s_nmeaLineLen >= NMEA_LINE_MAX - 1)
-    {
-        // 单行异常超长（正常 NMEA 语句不会到 128 字节），丢弃重新
-        // 同步到下一个换行符，避免把半条坏数据当正常语句写进日志。
         s_nmeaLineLen = 0;
     }
 }
