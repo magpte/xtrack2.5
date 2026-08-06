@@ -374,31 +374,9 @@ void SystemInfosView::SkyPlot_Create(lv_obj_t* par)
         lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    /* 十字线（正北-正南、正东-正西），点坐标要一直有效，用 static */
-    static lv_point_t crossV[] = { {SKY_PLOT_SIZE / 2, 0}, {SKY_PLOT_SIZE / 2, SKY_PLOT_SIZE} };
-    static lv_point_t crossH[] = { {0, SKY_PLOT_SIZE / 2}, {SKY_PLOT_SIZE, SKY_PLOT_SIZE / 2} };
-
-    lv_obj_t* lineV = lv_line_create(plot);
-    lv_obj_enable_style_refresh(false);
-    lv_line_set_points(lineV, crossV, 2);
-    lv_obj_set_style_line_width(lineV, 1, 0);
-    lv_obj_set_style_line_color(lineV, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_set_style_line_opa(lineV, LV_OPA_40, 0);
-    lv_obj_clear_flag(lineV, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(lineV, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t* lineH = lv_line_create(plot);
-    lv_obj_enable_style_refresh(false);
-    lv_line_set_points(lineH, crossH, 2);
-    lv_obj_set_style_line_width(lineH, 1, 0);
-    lv_obj_set_style_line_color(lineH, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_set_style_line_opa(lineH, LV_OPA_40, 0);
-    lv_obj_clear_flag(lineH, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(lineH, LV_OBJ_FLAG_CLICKABLE);
-
     /* 卫星点在 plot 的绘制事件里直接画出来，不占用对象/堆内存。
-     * DRAW_POST_END 是子对象（参考圈、十字线）画完之后才触发的，
-     * 保证卫星点与正北 N 标识始终在最上层。 */
+     * DRAW_POST_END 是子对象（参考圈）画完之后才触发的，
+     * 保证十字线、正北红色箭头和卫星点都在最上层绘制。 */
     memset(&sky.info, 0, sizeof(sky.info));
     sky.course = 0.0f;
     lv_obj_add_event_cb(plot, onSkyPlotDraw, LV_EVENT_DRAW_POST_END, this);
@@ -441,33 +419,64 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
     lv_obj_get_coords(view->sky.plot, &plotArea);
 
     lv_coord_t c = SKY_PLOT_SIZE / 2;   // 圆心 = 仰角 90°（正头顶）
+    lv_coord_t cx = plotArea.x1 + c;
+    lv_coord_t cy = plotArea.y1 + c;
 
-    // 1. 绘制根据 Course 转向的正北 "N" 标注
-    // 在航向向上模式中，正北的方向相对角度为 -course
+    // 正北的相对航向角度为 -course
     int16_t rel_angle_N = (int16_t)(-view->sky.course);
     while (rel_angle_N < 0) rel_angle_N += 360;
     while (rel_angle_N >= 360) rel_angle_N -= 360;
 
-    lv_coord_t r_N = c - 10; // 靠近天球底盘边缘
-    int32_t sin_N = lv_trigo_sin(rel_angle_N);
-    int32_t cos_N = lv_trigo_cos(rel_angle_N);
-    lv_coord_t nx = c + (lv_coord_t)((r_N * sin_N) >> LV_TRIGO_SHIFT);
-    lv_coord_t ny = c - (lv_coord_t)((r_N * cos_N) >> LV_TRIGO_SHIFT);
+    int32_t sin_N = (int32_t)lv_trigo_sin(rel_angle_N);
+    int32_t cos_N = (int32_t)lv_trigo_cos(rel_angle_N);
 
-    lv_draw_label_dsc_t label_dsc;
-    lv_draw_label_dsc_init(&label_dsc);
-    label_dsc.color = lv_palette_main(LV_PALETTE_RED); // 红色高亮正北 N
-    label_dsc.font = ResourcePool::GetFont("bahnschrift_13");
-    label_dsc.align = LV_TEXT_ALIGN_CENTER;
+    // 1. 绘制根据 Course 转向的 8 等分分割线 (每 45° 一条线，共 4 条穿过圆心的线)
+    lv_draw_line_dsc_t line_dsc;
+    lv_draw_line_dsc_init(&line_dsc);
+    line_dsc.color = lv_palette_main(LV_PALETTE_GREY);
+    line_dsc.width = 1;
+    line_dsc.opa = LV_OPA_40;
 
-    lv_area_t label_area;
-    label_area.x1 = plotArea.x1 + nx - 8;
-    label_area.y1 = plotArea.y1 + ny - 8;
-    label_area.x2 = label_area.x1 + 16;
-    label_area.y2 = label_area.y1 + 16;
-    lv_draw_label(draw_ctx, &label_dsc, &label_area, "N", NULL);
+    for (int i = 0; i < 4; i++)
+    {
+        int16_t angle = rel_angle_N + i * 45;
+        while (angle < 0) angle += 360;
+        while (angle >= 360) angle -= 360;
 
-    // 2. 绘制卫星点（根据 Course 方向旋转）
+        int32_t sin_a = (int32_t)lv_trigo_sin(angle);
+        int32_t cos_a = (int32_t)lv_trigo_cos(angle);
+
+        lv_point_t p1 = { (lv_coord_t)(cx + (((int32_t)c * sin_a) >> 15)), (lv_coord_t)(cy - (((int32_t)c * cos_a) >> 15)) };
+        lv_point_t p2 = { (lv_coord_t)(cx - (((int32_t)c * sin_a) >> 15)), (lv_coord_t)(cy + (((int32_t)c * cos_a) >> 15)) };
+
+        lv_draw_line(draw_ctx, &line_dsc, &p1, &p2);
+    }
+
+    // 2. 绘制正北方向的红色向外箭头标识
+    lv_point_t arrow_pts[3];
+    // 顶点：指向圆盘外缘
+    arrow_pts[0].x = (lv_coord_t)(cx + (((int32_t)(c - 2) * sin_N) >> 15));
+    arrow_pts[0].y = (lv_coord_t)(cy - (((int32_t)(c - 2) * cos_N) >> 15));
+
+    // 箭尾中心点 (向内 10 像素)
+    int32_t bx = cx + (((int32_t)(c - 12) * sin_N) >> 15);
+    int32_t by = cy - (((int32_t)(c - 12) * cos_N) >> 15);
+
+    // 箭尾左右两翼 (宽度半长 4 像素)
+    arrow_pts[1].x = (lv_coord_t)(bx - (((int32_t)4 * cos_N) >> 15));
+    arrow_pts[1].y = (lv_coord_t)(by - (((int32_t)4 * sin_N) >> 15));
+
+    arrow_pts[2].x = (lv_coord_t)(bx + (((int32_t)4 * cos_N) >> 15));
+    arrow_pts[2].y = (lv_coord_t)(by + (((int32_t)4 * sin_N) >> 15));
+
+    lv_draw_rect_dsc_t arrow_dsc;
+    lv_draw_rect_dsc_init(&arrow_dsc);
+    arrow_dsc.bg_color = lv_palette_main(LV_PALETTE_RED);
+    arrow_dsc.bg_opa = LV_OPA_COVER;
+
+    lv_draw_polygon(draw_ctx, &arrow_dsc, arrow_pts, 3);
+
+    // 3. 绘制卫星点（根据 Course 方向旋转）
     lv_draw_rect_dsc_t dsc;
     lv_draw_rect_dsc_init(&dsc);
     dsc.radius = LV_RADIUS_CIRCLE;
@@ -478,7 +487,7 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
         HAL::Sky_Satellite_t* sat = &view->sky.info.satellites[i];
 
         // 仰角 90°（正头顶）在圆心，仰角 0°（地平线）在圆周边缘。
-        float r = (float)c * (90 - sat->elevation) / 90.0f;
+        int32_t r = (int32_t)c * (90 - (int32_t)sat->elevation) / 90;
 
         // 相对角度 = 卫星绝对方位角 - Course 航向角
         int16_t rel_angle = (int16_t)(sat->azimuth - view->sky.course);
@@ -486,10 +495,10 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
         while (rel_angle >= 360) rel_angle -= 360;
 
         // 硬件加速：使用 LVGL 的快速查表三角函数 (lv_trigo_sin / lv_trigo_cos) 计算坐标
-        int32_t sin_val = lv_trigo_sin(rel_angle);
-        int32_t cos_val = lv_trigo_cos(rel_angle);
-        lv_coord_t x = c + (lv_coord_t)((r * sin_val) >> LV_TRIGO_SHIFT);
-        lv_coord_t y = c - (lv_coord_t)((r * cos_val) >> LV_TRIGO_SHIFT);
+        int32_t sin_val = (int32_t)lv_trigo_sin(rel_angle);
+        int32_t cos_val = (int32_t)lv_trigo_cos(rel_angle);
+        lv_coord_t x = c + (lv_coord_t)(((int32_t)r * sin_val) >> 15);
+        lv_coord_t y = c - (lv_coord_t)(((int32_t)r * cos_val) >> 15);
 
         // 信噪比映射成点的直径：0 dB-Hz 最小点，40+ dB-Hz 最大点。
         uint8_t snr = sat->snr;
