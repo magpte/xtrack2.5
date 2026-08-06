@@ -8,8 +8,75 @@ using namespace DataProc;
 
 static SysConfig_Info_t sysConfig;
 
+static float s_lastKnownSpeed = 0.0f;
+static bool s_lastGpsValid = false;
+static bool s_isAutoDimmed = false;
+static int16_t s_lastAppliedBrightness = -1;
+
+static int16_t SysConfig_NormalizeBrightness(int16_t val, int16_t defaultVal)
+{
+    if (val <= 0) return defaultVal;
+    if (val <= 100) return val * 10;
+    if (val > 1000) return 1000;
+    return val;
+}
+
+static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, uint16_t animTime)
+{
+    int16_t highBrightThresh = SysConfig_NormalizeBrightness(sysConfig.autoDimBrightThresh, CONFIG_AUTO_DIM_BRIGHT_THRESH_DEFAULT);
+    int16_t targetLowBright  = SysConfig_NormalizeBrightness(sysConfig.autoDimTargetBright, CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT);
+    float speedThresh        = sysConfig.autoDimSpeedThresh;
+
+    if (sysConfig.screenBrightness > highBrightThresh && speedThresh > 0.0f)
+    {
+        float exitSpeedThresh = (speedThresh >= 1.0f) ? (speedThresh - 0.5f) : (speedThresh * 0.8f);
+
+        if (!s_isAutoDimmed)
+        {
+            if (isGpsValid && currentSpeedKph > speedThresh)
+            {
+                s_isAutoDimmed = true;
+            }
+        }
+        else
+        {
+            if (!isGpsValid || currentSpeedKph < exitSpeedThresh)
+            {
+                s_isAutoDimmed = false;
+            }
+        }
+    }
+    else
+    {
+        s_isAutoDimmed = false;
+    }
+
+    int16_t targetHardwareBrightness = s_isAutoDimmed ? targetLowBright : sysConfig.screenBrightness;
+
+    if (targetHardwareBrightness < 0) targetHardwareBrightness = 0;
+    else if (targetHardwareBrightness > 1000) targetHardwareBrightness = 1000;
+
+    if (targetHardwareBrightness != s_lastAppliedBrightness)
+    {
+        s_lastAppliedBrightness = targetHardwareBrightness;
+        HAL::Backlight_SetGradual(targetHardwareBrightness, animTime);
+    }
+}
+
 static int onEvent(Account* account, Account::EventParam_t* param)
 {
+    if (param->event == Account::EVENT_PUB_PUBLISH)
+    {
+        if (param->size == sizeof(HAL::GPS_Info_t))
+        {
+            HAL::GPS_Info_t* gpsInfo = (HAL::GPS_Info_t*)param->data_p;
+            s_lastKnownSpeed = (float)gpsInfo->speed;
+            s_lastGpsValid = gpsInfo->isVaild;
+            SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
+        }
+        return Account::RES_OK;
+    }
+
     if (param->size != sizeof(SysConfig_Info_t))
     {
         return Account::RES_SIZE_MISMATCH;
@@ -24,7 +91,8 @@ static int onEvent(Account* account, Account::EventParam_t* param)
         if (info->cmd == SYSCONFIG_CMD_LOAD)
         {
             HAL::Buzz_SetEnable(sysConfig.soundEnable);
-            HAL::Backlight_SetGradual(sysConfig.screenBrightness, 1000);
+            s_lastAppliedBrightness = -1;
+            SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 1000);
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
             HAL::Power_Info_t powerInfo;
             HAL::Power_GetInfo(&powerInfo);
@@ -100,7 +168,7 @@ static int onEvent(Account* account, Account::EventParam_t* param)
                 info->screenBrightness = 1000;
             }
             sysConfig.screenBrightness = info->screenBrightness;
-            HAL::Backlight_SetGradual(sysConfig.screenBrightness, 100);
+            SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 100);
         }
         else if (info->cmd == SYSCONFIG_CMD_SAVE)
         {
@@ -178,6 +246,9 @@ do{ \
     sysConfig.timeZone    = CONFIG_SYSTEM_TIME_ZONE_DEFAULT;
     sysConfig.soundEnable = CONFIG_SYSTEM_SOUND_ENABLE_DEFAULT;
     sysConfig.screenBrightness = CONFIG_SCREEN_BRIGHTNESS_DEFAULT;
+    sysConfig.autoDimBrightThresh = CONFIG_AUTO_DIM_BRIGHT_THRESH_DEFAULT;
+    sysConfig.autoDimSpeedThresh  = CONFIG_AUTO_DIM_SPEED_THRESH_DEFAULT;
+    sysConfig.autoDimTargetBright = CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT;
     SYSCGF_STRCPY(sysConfig.language, CONFIG_SYSTEM_LANGUAGE_DEFAULT);
     SYSCGF_STRCPY(sysConfig.arrowTheme, CONFIG_ARROW_THEME_DEFAULT);
     SYSCGF_STRCPY(sysConfig.mapDirPath, CONFIG_MAP_DIR_PATH_DEFAULT);
@@ -195,6 +266,9 @@ do{ \
 
     STORAGE_VALUE_REG(account, sysConfig.soundEnable, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.screenBrightness, STORAGE_TYPE_INT);
+    STORAGE_VALUE_REG(account, sysConfig.autoDimBrightThresh, STORAGE_TYPE_INT);
+    STORAGE_VALUE_REG(account, sysConfig.autoDimSpeedThresh, STORAGE_TYPE_FLOAT);
+    STORAGE_VALUE_REG(account, sysConfig.autoDimTargetBright, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.timeZone, STORAGE_TYPE_INT);
     STORAGE_VALUE_REG(account, sysConfig.language, STORAGE_TYPE_STRING);
     STORAGE_VALUE_REG(account, sysConfig.arrowTheme, STORAGE_TYPE_STRING);

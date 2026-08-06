@@ -34,6 +34,11 @@
 #define CONFIG_SYSTEM_SOUND_ENABLE_DEFAULT    true
 #define CONFIG_SCREEN_BRIGHTNESS_DEFAULT       800  // Range [0, 1000]
 
+// 自动降光配置：当设定亮度大于该阈值且速度大于速度阈值时，自动降光至目标亮度
+#define CONFIG_AUTO_DIM_BRIGHT_THRESH_DEFAULT   700   // 高亮度触发阈值，70% (0..1000)
+#define CONFIG_AUTO_DIM_SPEED_THRESH_DEFAULT    5.0f  // 速度触发阈值，5 km/h
+#define CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT   200   // 目标降低亮度，20% (0..1000)
+
 #define CONFIG_WEIGHT_DEFAULT                 70   // kg
 
 #ifdef ARDUINO

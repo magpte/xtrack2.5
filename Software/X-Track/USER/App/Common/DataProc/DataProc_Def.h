@@ -130,6 +130,9 @@ typedef struct
     // 0 表示从未有过有效定位。开机时用当前 RTC 时间与这个值的差值，
     // 动态收紧 AID-INI 里的 posAcc/timeAcc，让 GPS 模块能更快搜星。
     uint32_t lastFixUnix;
+    int16_t autoDimBrightThresh; // 触发自动降光的高亮度阈值 (0..1000，默认 700 即 70%)
+    float autoDimSpeedThresh;    // 触发自动降光的速度阈值 (km/h，默认 5.0)
+    int16_t autoDimTargetBright; // 自动降光的目标低亮度 (0..1000，默认 200 即 20%)
 } SysConfig_Info_t;
 
 /* TrackFilter */
