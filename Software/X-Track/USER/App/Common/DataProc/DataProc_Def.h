@@ -109,6 +109,7 @@ typedef enum
     SYSCONFIG_CMD_LOAD,
     SYSCONFIG_CMD_SAVE,
     SYSCONFIG_CMD_SET_BRIGHTNESS,
+    SYSCONFIG_CMD_ENCODER_ACTIVITY,
 } SysConfig_Cmd_t;
 
 typedef struct

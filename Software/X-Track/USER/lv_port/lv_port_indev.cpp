@@ -12,6 +12,7 @@
 #include "lv_port.h"
 #include "lvgl/lvgl.h"
 #include "HAL/HAL.h"
+#include "App/Common/DataProc/DataProc.h"
 
 /*********************
  *      DEFINES
@@ -91,10 +92,20 @@ static void encoder_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     
     data->state = isPush ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     
+    bool hasActivity = (data->enc_diff != 0) || (isPush != lastState);
+
     if(isPush != lastState)
     {
         HAL::Buzz_Tone(isPush ? 500 : 700, 20);
         lastState = isPush;
+    }
+
+    if (hasActivity && DataProc::Center() != nullptr)
+    {
+        DataProc::SysConfig_Info_t info;
+        DATA_PROC_INIT_STRUCT(info);
+        info.cmd = DataProc::SYSCONFIG_CMD_ENCODER_ACTIVITY;
+        DataProc::Center()->AccountMain.Notify("SysConfig", &info, sizeof(info));
     }
 }
 

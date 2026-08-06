@@ -12,6 +12,7 @@ static float s_lastKnownSpeed = 0.0f;
 static bool s_lastGpsValid = false;
 static bool s_isAutoDimmed = false;
 static int16_t s_lastAppliedBrightness = -1;
+static uint32_t s_lastEncoderActivityTick = 0;
 
 static int16_t SysConfig_NormalizeBrightness(int16_t val, int16_t defaultVal)
 {
@@ -51,7 +52,20 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
         s_isAutoDimmed = false;
     }
 
-    int16_t targetHardwareBrightness = s_isAutoDimmed ? targetLowBright : sysConfig.screenBrightness;
+    int16_t targetHardwareBrightness = sysConfig.screenBrightness;
+
+    if (s_isAutoDimmed)
+    {
+        // 自动变暗生效期间：若 5 秒内有编码器操作，临时恢复原本设定的亮度，满 5 秒后回到变暗状态
+        if (s_lastEncoderActivityTick != 0 && DataProc::GetTickElaps(s_lastEncoderActivityTick) < 5000)
+        {
+            targetHardwareBrightness = sysConfig.screenBrightness;
+        }
+        else
+        {
+            targetHardwareBrightness = targetLowBright;
+        }
+    }
 
     if (targetHardwareBrightness < 0) targetHardwareBrightness = 0;
     else if (targetHardwareBrightness > 1000) targetHardwareBrightness = 1000;
@@ -65,6 +79,12 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
 
 static int onEvent(Account* account, Account::EventParam_t* param)
 {
+    if (param->event == Account::EVENT_TIMER)
+    {
+        SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
+        return Account::RES_OK;
+    }
+
     if (param->event == Account::EVENT_PUB_PUBLISH)
     {
         if (param->size == sizeof(HAL::GPS_Info_t))
@@ -170,6 +190,11 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             sysConfig.screenBrightness = info->screenBrightness;
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 100);
         }
+        else if (info->cmd == SYSCONFIG_CMD_ENCODER_ACTIVITY)
+        {
+            s_lastEncoderActivityTick = DataProc::GetTick();
+            SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 300);
+        }
         else if (info->cmd == SYSCONFIG_CMD_SAVE)
         {
             HAL::GPS_Info_t gpsInfo;
@@ -231,6 +256,7 @@ DATA_PROC_INIT_DEF(SysConfig)
     account->Subscribe("Power");
 #endif
     account->SetEventCallback(onEvent);
+    account->SetTimerPeriod(500);
 
     memset(&sysConfig, 0, sizeof(sysConfig));
 
