@@ -157,6 +157,14 @@ void LiveMapView::SetLineActivePoint(lv_coord_t x, lv_coord_t y)
         return;
     }
 
+    if (ui.track.pointActive[0].x == end_point.x &&
+        ui.track.pointActive[0].y == end_point.y &&
+        ui.track.pointActive[1].x == x &&
+        ui.track.pointActive[1].y == y)
+    {
+        return;
+    }
+
     ui.track.pointActive[0] = end_point;
     ui.track.pointActive[1].x = x;
     ui.track.pointActive[1].y = y;

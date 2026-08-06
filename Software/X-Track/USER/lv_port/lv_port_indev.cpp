@@ -100,7 +100,7 @@ static void encoder_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
         lastState = isPush;
     }
 
-    if (hasActivity && DataProc::Center() != nullptr)
+    if (hasActivity && DataProc::Center() != NULL)
     {
         DataProc::SysConfig_Info_t info;
         DATA_PROC_INIT_STRUCT(info);

@@ -12,11 +12,7 @@ LiveMapModel::LiveMapModel()
 void LiveMapModel::Init()
 {
     account = new Account("LiveMapModel", DataProc::Center(), 0, this);
-    account->Subscribe("GPS");
     account->Subscribe("SportStatus");
-    account->Subscribe("TrackFilter");
-    account->Subscribe("SysConfig");
-    account->Subscribe("StatusBar");
     account->SetEventCallback(onEvent);
 }
 
@@ -25,7 +21,7 @@ void LiveMapModel::Deinit()
     if (account)
     {
         delete account;
-        account = nullptr;
+        account = NULL;
     }
 }
 

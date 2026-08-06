@@ -203,29 +203,22 @@ void LiveMap::AttachEvent(lv_obj_t* obj)
 
 void LiveMap::Update()
 {
-    // timer 已经对齐到 CONFIG_GPS_REFR_PERIOD（优化1），静止时额外跳过
-    // CheckPosition()：直接把 timer 周期改成 STATIONARY 值太粗暴，
-    // 用节流计数更灵活（万一将来 timer 周期和 GPS 周期再次分开）。
-    // 静止时每隔 CONFIG_GPS_REFR_PERIOD_STATIONARY / CONFIG_GPS_REFR_PERIOD
-    // 次 timer 才真正跑一次 CheckPosition()，动起来立刻恢复全速。
-    uint32_t period = priv.isStationary
-                       ? CONFIG_GPS_REFR_PERIOD_STATIONARY
-                       : CONFIG_GPS_REFR_PERIOD;
-
-    if (lv_tick_elaps(priv.lastMapUpdateTime) >= period)
-    {
-        CheckPosition();
-        SportInfoUpdate();
-        priv.lastMapUpdateTime = lv_tick_get();
-    }
-    // 优化1：zoom 自动隐藏逻辑已移至 UpdateDelay() 里用 lv_anim 延迟处理，
-    // 这里不再需要 else 分支轮询 lastContShowTime，减少每次 timer 唤醒的开销。
+    CheckPosition();
+    SportInfoUpdate();
+    priv.lastMapUpdateTime = lv_tick_get();
 }
 
 void LiveMap::UpdateDelay(uint32_t ms)
 {
     // 用户正在操作缩放条，退出静止状态以立即恢复正常刷新频率。
-    priv.isStationary = false;
+    if (priv.isStationary)
+    {
+        priv.isStationary = false;
+        if (priv.timer)
+        {
+            lv_timer_set_period(priv.timer, CONFIG_GPS_REFR_PERIOD);
+        }
+    }
     priv.lastMapUpdateTime = lv_tick_get() - CONFIG_GPS_REFR_PERIOD + ms;
 
     // 优化1：zoom 条自动隐藏改用 lv_anim 延迟回调，不再依赖 timer 轮询
@@ -298,6 +291,7 @@ void LiveMap::SportInfoUpdate()
 void LiveMap::CheckPosition()
 {
     bool refreshMap = false;
+    bool prevStationary = priv.isStationary;
 
     HAL::GPS_Info_t gpsInfo;
     Model.GetGPS_Info(&gpsInfo);
@@ -321,6 +315,17 @@ void LiveMap::CheckPosition()
         {
             priv.isStationary = true;
         }
+    }
+
+    // 静止状态切换时，动态修改 LVGL timer 周期：
+    // - 静止：拉长到 CONFIG_GPS_REFR_PERIOD_STATIONARY (3000ms)，减少 LVGL 唤醒
+    // - 运动：恢复到 CONFIG_GPS_REFR_PERIOD (500ms)
+    if (prevStationary != priv.isStationary && priv.timer)
+    {
+        uint32_t period = priv.isStationary
+                          ? CONFIG_GPS_REFR_PERIOD_STATIONARY
+                          : CONFIG_GPS_REFR_PERIOD;
+        lv_timer_set_period(priv.timer, period);
     }
 
     mapLevelCurrent = lv_slider_get_value(View.ui.zoom.slider);
@@ -389,12 +394,31 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
     TileConv::Point_t curPoint = { mapX, mapY };
     Model.tileConv.GetOffset(&offset, &curPoint);
 
-    /* arrow — 优化3：pos 和 angle 都没变时跳过，避免 lv_img_set_angle 的旋转计算 */
+    /* arrow */
     lv_obj_t* img = View.ui.map.imgArrow;
     Model.tileConv.GetFocusOffset(&offset);
     lv_coord_t arrowX    = offset.x - lv_obj_get_width(img) / 2;
     lv_coord_t arrowY    = offset.y - lv_obj_get_height(img) / 2;
-    int16_t    arrowAngle = (int16_t)(course * 10.0f);
+
+    // 优化：静止状态下屏蔽 GPS 航向角高频跳变噪声，锁定箭头角度；
+    // 同时对坐标增加死区过滤，避免产生 LVGL 脏区引发底瓦片无谓重绘。
+    int16_t arrowAngle;
+    if (priv.isStationary && priv.lastArrowAngle != INT16_MIN)
+    {
+        arrowAngle = priv.lastArrowAngle;
+        if (priv.lastArrowX != INT16_MIN &&
+            LV_ABS(arrowX - priv.lastArrowX) < CONFIG_LIVE_MAP_DEADBAND_THRESHOLD &&
+            LV_ABS(arrowY - priv.lastArrowY) < CONFIG_LIVE_MAP_DEADBAND_THRESHOLD)
+        {
+            arrowX = priv.lastArrowX;
+            arrowY = priv.lastArrowY;
+        }
+    }
+    else
+    {
+        arrowAngle = (int16_t)(course * 10.0f);
+    }
+
     if (arrowX     != priv.lastArrowX ||
         arrowY     != priv.lastArrowY ||
         arrowAngle != priv.lastArrowAngle)
@@ -402,7 +426,7 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
         priv.lastArrowX     = arrowX;
         priv.lastArrowY     = arrowY;
         priv.lastArrowAngle = arrowAngle;
-        View.SetImgArrowStatus(arrowX, arrowY, course);
+        View.SetImgArrowStatus(arrowX, arrowY, (float)arrowAngle / 10.0f);
     }
 
     /* active line */

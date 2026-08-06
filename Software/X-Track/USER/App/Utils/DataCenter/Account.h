@@ -79,7 +79,7 @@ public:
         const char* id,
         DataCenter* center,
         uint32_t bufSize = 0,
-        void* userData = nullptr
+        void* userData = NULL
     );
     ~Account();
 
