@@ -203,6 +203,9 @@ void LiveMap::AttachEvent(lv_obj_t* obj)
 
 void LiveMap::Update()
 {
+    // 优化2：priv.timer 的 LVGL 实际周期在 CheckPosition() 里跟随静止状态动态切换
+    // （运动时 500ms，静止时 3000ms），因此每次 timer 唤醒均需执行更新，
+    // 不再需要内部 lv_tick_elaps 节流判断，减少无效唤醒开销。
     CheckPosition();
     SportInfoUpdate();
     priv.lastMapUpdateTime = lv_tick_get();
@@ -210,13 +213,14 @@ void LiveMap::Update()
 
 void LiveMap::UpdateDelay(uint32_t ms)
 {
-    // 用户正在操作缩放条，退出静止状态以立即恢复正常刷新频率。
+    // 用户正在操作缩放条，退出静止状态并恢复 500ms 定时器周期
     if (priv.isStationary)
     {
         priv.isStationary = false;
         if (priv.timer)
         {
             lv_timer_set_period(priv.timer, CONFIG_GPS_REFR_PERIOD);
+            lv_timer_reset(priv.timer);
         }
     }
     priv.lastMapUpdateTime = lv_tick_get() - CONFIG_GPS_REFR_PERIOD + ms;
@@ -291,13 +295,13 @@ void LiveMap::SportInfoUpdate()
 void LiveMap::CheckPosition()
 {
     bool refreshMap = false;
-    bool prevStationary = priv.isStationary;
 
     HAL::GPS_Info_t gpsInfo;
     Model.GetGPS_Info(&gpsInfo);
 
     // 静止判断（双阈值迟滞）：没有有效定位时一律按"非静止"处理，保证一旦
     // 重新定位成功能尽快追上真实位置，不被静止节流拖慢。
+    bool wasStationary = priv.isStationary;
     if (!gpsInfo.isVaild)
     {
         priv.isStationary = false;
@@ -317,15 +321,17 @@ void LiveMap::CheckPosition()
         }
     }
 
-    // 静止状态切换时，动态修改 LVGL timer 周期：
-    // - 静止：拉长到 CONFIG_GPS_REFR_PERIOD_STATIONARY (3000ms)，减少 LVGL 唤醒
-    // - 运动：恢复到 CONFIG_GPS_REFR_PERIOD (500ms)
-    if (prevStationary != priv.isStationary && priv.timer)
+    // 优化2：当静止状态切换时，动态修改 LVGL timer 的实际唤醒周期
+    if (priv.timer && wasStationary != priv.isStationary)
     {
         uint32_t period = priv.isStationary
-                          ? CONFIG_GPS_REFR_PERIOD_STATIONARY
-                          : CONFIG_GPS_REFR_PERIOD;
+                           ? CONFIG_GPS_REFR_PERIOD_STATIONARY
+                           : CONFIG_GPS_REFR_PERIOD;
         lv_timer_set_period(priv.timer, period);
+        if (!priv.isStationary)
+        {
+            lv_timer_reset(priv.timer);
+        }
     }
 
     mapLevelCurrent = lv_slider_get_value(View.ui.zoom.slider);
@@ -394,39 +400,23 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
     TileConv::Point_t curPoint = { mapX, mapY };
     Model.tileConv.GetOffset(&offset, &curPoint);
 
-    /* arrow */
-    lv_obj_t* img = View.ui.map.imgArrow;
-    Model.tileConv.GetFocusOffset(&offset);
-    lv_coord_t arrowX    = offset.x - lv_obj_get_width(img) / 2;
-    lv_coord_t arrowY    = offset.y - lv_obj_get_height(img) / 2;
-
-    // 优化：静止状态下屏蔽 GPS 航向角高频跳变噪声，锁定箭头角度；
-    // 同时对坐标增加死区过滤，避免产生 LVGL 脏区引发底瓦片无谓重绘。
-    int16_t arrowAngle;
-    if (priv.isStationary && priv.lastArrowAngle != INT16_MIN)
+    /* arrow — 优化1：静止时冻结箭头角度与位置更新，彻底杜绝 GPS 航向角噪声引发的 LVGL 脏区高频重绘 */
+    if (!priv.isStationary)
     {
-        arrowAngle = priv.lastArrowAngle;
-        if (priv.lastArrowX != INT16_MIN &&
-            LV_ABS(arrowX - priv.lastArrowX) < CONFIG_LIVE_MAP_DEADBAND_THRESHOLD &&
-            LV_ABS(arrowY - priv.lastArrowY) < CONFIG_LIVE_MAP_DEADBAND_THRESHOLD)
+        lv_obj_t* img = View.ui.map.imgArrow;
+        Model.tileConv.GetFocusOffset(&offset);
+        lv_coord_t arrowX    = offset.x - lv_obj_get_width(img) / 2;
+        lv_coord_t arrowY    = offset.y - lv_obj_get_height(img) / 2;
+        int16_t    arrowAngle = (int16_t)(course * 10.0f);
+        if (arrowX     != priv.lastArrowX ||
+            arrowY     != priv.lastArrowY ||
+            arrowAngle != priv.lastArrowAngle)
         {
-            arrowX = priv.lastArrowX;
-            arrowY = priv.lastArrowY;
+            priv.lastArrowX     = arrowX;
+            priv.lastArrowY     = arrowY;
+            priv.lastArrowAngle = arrowAngle;
+            View.SetImgArrowStatus(arrowX, arrowY, course);
         }
-    }
-    else
-    {
-        arrowAngle = (int16_t)(course * 10.0f);
-    }
-
-    if (arrowX     != priv.lastArrowX ||
-        arrowY     != priv.lastArrowY ||
-        arrowAngle != priv.lastArrowAngle)
-    {
-        priv.lastArrowX     = arrowX;
-        priv.lastArrowY     = arrowY;
-        priv.lastArrowAngle = arrowAngle;
-        View.SetImgArrowStatus(arrowX, arrowY, (float)arrowAngle / 10.0f);
     }
 
     /* active line */
