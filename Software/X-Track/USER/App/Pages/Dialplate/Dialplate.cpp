@@ -128,7 +128,8 @@ void Dialplate::Update()
     snprintf(tmpBuf, sizeof(tmpBuf), "%02d", (int)Model.GetSpeed());
     if (strcmp(cache.speedStr, tmpBuf) != 0)
     {
-        strcpy(cache.speedStr, tmpBuf);
+        strncpy(cache.speedStr, tmpBuf, sizeof(cache.speedStr) - 1);
+        cache.speedStr[sizeof(cache.speedStr) - 1] = '\0';
         lv_label_set_text(View.ui.topInfo.labelSpeed, cache.speedStr);
     }
 
@@ -136,7 +137,8 @@ void Dialplate::Update()
     snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km/h", Model.GetAvgSpeed());
     if (strcmp(cache.avgSpeedStr, tmpBuf) != 0)
     {
-        strcpy(cache.avgSpeedStr, tmpBuf);
+        strncpy(cache.avgSpeedStr, tmpBuf, sizeof(cache.avgSpeedStr) - 1);
+        cache.avgSpeedStr[sizeof(cache.avgSpeedStr) - 1] = '\0';
         lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[0].lableValue, cache.avgSpeedStr);
     }
 
@@ -144,7 +146,8 @@ void Dialplate::Update()
     DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, tmpBuf, sizeof(tmpBuf));
     if (strcmp(cache.timeStr, tmpBuf) != 0)
     {
-        strcpy(cache.timeStr, tmpBuf);
+        strncpy(cache.timeStr, tmpBuf, sizeof(cache.timeStr) - 1);
+        cache.timeStr[sizeof(cache.timeStr) - 1] = '\0';
         lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[1].lableValue, cache.timeStr);
     }
 
@@ -152,7 +155,8 @@ void Dialplate::Update()
     snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km", Model.sportStatusInfo.singleDistance / 1000.0f);
     if (strcmp(cache.distStr, tmpBuf) != 0)
     {
-        strcpy(cache.distStr, tmpBuf);
+        strncpy(cache.distStr, tmpBuf, sizeof(cache.distStr) - 1);
+        cache.distStr[sizeof(cache.distStr) - 1] = '\0';
         lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[2].lableValue, cache.distStr);
     }
 
@@ -160,7 +164,8 @@ void Dialplate::Update()
     snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f %s", Model.GetCourse(), Model.GetCourseDirection());
     if (strcmp(cache.courseStr, tmpBuf) != 0)
     {
-        strcpy(cache.courseStr, tmpBuf);
+        strncpy(cache.courseStr, tmpBuf, sizeof(cache.courseStr) - 1);
+        cache.courseStr[sizeof(cache.courseStr) - 1] = '\0';
         lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[3].lableValue, cache.courseStr);
     }
 }

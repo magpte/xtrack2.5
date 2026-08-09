@@ -484,6 +484,11 @@ void HAL::GPS_Init()
     // 38400 bps 下吞吐上限提升至 ~3.84 KB/s，数据带宽占用率从 9600 bps 下的 83%
     // 大幅降至 20%，留出 80% 安全余量，彻底消除丢包与缓冲溢出，同时物理信号波形稳健。
     GPS_SERIAL.print("$PCAS01,3*1F\r\n");
+
+#if defined(AT32F435xx)
+    // 显式等待 9600 bps 下的数据彻底发送完毕，避免在波特率指令发送途中重置 USART 硬件
+    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET);
+#endif
     delay(50);
 
     // 重新将 MCU 串口波特率切至 38400 bps
@@ -530,6 +535,27 @@ void HAL::GPS_Update()
     }
     DEBUG_SERIAL.println();
 #endif
+
+    static uint32_t s_lastRxTick = 0;
+    int available = GPS_SERIAL.available();
+
+    if (available > 0)
+    {
+        s_lastRxTick = millis();
+    }
+    else if (s_lastRxTick > 0 && (millis() - s_lastRxTick > 3000))
+    {
+        // 若超过 3 秒未收到数据，检查并强行清除硬件 Overrun / Framing / Noise 标志以防锁死
+#if defined(AT32F435xx)
+        if (usart_flag_get(USART2, USART_ROERR_FLAG) != RESET ||
+            usart_flag_get(USART2, USART_FERR_FLAG) != RESET ||
+            usart_flag_get(USART2, USART_NERR_FLAG) != RESET)
+        {
+            usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG);
+            usart_data_receive(USART2);
+        }
+#endif
+    }
 
     while (GPS_SERIAL.available() > 0)
     {

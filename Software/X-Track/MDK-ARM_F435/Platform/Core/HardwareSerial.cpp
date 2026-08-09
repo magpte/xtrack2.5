@@ -111,13 +111,19 @@ void HardwareSerial::IRQHandler()
 {
     if(_rxDmaChannel != NULL)
     {
-        /* DMA RX 模式：数据搬运完全由 DMA 完成，RDBF 中断从未被使能，
-         * 这里只会因为 IDLE (空闲线) 触发进来。IDLE 表示发送方刚发完
-         * 一帧/一串数据后线路空闲了一段时间，用来让上层尽快看到刚收到
-         * 的数据，而不必等到 512 字节环形缓冲区正好写满绕回——对 GPS
-         * 这种"一波一波"发 NMEA 语句的场景，能明显降低"数据已到但还
-         * 没被应用层处理"的延迟。不需要在这里搬数据，_syncHeadFromDMA()
-         * 会在 available()/read() 里按需现算。 */
+        /* DMA RX 模式：数据搬运完全由 DMA 完成，RDBF 中断从未被使能。
+         * 1. 检查并清除 Overrun / Framing / Noise 硬件错误标志，防止 USART 接收器卡死。
+         *    AT32/STM32 硬件规定：在 DMA 模式下若抛出 ROERR 错误，USART 硬件接收器
+         *    会终止发送 DMA 请求，必须由软件手动清除标志位才能恢复。 */
+        if(usart_flag_get(_USARTx, USART_ROERR_FLAG) != RESET ||
+           usart_flag_get(_USARTx, USART_FERR_FLAG) != RESET ||
+           usart_flag_get(_USARTx, USART_NERR_FLAG) != RESET)
+        {
+            usart_flag_clear(_USARTx, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG);
+            usart_data_receive(_USARTx);
+        }
+
+        /* 2. IDLE (空闲线) 中断处理，通知上层有数据到达 */
         if(usart_flag_get(_USARTx, USART_IDLEF_FLAG) != RESET)
         {
             usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一

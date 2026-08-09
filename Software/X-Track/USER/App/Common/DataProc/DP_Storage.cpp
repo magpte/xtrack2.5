@@ -8,7 +8,7 @@
 using namespace DataProc;
 
 #define MAP_LEVEL_MIN    0
-#define MAP_LEVEL_MAX    19
+#define MAP_LEVEL_MAX    18
 
 static StorageService storageService(CONFIG_SYSTEM_SAVE_FILE_PATH, 4096);
 

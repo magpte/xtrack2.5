@@ -371,7 +371,8 @@ void LiveMap::CheckPosition()
 
     MapTileContUpdate(mapX, mapY, gpsInfo.course);
 
-    if (priv.isTrackAvtive)
+    // 优化3：静止时停止向轨迹点过滤器推送漂移点，消除静止时的轨迹计算与重画
+    if (priv.isTrackAvtive && !priv.isStationary)
     {
         Model.pointFilter.PushPoint(mapX, mapY);
     }
@@ -400,27 +401,35 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
     TileConv::Point_t curPoint = { mapX, mapY };
     Model.tileConv.GetOffset(&offset, &curPoint);
 
-    /* arrow — 优化1：静止时冻结箭头角度与位置更新，彻底杜绝 GPS 航向角噪声引发的 LVGL 脏区高频重绘 */
+    /* arrow — 静止时保持上一次移动的方向角度，过滤 GPS 航向角高频噪声，避免无谓重绘 */
+    lv_obj_t* img = View.ui.map.imgArrow;
+    Model.tileConv.GetFocusOffset(&offset);
+    lv_coord_t arrowX = offset.x - lv_obj_get_width(img) / 2;
+    lv_coord_t arrowY = offset.y - lv_obj_get_height(img) / 2;
+
+    int16_t arrowAngle;
     if (!priv.isStationary)
     {
-        lv_obj_t* img = View.ui.map.imgArrow;
-        Model.tileConv.GetFocusOffset(&offset);
-        lv_coord_t arrowX    = offset.x - lv_obj_get_width(img) / 2;
-        lv_coord_t arrowY    = offset.y - lv_obj_get_height(img) / 2;
-        int16_t    arrowAngle = (int16_t)(course * 10.0f);
-        if (arrowX     != priv.lastArrowX ||
-            arrowY     != priv.lastArrowY ||
-            arrowAngle != priv.lastArrowAngle)
-        {
-            priv.lastArrowX     = arrowX;
-            priv.lastArrowY     = arrowY;
-            priv.lastArrowAngle = arrowAngle;
-            View.SetImgArrowStatus(arrowX, arrowY, course);
-        }
+        arrowAngle = (int16_t)(course * 10.0f);
+    }
+    else
+    {
+        // 静止状态：维持上一帧方向角，开机首帧若无历史角度则使用当前初始 course
+        arrowAngle = (priv.lastArrowAngle != INT16_MIN) ? priv.lastArrowAngle : (int16_t)(course * 10.0f);
     }
 
-    /* active line */
-    if (priv.isTrackAvtive)
+    if (arrowX     != priv.lastArrowX ||
+        arrowY     != priv.lastArrowY ||
+        arrowAngle != priv.lastArrowAngle)
+    {
+        priv.lastArrowX     = arrowX;
+        priv.lastArrowY     = arrowY;
+        priv.lastArrowAngle = arrowAngle;
+        View.SetImgArrowStatus(arrowX, arrowY, (float)arrowAngle / 10.0f);
+    }
+
+    /* active line — 优化3：静止时避免末端线段坐标抖动触发折线控件重绘 */
+    if (priv.isTrackAvtive && !priv.isStationary)
     {
         View.SetLineActivePoint((lv_coord_t)offset.x, (lv_coord_t)offset.y);
     }

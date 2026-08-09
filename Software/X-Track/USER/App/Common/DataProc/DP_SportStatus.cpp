@@ -12,10 +12,17 @@ static HAL::SportStatus_Info_t sportStatus;
 static double SportStatus_GetDistanceOffset(HAL::GPS_Info_t* gpsInfo)
 {
     static bool isFirst = true;
-    static double preLongitude;
-    static double preLatitude;
+    static double preLongitude = 0.0;
+    static double preLatitude = 0.0;
 
-    double offset = 0.0f;
+    // 校验 GPS 定位有效性及非空点 (Null Island 0,0)
+    if (!gpsInfo->isVaild || (gpsInfo->longitude == 0.0 && gpsInfo->latitude == 0.0))
+    {
+        isFirst = true;
+        return 0.0;
+    }
+
+    double offset = 0.0;
 
     if (!isFirst)
     {
@@ -86,14 +93,26 @@ static void onTimer(Account* account)
             sportStatus.singleDistance = (float)s_singleDistanceAccum;
             sportStatus.totalDistance = (float)s_totalDistanceAccum;
 
-            float meterPerSec = sportStatus.singleDistance * 1000 / sportStatus.singleTime;
-            sportStatus.speedAvgKph = meterPerSec * 3.6f;
+            if (sportStatus.singleTime > 0)
+            {
+                float meterPerSec = sportStatus.singleDistance * 1000.0f / sportStatus.singleTime;
+                sportStatus.speedAvgKph = meterPerSec * 3.6f;
+            }
+            else
+            {
+                sportStatus.speedAvgKph = 0.0f;
+            }
 
             if (speedKph > sportStatus.speedMaxKph)
             {
                 sportStatus.speedMaxKph = speedKph;
             }
         }
+    }
+    else
+    {
+        // 速度为 0 时，同步更新基准坐标，防止后续恢复运动时与久远历史坐标计算跨度增量
+        SportStatus_GetDistanceOffset(&gpsInfo);
     }
 
     sportStatus.speedKph = speedKph;

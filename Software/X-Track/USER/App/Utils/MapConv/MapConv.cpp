@@ -33,7 +33,7 @@ using namespace::Microsoft_MapPoint;
 char MapConv::dirPath[] = "/MAP";
 char MapConv::extName[] = "bin";
 int16_t MapConv::levelMin = 0;
-int16_t MapConv::levelMax = 19;
+int16_t MapConv::levelMax = 18;
 bool MapConv::coordTransformEnable = false;
 
 MapConv::MapConv()

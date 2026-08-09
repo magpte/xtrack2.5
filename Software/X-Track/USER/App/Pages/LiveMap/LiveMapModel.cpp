@@ -13,7 +13,7 @@ void LiveMapModel::Init()
 {
     account = new Account("LiveMapModel", DataProc::Center(), 0, this);
     account->Subscribe("GPS");
-    account->Subscribe("SportStatus");
+    accountSportStatus = account->Subscribe("SportStatus");
     account->Subscribe("TrackFilter");
     account->Subscribe("SysConfig");
     account->Subscribe("StatusBar");
@@ -26,6 +26,7 @@ void LiveMapModel::Deinit()
     {
         delete account;
         account = nullptr;
+        accountSportStatus = nullptr;
     }
 }
 
@@ -79,13 +80,12 @@ int LiveMapModel::onEvent(Account* account, Account::EventParam_t* param)
         return Account::RES_UNSUPPORTED_REQUEST;
     }
 
-    if (strcmp(param->tran->ID, "SportStatus") != 0
-            || param->size != sizeof(HAL::SportStatus_Info_t))
+    LiveMapModel* instance = (LiveMapModel*)account->UserData;
+    if (param->tran != instance->accountSportStatus || param->size != sizeof(HAL::SportStatus_Info_t))
     {
         return Account::RES_PARAM_ERROR;
     }
 
-    LiveMapModel* instance = (LiveMapModel*)account->UserData;
     memcpy(&(instance->sportStatusInfo), param->data_p, param->size);
 
     return Account::RES_OK;
