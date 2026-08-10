@@ -174,7 +174,6 @@ void LiveMap::onViewWillDisappear()
     Model.pointFilter.SetOutputPointCallback(NULL);
 
     lv_obj_add_flag(View.ui.map.cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_fade_out(_root, 250, 250);
 
 #if CONFIG_MAP_IMG_RLE_ENABLE
     lv_img_rle_cache_deinit();

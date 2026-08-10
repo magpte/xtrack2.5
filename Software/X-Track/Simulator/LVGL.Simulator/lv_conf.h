@@ -31,13 +31,13 @@
 
 /*Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI)*/
 #ifndef LV_COLOR_16_SWAP
-#define LV_COLOR_16_SWAP 1
+#define LV_COLOR_16_SWAP 0
 #endif
 
 /*Enable features to draw on transparent background.
  *It's required if opa, and transform_* style properties are used.
  *Can be also used if the UI is above another layer, e.g. an OSD menu or video player.*/
-#define LV_COLOR_SCREEN_TRANSP 1
+#define LV_COLOR_SCREEN_TRANSP 0
 
 /* Adjust color mix functions rounding. GPUs might calculate color mix (blending) differently.
  * 0: round down, 64: round up from x.75, 128: round up from half, 192: round up from x.25, 254: round up */
@@ -378,7 +378,7 @@ uint32_t custom_tick_get(void);
 #ifdef ARDUINO
 #  define LV_ATTRIBUTE_FAST_MEM    __attribute__((section("RAMCODE")))
 #else
-#  define LV_ATTRIBUTE_FAST_MEM
+#  define LV_ATTRIBUTE_FAST_MEM    __attribute__((section(".ramfunc")))
 #endif
 
 /*Prefix variables that are used in GPU accelerated operations, often these need to be placed in RAM sections that are DMA accessible*/

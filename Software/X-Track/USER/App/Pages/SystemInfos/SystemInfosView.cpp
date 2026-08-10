@@ -1,6 +1,10 @@
 #include "SystemInfosView.h"
 #include <math.h>
 
+#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  include "arm_math.h"
+#endif
+
 using namespace Page;
 
 #define ITEM_HEIGHT_MIN   100

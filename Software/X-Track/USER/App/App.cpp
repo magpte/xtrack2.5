@@ -100,7 +100,7 @@ void App_Init()
     manager.Install("SystemInfos", "Pages/SystemInfos");
     manager.Install("Startup",     "Pages/Startup");
 
-    manager.SetGlobalLoadAnimType(PageManager::LOAD_ANIM_OVER_TOP);
+    manager.SetGlobalLoadAnimType(PageManager::LOAD_ANIM_OVER_TOP, 500, lv_anim_path_ease_out);
 
     manager.Push("Pages/Startup");
 }

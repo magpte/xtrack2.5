@@ -57,8 +57,7 @@ void SystemInfos::onViewWillAppear()
     cache.lastFocused = nullptr;
 
     View.SetScrollToY(_root, -LV_VER_RES, LV_ANIM_OFF);
-    lv_obj_set_style_opa(_root, LV_OPA_TRANSP, 0);
-    lv_obj_fade_in(_root, 300, 0);
+    lv_obj_set_style_opa(_root, LV_OPA_COVER, 0);
 }
 
 void SystemInfos::onViewDidAppear()
@@ -71,8 +70,6 @@ void SystemInfos::onViewDidAppear()
 void SystemInfos::onViewWillDisappear()
 {
     View.Group_Deinit();
-
-    lv_obj_fade_out(_root, 300, 0);
 }
 
 void SystemInfos::onViewDidDisappear()

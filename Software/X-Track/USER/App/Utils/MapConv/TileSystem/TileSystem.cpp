@@ -4,6 +4,15 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  include "arm_math.h"
+#  define FAST_SIN(x) arm_sin_f32((float)(x))
+#  define FAST_COS(x) arm_cos_f32((float)(x))
+#else
+#  define FAST_SIN(x) sin(x)
+#  define FAST_COS(x) cos(x)
+#endif
+
 using namespace Microsoft_MapPoint;
 
 static const double EarthRadius = 6378137;
@@ -34,7 +43,7 @@ uint32_t TileSystem::MapSize(int levelOfDetail)
 double TileSystem::GroundResolution(double latitude, int levelOfDetail)
 {
     latitude = Clip(latitude, MinLatitude, MaxLatitude);
-    return cos(latitude * MATH_PI / 180) * 2 * MATH_PI * EarthRadius / MapSize(levelOfDetail);
+    return FAST_COS(latitude * MATH_PI / 180) * 2 * MATH_PI * EarthRadius / MapSize(levelOfDetail);
 }
  
 double TileSystem::MapScale(double latitude, int levelOfDetail, int screenDpi)
@@ -48,7 +57,7 @@ void TileSystem::LatLongToPixelXY(double latitude, double longitude, int levelOf
     longitude = Clip(longitude, MinLongitude, MaxLongitude);
 
     double x = (longitude + 180) / 360;
-    double sinLatitude = sin(latitude * MATH_PI / 180);
+    double sinLatitude = FAST_SIN(latitude * MATH_PI / 180);
     double y = 0.5 - log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * MATH_PI);
 
     uint32_t mapSize = MapSize(levelOfDetail);

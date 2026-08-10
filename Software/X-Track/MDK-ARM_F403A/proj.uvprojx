@@ -335,7 +335,7 @@
             <v6WtE>0</v6WtE>
             <v6Rtti>0</v6Rtti>
             <VariousControls>
-              <MiscControls>--gnu</MiscControls>
+              <MiscControls>--gnu --diag_suppress=1,111</MiscControls>
               <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_MAP_IMG_PNG_ENABLE=0</Define>
               <Undefine></Undefine>
               <IncludePath>..\ArduinoAPI;.\Platform\Core;.\Platform;..\Libraries;..\Libraries\SdFat\src;..\USER;..\USER\App;..\Simulator\LVGL.Simulator</IncludePath>

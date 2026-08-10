@@ -19,6 +19,16 @@ static void disp_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t
     const lv_coord_t h = (area->y2 - area->y1 + 1);
     const uint32_t len = w * h;
 
+    uint32_t* p32 = (uint32_t*)color_p;
+    uint32_t count32 = len / 2;
+    for (uint32_t i = 0; i < count32; i++) {
+        p32[i] = __REV16(p32[i]);
+    }
+    if (len & 1) {
+        uint16_t* p16 = (uint16_t*)color_p;
+        p16[len - 1] = (p16[len - 1] >> 8) | (p16[len - 1] << 8);
+    }
+
     HAL::Display_SetAddrWindow(area->x1, area->y1, area->x2, area->y2);
 
     HAL::Display_SendPixels((uint16_t*)color_p, len);
@@ -27,11 +37,6 @@ static void disp_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t
 static void disp_send_finish_callback()
 {
     lv_disp_flush_ready(disp_drv_p);
-}
-
-static void disp_wait_cb(lv_disp_drv_t* disp_drv)
-{
-    __wfi();
 }
 
 void lv_port_disp_init()
@@ -50,7 +55,7 @@ void lv_port_disp_init()
     disp_drv.hor_res = CONFIG_SCREEN_HOR_RES;
     disp_drv.ver_res = CONFIG_SCREEN_VER_RES;
     disp_drv.flush_cb = disp_flush_cb;
-    disp_drv.wait_cb = disp_wait_cb;
+    disp_drv.wait_cb = NULL;
     disp_drv.draw_buf = &disp_buf;
     lv_disp_drv_register(&disp_drv);
 }

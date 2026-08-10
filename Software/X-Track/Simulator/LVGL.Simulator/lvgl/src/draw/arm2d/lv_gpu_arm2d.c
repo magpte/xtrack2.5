@@ -277,7 +277,7 @@ static void lv_draw_arm2d_blend(lv_draw_ctx_t * draw_ctx, const lv_draw_sw_blend
     bool is_accelerated = false;
 
     if(dsc->blend_mode == LV_BLEND_MODE_NORMAL
-       &&    lv_area_get_size(&blend_area) > 100) {
+       &&    lv_area_get_size(&blend_area) >= 2048) {
 
         lv_color_t * dest_buf = draw_ctx->buf;
 
@@ -534,6 +534,13 @@ static void lv_draw_arm2d_blend(lv_draw_ctx_t * draw_ctx, const lv_draw_sw_blend
 
     lv_area_t blend_area;
     if(!_lv_area_intersect(&blend_area, dsc->blend_area, draw_ctx->clip_area)) return;
+
+    /* For small areas (< 2048 px), LVGL native C loops render faster without
+     * Arm-2D wrapper setup overhead. Reserve Arm-2D for large block fills/copies. */
+    if(lv_area_get_size(&blend_area) < 2048) {
+        lv_draw_sw_blend_basic(draw_ctx, dsc);
+        return;
+    }
 
     lv_disp_t * disp = _lv_refr_get_disp_refreshing();
 
