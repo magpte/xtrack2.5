@@ -296,15 +296,9 @@ bool TrackPointFilter::GetIsPointInLine(const Line_t* line, const Point_t* point
 
 double TrackPointFilter::QuickSqrt(double num)
 {
-    long i;
-    float x2, y;
-    const float threehalfs = 1.5f;
-    x2 = (float)num * 0.5f;
-    y = (float)num;
-    i = *(long*)&y;
-    i = 0x5f3759df - (i >> 1);
-    y = *(float*)&i;
-    y = y * (threehalfs - (x2 * y * y));
-    y = y * (threehalfs - (x2 * y * y));
-    return y;
+    if (num <= 0.0)
+    {
+        return 0.0;
+    }
+    return (double)(1.0f / sqrtf((float)num));
 }

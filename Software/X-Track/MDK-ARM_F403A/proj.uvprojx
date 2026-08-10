@@ -2828,16 +2828,7 @@
             </File>
           </Files>
         </Group>
-        <Group>
-          <GroupName>Utils/SunriseCalc</GroupName>
-          <Files>
-            <File>
-              <FileName>SunRiseCalc.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\USER\App\Utils\SunRiseCalc\SunRiseCalc.c</FilePath>
-            </File>
-          </Files>
-        </Group>
+
         <Group>
           <GroupName>HAL</GroupName>
           <GroupOption>
