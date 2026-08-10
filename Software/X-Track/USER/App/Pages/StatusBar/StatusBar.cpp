@@ -141,6 +141,19 @@ static lv_obj_t *StatusBar_RecAnimLabelCreate(lv_obj_t *par) {
   return alabel;
 }
 
+#if CONFIG_PERF_MONITOR_ENABLE
+static uint32_t s_fps_frame_cnt = 0;
+static uint32_t s_last_fps = 0;
+static uint32_t s_last_fps_calc_tick = 0;
+
+static void StatusBar_FpsMonitorCb(lv_disp_drv_t *drv, uint32_t time, uint32_t px) {
+  (void)drv;
+  (void)time;
+  (void)px;
+  s_fps_frame_cnt++;
+}
+#endif
+
 static void StatusBar_Update(lv_timer_t *timer) {
   /* satellite */
   HAL::GPS_Info_t gps;
@@ -186,29 +199,40 @@ static void StatusBar_Update(lv_timer_t *timer) {
   }
 
 #if CONFIG_PERF_MONITOR_ENABLE
-  /* TEST BRANCH: 性能监控 —— 电池电压(V) / CPU空闲率(%) / LVGL堆剩余(KB)
+  /* TEST BRANCH: 性能监控 —— 电池电压(V) / CPU占用率(%) / 帧率(FPS) / LVGL堆剩余(KB)
    *
    * voltage:  来自本次 Pull("Power") 拿到的 power.voltage（单位 mV），
    *           硬件通过 ADC + 分压电阻(R11/R12)测量，无需燃油计芯片。
-   * cpu_idle: lv_timer_get_idle() 返回上一个 lv_task_handler() 周期
-   *           的空闲时间占比 (0~100)，值越高表示 CPU 越空闲。
-   * mem_free: lv_mem_monitor() 报告 LVGL 堆的当前剩余字节数，
-   *           以 KB 为单位显示方便阅读。
+   * cpu_usage: 100 - lv_timer_get_idle()，计算 CPU 实际占用率 (%)。
+   * fps:      由 disp_drv->monitor_cb 统计计算得出的实时帧率 (FPS)。
+   * mem_free: lv_mem_monitor() 报告 LVGL 堆的当前剩余字节数。
    */
   {
+    uint32_t now = lv_tick_get();
+    if (s_last_fps_calc_tick == 0) {
+      s_last_fps_calc_tick = now;
+    }
+    uint32_t elaps = lv_tick_elaps(s_last_fps_calc_tick);
+    if (elaps >= 500) {
+      s_last_fps = (s_fps_frame_cnt * 1000) / elaps;
+      s_fps_frame_cnt = 0;
+      s_last_fps_calc_tick = now;
+    }
+
     uint8_t cpu_idle = lv_timer_get_idle(); /* 0~100，越高越空闲 */
+    uint8_t cpu_usage = 100 - cpu_idle;     /* CPU 实际占用率 % */
+
     lv_mem_monitor_t mem;
     lv_mem_monitor(&mem);
 
-    /* 格式：V=电压V C=CPU空闲% M=已用/总KB
-     * voltage 单位为 mV，除以 1000.0f 转为 V，保留两位小数。
-     * mem 显示"已用/总量"，total_size 包含 LVGL 全部池（=系统唯一 heap）。
-     * 注：operator new 已重载为 lv_mem_alloc，全部动态分配均在此池内。 */
+    /* 格式：V=电压V C=CPU占用% FPS=帧率 M=已用/总KB
+     * voltage 单位为 mV，除以 1000.0f 转为 V，保留两位小数。 */
     uint32_t mem_total_kb = mem.total_size / 1024;
     uint32_t mem_used_kb = (mem.total_size - mem.free_size) / 1024;
     lv_label_set_text_fmt(
-        ui.labelPerf, "V=%.2fV C=%d%% M=%ld/%ldK", power.voltage / 1000.0f,
-        (int)cpu_idle, (unsigned long)mem_used_kb, (unsigned long)mem_total_kb);
+        ui.labelPerf, "V=%.2fV C=%d%% FPS=%ld M=%ld/%ldK", power.voltage / 1000.0f,
+        (int)cpu_usage, (unsigned long)s_last_fps, (unsigned long)mem_used_kb,
+        (unsigned long)mem_total_kb);
   }
 #endif
 }
@@ -317,10 +341,16 @@ lv_obj_t *Page::StatusBar_Create(lv_obj_t *par) {
 
     label = lv_label_create(cont);
     lv_obj_add_style(label, &style_perf, 0);
-    lv_label_set_text(label, "V=0.00V C=0% M=0K");
+    lv_label_set_text(label, "V=0.00V C=0% FPS=0 M=0K");
     /* 居中对齐，避免与左侧卫星信息和右侧电池区重叠 */
     lv_obj_align(label, LV_ALIGN_CENTER, 0, STATUS_BAR_ROW_HEIGHT / 2);
     ui.labelPerf = label;
+
+    /* 注册 LVGL 屏幕帧率统计 monitor_cb 钩子 */
+    lv_disp_t *disp = lv_disp_get_default();
+    if (disp && disp->driver) {
+      disp->driver->monitor_cb = StatusBar_FpsMonitorCb;
+    }
   }
 #endif
 
