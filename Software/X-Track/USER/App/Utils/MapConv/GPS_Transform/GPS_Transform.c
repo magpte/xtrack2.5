@@ -2,16 +2,19 @@
 #include <stdbool.h>
 #include <math.h>
 
-#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
-#  include "arm_math.h"
-#  define FAST_SIN(x) arm_sin_f32((float)(x))
-#  define FAST_COS(x) arm_cos_f32((float)(x))
-#  define FAST_SQRT(x) sqrtf((float)(x))
-#else
-#  define FAST_SIN(x) sinf((float)(x))
-#  define FAST_COS(x) cosf((float)(x))
-#  define FAST_SQRT(x) sqrtf((float)(x))
+#ifndef sqrtf
+#  define sqrtf(x) sqrt((double)(x))
 #endif
+#ifndef sinf
+#  define sinf(x) sin((double)(x))
+#endif
+#ifndef cosf
+#  define cosf(x) cos((double)(x))
+#endif
+
+#define FAST_SIN(x) sinf((float)(x))
+#define FAST_COS(x) cosf((float)(x))
+#define FAST_SQRT(x) sqrtf((float)(x))
 
 #define ABS(x) (((x)>0)?(x):-(x))
 

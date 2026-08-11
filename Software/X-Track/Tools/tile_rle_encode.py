@@ -211,12 +211,13 @@ def encode_image_bytes(img):
     return bytes(out)
 
 
-def encode_tile_bytes(src_path):
+def encode_tile_bytes(src):
     """Load+encode a tile from any supported source format (.png/.jpg/
-    .bin), returning (raw_size, encoded_bytes). This is the function
-    tile_bundle.py calls directly so it can go straight from source
-    images to a bundle file without an intermediate .rle file."""
-    img = load_source_image(src_path)
+    .bin, or a PIL Image object), returning (raw_size, encoded_bytes)."""
+    if isinstance(src, str):
+        img = load_source_image(src)
+    else:
+        img = src
     w, h = img.size
     encoded = encode_image_bytes(img)
     raw_size = w * h * 2  # what the existing raw .bin tile would cost

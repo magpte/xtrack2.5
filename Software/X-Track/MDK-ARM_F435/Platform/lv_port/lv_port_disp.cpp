@@ -6,10 +6,14 @@
  * SRAM 里只剩 44KB 给 LVGL 堆和其他所有东西，SystemInfos 这种页面很容易
  * 把 LVGL 堆用满。刷新是按脏区域走的（disp_flush_cb 每次都会重设窗口），
  * 缓冲区小于整屏只是让一次大范围重绘分成两批发送，总像素量不变。 */
-#define SCREEN_BUFFER_LINES 200
+#define SCREEN_BUFFER_LINES 160
 #define SCREEN_BUFFER_SIZE (CONFIG_SCREEN_HOR_RES * SCREEN_BUFFER_LINES)
 
 static lv_disp_drv_t* disp_drv_p = NULL;
+
+#ifndef __REV16
+#  define __REV16(x) (((x) & 0x00FF00FF) << 8 | ((x) & 0xFF00FF00) >> 8)
+#endif
 
 static void disp_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p)
 {
@@ -21,12 +25,21 @@ static void disp_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t
 
     uint32_t* p32 = (uint32_t*)color_p;
     uint32_t count32 = len / 2;
-    for (uint32_t i = 0; i < count32; i++) {
+    uint32_t i = 0;
+    // 4x 循环展开，利用 Cortex-M4 __REV16 汇编指令单周期并行处理双像素字节序转换
+    for (; i + 3 < count32; i += 4) {
+        p32[i + 0] = __REV16(p32[i + 0]);
+        p32[i + 1] = __REV16(p32[i + 1]);
+        p32[i + 2] = __REV16(p32[i + 2]);
+        p32[i + 3] = __REV16(p32[i + 3]);
+    }
+    for (; i < count32; i++) {
         p32[i] = __REV16(p32[i]);
     }
     if (len & 1) {
         uint16_t* p16 = (uint16_t*)color_p;
-        p16[len - 1] = (p16[len - 1] >> 8) | (p16[len - 1] << 8);
+        uint32_t val = p16[len - 1];
+        p16[len - 1] = (uint16_t)((val >> 8) | (val << 8));
     }
 
     HAL::Display_SetAddrWindow(area->x1, area->y1, area->x2, area->y2);

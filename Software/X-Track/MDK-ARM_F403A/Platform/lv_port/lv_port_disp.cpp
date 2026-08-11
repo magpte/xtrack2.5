@@ -6,6 +6,10 @@
 
 static lv_disp_drv_t* disp_drv_p;
 
+#ifndef __REV16
+#  define __REV16(x) (((x) & 0x00FF00FF) << 8 | ((x) & 0xFF00FF00) >> 8)
+#endif
+
 static void disp_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
 {
     disp_drv_p = disp;
@@ -16,12 +20,21 @@ static void disp_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t
 
     uint32_t* p32 = (uint32_t*)color_p;
     uint32_t count32 = size / 2;
-    for (uint32_t i = 0; i < count32; i++) {
+    uint32_t i = 0;
+    // 4x 循环展开，利用 Cortex-M4 __REV16 汇编指令单周期并行处理双像素字节序转换
+    for (; i + 3 < count32; i += 4) {
+        p32[i + 0] = __REV16(p32[i + 0]);
+        p32[i + 1] = __REV16(p32[i + 1]);
+        p32[i + 2] = __REV16(p32[i + 2]);
+        p32[i + 3] = __REV16(p32[i + 3]);
+    }
+    for (; i < count32; i++) {
         p32[i] = __REV16(p32[i]);
     }
     if (size & 1) {
         uint16_t* p16 = (uint16_t*)color_p;
-        p16[size - 1] = (p16[size - 1] >> 8) | (p16[size - 1] << 8);
+        uint32_t val = p16[size - 1];
+        p16[size - 1] = (uint16_t)((val >> 8) | (val << 8));
     }
 
     HAL::Display_SetAddrWindow(area->x1, area->y1, area->x2, area->y2);

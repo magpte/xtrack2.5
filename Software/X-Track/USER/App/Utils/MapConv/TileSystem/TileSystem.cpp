@@ -4,14 +4,8 @@
 #include <math.h>
 #include <string.h>
 
-#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
-#  include "arm_math.h"
-#  define FAST_SIN(x) arm_sin_f32((float)(x))
-#  define FAST_COS(x) arm_cos_f32((float)(x))
-#else
-#  define FAST_SIN(x) sin(x)
-#  define FAST_COS(x) cos(x)
-#endif
+#define FAST_SIN(x) sin(x)
+#define FAST_COS(x) cos(x)
 
 using namespace Microsoft_MapPoint;
 

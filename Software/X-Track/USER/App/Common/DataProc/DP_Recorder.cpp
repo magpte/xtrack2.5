@@ -42,7 +42,13 @@ typedef struct
     bool active;
     Account* account;
 
-    char writeBuf[RECORDER_WRITE_BUF_SIZE];
+#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  define ALIGN_WORD4 __attribute__((aligned(4)))
+#else
+#  define ALIGN_WORD4
+#endif
+
+    char writeBuf[RECORDER_WRITE_BUF_SIZE] ALIGN_WORD4;
     uint32_t writeBufLen;      // 缓冲区里已经攒了多少字节，还没写文件
     uint32_t lastSyncTick;     // 上一次真正 sync() 落盘的时刻（lv_tick_get()）
 } Recorder_t;

@@ -93,6 +93,11 @@ static bool onLoad(Account* account)
     MapConv::SetExtName(sysConfig.mapExtName);
     MapConv::SetCoordTransformEnable(!sysConfig.mapWGS84);
 
+    char wgsLog[64];
+    snprintf(wgsLog, sizeof(wgsLog), "[MapConfig] WGS84 = %d, CoordTransformEnable = %d\r\n",
+             sysConfig.mapWGS84, !sysConfig.mapWGS84);
+    HAL::SD_WriteCrashLog(wgsLog);
+
     int16_t levelMin, levelMax;
     if (MapConvGetRange(sysConfig.mapDirPath, &levelMin, &levelMax))
     {

@@ -475,6 +475,10 @@ bool LiveMap::GetIsMapTileContChanged()
 
 void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
 {
+    int32_t minDist = 18 - mapLevelCurrent;
+    if (minDist < 0) minDist = 0;
+    Model.lineFilter.SetMinDistance(minDist);
+
     Model.lineFilter.SetClipArea(area);
     Model.lineFilter.Reset();
     Model.TrackReload([](TrackPointFilter * filter, const TrackPointFilter::Point_t* point)

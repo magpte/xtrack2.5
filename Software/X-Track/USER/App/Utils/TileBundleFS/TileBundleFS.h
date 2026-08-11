@@ -33,4 +33,8 @@
 // already be registered).
 void TileBundleFS_Init(void);
 
+// 96KB Tile LRU Cache diagnostic and control functions
+void TileBundleFS_GetCacheStats(uint32_t* hits, uint32_t* misses, uint32_t* used_bytes);
+void TileBundleFS_ClearCache(void);
+
 #endif

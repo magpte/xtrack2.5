@@ -22,7 +22,16 @@
  */
 #include "TrackPointFilter.h"
 #include <string.h>
+#include <math.h>
 #include <cmath> 
+
+#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  include "arm_math.h"
+#endif
+
+#ifndef sqrtf
+#  define sqrtf(x) sqrt((float)(x))
+#endif
 
 #define SQ(x)    ((x)*(x))
 #define FLOAT_0  0.00001

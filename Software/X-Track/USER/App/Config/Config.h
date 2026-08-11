@@ -76,7 +76,7 @@
 // 只要 SD 卡在、GPS 在跑就记录，不需要用户手动开始/停止。
 #define CONFIG_NMEA_LOG_FILE_DIR_NAME         "NMEA"
 
-#define CONFIG_MAP_USE_WGS84_DEFAULT          false
+#define CONFIG_MAP_USE_WGS84_DEFAULT          true
 #define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPRB"
 
 #ifndef CONFIG_MAP_EXT_NAME_DEFAULT

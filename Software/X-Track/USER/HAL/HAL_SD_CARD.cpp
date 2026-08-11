@@ -71,7 +71,13 @@ static File     s_nmeaLogFile;
 static bool     s_nmeaLogFileOpen = false;
 static bool     s_nmeaLogOpenFailed = false; // 开过一次失败就不再重试，避免每条语句都去戳一次坏掉的 SD 卡
 static bool     s_nmeaLogNeedSync = false;   // 标记是否有物理写入，避免无数据时空刷 sync() 导致的 Flash 磨损与主线程卡顿
-static char     s_nmeaLogWriteBuf[NMEA_LOG_WRITE_BUF_SIZE];
+#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  define ALIGN_WORD4 __attribute__((aligned(4)))
+#else
+#  define ALIGN_WORD4
+#endif
+
+static char     s_nmeaLogWriteBuf[NMEA_LOG_WRITE_BUF_SIZE] ALIGN_WORD4;
 static uint32_t s_nmeaLogWriteBufLen = 0;
 static uint32_t s_nmeaLogLastSyncTick = 0;
 

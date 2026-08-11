@@ -56,8 +56,10 @@
  */
 
 #include "lv_img_rle.h"
+#include "Common/HAL/HAL.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define MY_CLASS &lv_img_rle_class
 
@@ -84,24 +86,196 @@
 // Each refill issues one lv_fs_read for up to this many bytes, replacing
 // O(runs) per-pair reads with O(tile_bytes / RLE_READ_BUF_SIZE) reads.
 // 256 = 128 (run_len, idx) pairs per SD read.  Power of two, fits on stack.
-#define RLE_READ_BUF_SIZE     256u
+#define RLE_READ_BUF_SIZE     512u
+
+// =========================================================================
+// 48KB Compressed Tile LRU Cache (SRAM Pool)
+// =========================================================================
+#define TILE_CACHE_TOTAL_POOL_SIZE (48 * 1024)
+#define TILE_CACHE_MAX_ENTRIES     16
+#define MAX_CACHEABLE_TILE_SIZE    (16 * 1024)
+
+typedef struct
+{
+    char     path[64];
+    uint32_t pool_offset;
+    uint32_t length;
+    uint32_t last_used_tick;
+    bool     valid;
+} TileCacheEntry_t;
+
+#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  define ALIGN_WORD4 __attribute__((aligned(4)))
+#else
+#  define ALIGN_WORD4
+#endif
+
+static uint8_t s_tile_cache_pool[TILE_CACHE_TOTAL_POOL_SIZE] ALIGN_WORD4;
+static TileCacheEntry_t s_cache_entries[TILE_CACHE_MAX_ENTRIES];
+static uint32_t s_cache_used_bytes = 0;
+static uint32_t s_cache_hits = 0;
+static uint32_t s_cache_misses = 0;
+
+static const uint8_t* s_cur_tile_cached_data = NULL;
+static uint32_t       s_cur_tile_start_offset = 0;
+
+static void tile_cache_compact(void)
+{
+    uint32_t write_offset = 0;
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid)
+        {
+            if (s_cache_entries[i].pool_offset != write_offset)
+            {
+                memmove(&s_tile_cache_pool[write_offset],
+                        &s_tile_cache_pool[s_cache_entries[i].pool_offset],
+                        s_cache_entries[i].length);
+                s_cache_entries[i].pool_offset = write_offset;
+            }
+            write_offset += s_cache_entries[i].length;
+        }
+    }
+    s_cache_used_bytes = write_offset;
+}
+
+static void tile_cache_evict_one(void)
+{
+    int oldest_idx = -1;
+    uint32_t oldest_tick = 0xFFFFFFFFu;
+
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid && s_cache_entries[i].last_used_tick < oldest_tick)
+        {
+            oldest_tick = s_cache_entries[i].last_used_tick;
+            oldest_idx = i;
+        }
+    }
+
+    if (oldest_idx >= 0)
+    {
+        s_cache_entries[oldest_idx].valid = false;
+        tile_cache_compact();
+    }
+}
+
+static int tile_cache_find(const char* path)
+{
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid && strcmp(s_cache_entries[i].path, path) == 0)
+        {
+            s_cache_entries[i].last_used_tick = lv_tick_get();
+            s_cache_hits++;
+            uint32_t total = s_cache_hits + s_cache_misses;
+            if (total % 10 == 0)
+            {
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf),
+                         "[TileLRU] HIT! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
+                         (unsigned)s_cache_hits, (unsigned)s_cache_misses,
+                         (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
+                LV_LOG_USER("%s", log_buf);
+                HAL::SD_WriteCrashLog(log_buf);
+            }
+            return i;
+        }
+    }
+    s_cache_misses++;
+    uint32_t total = s_cache_hits + s_cache_misses;
+    if (total % 10 == 0)
+    {
+        char log_buf[128];
+        snprintf(log_buf, sizeof(log_buf),
+                 "[TileLRU] MISS! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
+                 (unsigned)s_cache_hits, (unsigned)s_cache_misses,
+                 (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
+        LV_LOG_USER("%s", log_buf);
+        HAL::SD_WriteCrashLog(log_buf);
+    }
+    return -1;
+}
 
 // =========================================================================
 // Shared bundle file handle
 // =========================================================================
-// One .tbnd file is kept open between draw calls. Adjacent tiles very often
-// share the same bundle, so the common path is a strcmp-and-reuse rather
-// than a FAT directory traversal for every single tile.
-//
-// CONCURRENCY NOTE (same as the old TileBundleFS):
-// Only ONE virtual tile may be in the process of being read at any time.
-// LVGL's draw events are serialised (one draw context at a time) so this
-// assumption holds today. Do not add a second concurrent caller without
-// revisiting the shared-handle design.
-// =========================================================================
 static lv_fs_file_t s_bundle_file;
 static char         s_bundle_path[96] = "";
 static bool         s_bundle_valid    = false;
+
+static uint8_t* tile_cache_alloc_slot(const char* path, uint32_t length, int* out_slot_idx)
+{
+    if (length == 0 || length > MAX_CACHEABLE_TILE_SIZE || length > TILE_CACHE_TOTAL_POOL_SIZE)
+    {
+        return NULL;
+    }
+
+    while (s_cache_used_bytes + length > TILE_CACHE_TOTAL_POOL_SIZE)
+    {
+        uint32_t prev_used = s_cache_used_bytes;
+        tile_cache_evict_one();
+        if (s_cache_used_bytes == prev_used)
+        {
+            return NULL;
+        }
+    }
+
+    int slot_idx = -1;
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (!s_cache_entries[i].valid)
+        {
+            slot_idx = i;
+            break;
+        }
+    }
+
+    if (slot_idx < 0)
+    {
+        tile_cache_evict_one();
+        for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+        {
+            if (!s_cache_entries[i].valid)
+            {
+                slot_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (slot_idx < 0)
+    {
+        return NULL;
+    }
+
+    TileCacheEntry_t* entry = &s_cache_entries[slot_idx];
+    strncpy(entry->path, path, sizeof(entry->path) - 1);
+    entry->path[sizeof(entry->path) - 1] = '\0';
+    entry->pool_offset = s_cache_used_bytes;
+    entry->length = length;
+    entry->last_used_tick = lv_tick_get();
+    entry->valid = true;
+
+    s_cache_used_bytes += length;
+    *out_slot_idx = slot_idx;
+
+    return &s_tile_cache_pool[entry->pool_offset];
+}
+
+static bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t* br)
+{
+    if (s_cur_tile_cached_data != NULL)
+    {
+        uint32_t rel_offset = abs_pos - s_cur_tile_start_offset;
+        memcpy(buf, s_cur_tile_cached_data + rel_offset, len);
+        *br = len;
+        return true;
+    }
+
+    return (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) == LV_FS_RES_OK &&
+            lv_fs_read(&s_bundle_file, buf, len, br) == LV_FS_RES_OK);
+}
 
 // =========================================================================
 // Tile metadata cache
@@ -300,7 +474,7 @@ typedef struct {
     bool     error;
 } RleReader_t;
 
-// Refills reader buffer from s_bundle_file. Returns false on EOF or error.
+// Refills reader buffer from s_bundle_file or 96KB SRAM cache. Returns false on EOF or error.
 static bool reader_refill(RleReader_t* r)
 {
     uint32_t avail = r->tile_end - r->abs_pos;
@@ -313,7 +487,7 @@ static bool reader_refill(RleReader_t* r)
 
     uint32_t want = (avail < RLE_READ_BUF_SIZE) ? avail : RLE_READ_BUF_SIZE;
     uint32_t br   = 0;
-    if (lv_fs_read(&s_bundle_file, r->buf, want, &br) != LV_FS_RES_OK || br == 0)
+    if (!tile_read_bytes(r->abs_pos, r->buf, want, &br) || br == 0)
     {
         r->filled = 0;
         r->pos    = 0;
@@ -327,7 +501,7 @@ static bool reader_refill(RleReader_t* r)
     return true;
 }
 
-// Seeks s_bundle_file to abs_pos and initialises the reader for this tile.
+// Seeks to abs_pos and initialises the reader for this tile.
 static bool reader_seek(RleReader_t* r, uint32_t abs_pos, uint32_t tile_end)
 {
     r->abs_pos  = abs_pos;
@@ -336,10 +510,13 @@ static bool reader_seek(RleReader_t* r, uint32_t abs_pos, uint32_t tile_end)
     r->filled   = 0;
     r->error    = false;
 
-    if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+    if (s_cur_tile_cached_data == NULL)
     {
-        r->error = true;
-        return false;
+        if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+        {
+            r->error = true;
+            return false;
+        }
     }
     return true;
 }
@@ -401,6 +578,9 @@ static bool ensure_bundle_open(const char* bundle_path)
 
     if (lv_fs_open(&s_bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
     {
+        char logBuf[128];
+        snprintf(logBuf, sizeof(logBuf), "[TileBundle] FAIL open '%s'\r\n", bundle_path);
+        HAL::SD_WriteCrashLog(logBuf);
         return false;
     }
 
@@ -482,6 +662,19 @@ static bool open_tile(const char* src,
                       uint32_t* tile_start_out,
                       uint32_t* tile_length_out)
 {
+    s_cur_tile_cached_data = NULL;
+    s_cur_tile_start_offset = 0;
+
+    int cache_idx = tile_cache_find(src);
+    if (cache_idx >= 0)
+    {
+        s_cur_tile_cached_data = &s_tile_cache_pool[s_cache_entries[cache_idx].pool_offset];
+        s_cur_tile_start_offset = 0;
+        *tile_start_out  = 0;
+        *tile_length_out = s_cache_entries[cache_idx].length;
+        return true;
+    }
+
     char bundle_path[96];
     int  local_x = 0, local_y = 0;
     if (!parse_tile_path(src, bundle_path, sizeof(bundle_path), &local_x, &local_y))
@@ -492,13 +685,10 @@ static bool open_tile(const char* src,
 
     if (!ensure_bundle_open(bundle_path))
     {
-        // Either the bundle block genuinely doesn't exist for this area of
-        // the map, or there is a map-directory configuration mismatch.
         LV_LOG_WARN("RLE: cannot open bundle '%s' (from '%s')", bundle_path, src);
         return false;
     }
 
-    // Index entry for this tile is at a fixed offset within the bundle header.
     uint32_t index_pos = BUNDLE_HEADER_SIZE
                          + (uint32_t)(local_y * BUNDLE_BLOCK_SIZE + local_x) * 8u;
 
@@ -519,35 +709,53 @@ static bool open_tile(const char* src,
 
     if (offset == ABSENT_OFFSET || length == 0)
     {
-        return false;  // tile absent -- not an error, caller returns LV_RES_OK
+        return false;
     }
 
     uint32_t data_section_start = BUNDLE_HEADER_SIZE
                                    + (uint32_t)BUNDLE_BLOCK_SIZE * BUNDLE_BLOCK_SIZE * 8u;
-    *tile_start_out  = data_section_start + offset;
+    uint32_t tile_start = data_section_start + offset;
+    *tile_start_out  = tile_start;
     *tile_length_out = length;
+    s_cur_tile_start_offset = tile_start;
+
+    int slot_idx = -1;
+    uint8_t* cached_buf = tile_cache_alloc_slot(src, length, &slot_idx);
+    if (cached_buf != NULL && slot_idx >= 0)
+    {
+        uint32_t read_bytes = 0;
+        if (lv_fs_seek(&s_bundle_file, tile_start, LV_FS_SEEK_SET) == LV_FS_RES_OK
+            && lv_fs_read(&s_bundle_file, cached_buf, length, &read_bytes) == LV_FS_RES_OK
+            && read_bytes == length)
+        {
+            s_cur_tile_cached_data = cached_buf;
+            s_cur_tile_start_offset = 0;
+            *tile_start_out = 0;
+        }
+        else
+        {
+            s_cache_entries[slot_idx].valid = false;
+            tile_cache_compact();
+            s_cur_tile_cached_data = NULL;
+        }
+    }
+
     return true;
 }
 
 // =========================================================================
 // RLE2 metadata load (with cache)
 // =========================================================================
-// Reads (or reuses from s_meta) the header, palette, and checkpoint table.
-// s_bundle_file must be seeked to tile_start before calling this on a
-// cache miss; on a cache hit nothing is read from the file.
-// =========================================================================
 static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length)
 {
-    // Cache hit: same path → same tile → metadata hasn't changed
     if (s_meta.valid && strcmp(s_meta.path, src) == 0)
     {
         return true;
     }
 
-    // Cache miss: read header
     uint8_t  header[RLE_HEADER_SIZE];
     uint32_t br = 0;
-    if (lv_fs_read(&s_bundle_file, header, sizeof(header), &br) != LV_FS_RES_OK
+    if (!tile_read_bytes(tile_start, header, sizeof(header), &br)
         || br != sizeof(header)
         || memcmp(header, RLE_MAGIC, 4) != 0)
     {
@@ -569,8 +777,6 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
         return false;
     }
 
-    // Require exact match on tile dimensions to catch encoder/decoder
-    // mismatches early rather than silently writing garbage pixels.
     if (width != RLE_MAX_TILE_WIDTH || height != RLE_MAX_TILE_WIDTH)
     {
         LV_LOG_WARN("RLE: unexpected tile size %dx%d in '%s' (expected %dx%d)",
@@ -589,8 +795,8 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
         return false;
     }
 
-    if (lv_fs_read(&s_bundle_file, s_meta.palette,
-                   (uint32_t)paletteCount * sizeof(uint16_t), &br) != LV_FS_RES_OK
+    if (!tile_read_bytes(tile_start + RLE_HEADER_SIZE, s_meta.palette,
+                         (uint32_t)paletteCount * sizeof(uint16_t), &br)
         || br != (uint32_t)paletteCount * sizeof(uint16_t))
     {
         LV_LOG_WARN("RLE: truncated palette in '%s'", src);
@@ -598,8 +804,8 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
         return false;
     }
 
-    if (lv_fs_read(&s_bundle_file, s_meta.checkpoints,
-                   (uint32_t)checkpointCount * sizeof(uint32_t), &br) != LV_FS_RES_OK
+    if (!tile_read_bytes(tile_start + RLE_HEADER_SIZE + (uint32_t)paletteCount * sizeof(uint16_t),
+                         s_meta.checkpoints, (uint32_t)checkpointCount * sizeof(uint32_t), &br)
         || br != (uint32_t)checkpointCount * sizeof(uint32_t))
     {
         LV_LOG_WARN("RLE: truncated checkpoint table in '%s'", src);

@@ -12,50 +12,208 @@
  *       4 bytes length
  *       entry for (localX, localY) is at index localY*blockSize+localX
  *   data section: concatenated tile bytes
+ *
+ * Features a 96KB static SRAM Tile LRU Cache for zero SD card I/O reads.
  */
 #include "TileBundleFS.h"
+#include "Common/HAL/HAL.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define BUNDLE_HEADER_SIZE 14
 #define ABSENT_OFFSET 0xFFFFFFFFu
 
+#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  define ALIGN_WORD4 __attribute__((aligned(4)))
+#else
+#  define ALIGN_WORD4
+#endif
+
+// Legacy TileBundleFS pool deactivated to prevent dual 96KB allocation
+#define TILE_CACHE_TOTAL_POOL_SIZE (1 * 1024)
+#define TILE_CACHE_MAX_ENTRIES     1
+#define MAX_CACHEABLE_TILE_SIZE    (512)
+
 typedef struct
 {
-    uint32_t tile_start;       // absolute byte offset of this tile's data within the bundle file
-    uint32_t tile_length;
-    uint32_t cursor;           // virtual read position, 0..tile_length
+    char path[64];
+    uint32_t pool_offset;
+    uint32_t length;
+    uint32_t last_used_tick;
+    bool valid;
+} TileCacheEntry_t;
+
+static uint8_t s_tile_cache_pool[TILE_CACHE_TOTAL_POOL_SIZE] ALIGN_WORD4;
+static TileCacheEntry_t s_cache_entries[TILE_CACHE_MAX_ENTRIES];
+static uint32_t s_cache_used_bytes = 0;
+static uint32_t s_cache_hits = 0;
+static uint32_t s_cache_misses = 0;
+
+typedef struct
+{
+    uint32_t tile_start;       // Absolute byte offset within bundle file
+    uint32_t tile_length;      // Tile byte length
+    uint32_t cursor;           // Read position, 0..tile_length
+    const uint8_t* cache_data; // Non-NULL if read from 96KB SRAM pool
 } TileBundleFile_t;
 
-// --- Shared, persistent bundle file handle ------------------------------
-// IMPORTANT ASSUMPTION: this driver assumes only ONE virtual tile "file"
-// is ever open at a time (i.e. the caller always fully reads and closes
-// one tile before opening the next). This holds for how lv_img_rle.cpp
-// actually uses it today (lv_rle_draw opens, decodes, and closes within
-// a single synchronous call, and LVGL's draw events are not concurrent).
-// If this driver is ever used somewhere that opens two RLE tiles at once
-// before closing the first, this sharing would corrupt both reads --
-// don't add a second concurrent caller without revisiting this.
-//
-// Why this exists: the same tile is often redrawn multiple times within
-// one refresh burst (overlapping panels like SportInfo/zoom indicator/
-// active line each invalidate their own small region, and each one
-// triggers a redraw of whatever tile is underneath), and adjacent tiles
-// share the same 100x100-tile bundle file. Without this cache, every
-// single tile draw re-opens the underlying .tbnd file from scratch --
-// a real FAT directory traversal -- even when it's the exact same file
-// as the previous call. Keeping it open and only re-doing the cheap
-// 8-byte index lookup for a new tile cuts that cost out for repeats and
-// neighbors, which is the majority of real-world access patterns while
-// panning/viewing a live map.
+// --- Shared, persistent bundle file handle ---
 static lv_fs_file_t s_shared_bundle_file;
 static char s_shared_bundle_path[96] = "";
 static bool s_shared_bundle_valid = false;
 
+// --- LRU Cache Internal Functions ---
+
+static void tile_cache_compact(void)
+{
+    uint32_t write_offset = 0;
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid)
+        {
+            if (s_cache_entries[i].pool_offset != write_offset)
+            {
+                memmove(&s_tile_cache_pool[write_offset],
+                        &s_tile_cache_pool[s_cache_entries[i].pool_offset],
+                        s_cache_entries[i].length);
+                s_cache_entries[i].pool_offset = write_offset;
+            }
+            write_offset += s_cache_entries[i].length;
+        }
+    }
+    s_cache_used_bytes = write_offset;
+}
+
+static void tile_cache_evict_one(void)
+{
+    int oldest_idx = -1;
+    uint32_t oldest_tick = 0xFFFFFFFFu;
+
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid && s_cache_entries[i].last_used_tick < oldest_tick)
+        {
+            oldest_tick = s_cache_entries[i].last_used_tick;
+            oldest_idx = i;
+        }
+    }
+
+    if (oldest_idx >= 0)
+    {
+        s_cache_entries[oldest_idx].valid = false;
+        tile_cache_compact();
+    }
+}
+
+static int tile_cache_find(const char* path)
+{
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (s_cache_entries[i].valid && strcmp(s_cache_entries[i].path, path) == 0)
+        {
+            s_cache_entries[i].last_used_tick = lv_tick_get();
+            s_cache_hits++;
+            uint32_t total = s_cache_hits + s_cache_misses;
+            if (total % 10 == 0)
+            {
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf),
+                         "[TileLRU] HIT! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
+                         (unsigned)s_cache_hits, (unsigned)s_cache_misses,
+                         (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
+                LV_LOG_USER("%s", log_buf);
+                HAL::SD_WriteCrashLog(log_buf);
+            }
+            return i;
+        }
+    }
+    s_cache_misses++;
+    uint32_t total = s_cache_hits + s_cache_misses;
+    if (total % 10 == 0)
+    {
+        char log_buf[128];
+        snprintf(log_buf, sizeof(log_buf),
+                 "[TileLRU] MISS! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
+                 (unsigned)s_cache_hits, (unsigned)s_cache_misses,
+                 (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
+        LV_LOG_USER("%s", log_buf);
+        HAL::SD_WriteCrashLog(log_buf);
+    }
+    return -1;
+}
+
+static uint8_t* tile_cache_alloc_slot(const char* path, uint32_t length, int* out_slot_idx)
+{
+    if (length == 0 || length > MAX_CACHEABLE_TILE_SIZE || length > TILE_CACHE_TOTAL_POOL_SIZE)
+    {
+        return NULL;
+    }
+
+    // Evict oldest LRU entries until enough room is available
+    while (s_cache_used_bytes + length > TILE_CACHE_TOTAL_POOL_SIZE)
+    {
+        tile_cache_evict_one();
+    }
+
+    int slot_idx = -1;
+    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+    {
+        if (!s_cache_entries[i].valid)
+        {
+            slot_idx = i;
+            break;
+        }
+    }
+
+    if (slot_idx < 0)
+    {
+        tile_cache_evict_one();
+        for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
+        {
+            if (!s_cache_entries[i].valid)
+            {
+                slot_idx = i;
+                break;
+            }
+        }
+    }
+
+    if (slot_idx < 0)
+    {
+        return NULL;
+    }
+
+    TileCacheEntry_t* entry = &s_cache_entries[slot_idx];
+    strncpy(entry->path, path, sizeof(entry->path) - 1);
+    entry->path[sizeof(entry->path) - 1] = '\0';
+    entry->pool_offset = s_cache_used_bytes;
+    entry->length = length;
+    entry->last_used_tick = lv_tick_get();
+    entry->valid = true;
+
+    s_cache_used_bytes += length;
+    *out_slot_idx = slot_idx;
+
+    return &s_tile_cache_pool[entry->pool_offset];
+}
+
+void TileBundleFS_GetCacheStats(uint32_t* hits, uint32_t* misses, uint32_t* used_bytes)
+{
+    if (hits)       *hits = s_cache_hits;
+    if (misses)     *misses = s_cache_misses;
+    if (used_bytes) *used_bytes = s_cache_used_bytes;
+}
+
+void TileBundleFS_ClearCache(void)
+{
+    memset(s_cache_entries, 0, sizeof(s_cache_entries));
+    s_cache_used_bytes = 0;
+}
+
 // Parses ".../<level>/<tileX>/<tileY>.rle" out of `path`, computes which
 // bundle block (tileX,tileY) falls into, and writes the real bundle
-// file's path (same prefix, "<level>/<blockX>_<blockY>.tbnd") into
-// `bundle_path_out`.
+// file's path (same prefix, "<level>/<blockX>_<blockY>.tbnd") into `bundle_path_out`.
 static bool parse_virtual_path(const char* path, char* bundle_path_out, size_t bundle_path_max,
                                 int* local_x, int* local_y)
 {
@@ -90,7 +248,6 @@ static bool parse_virtual_path(const char* path, char* bundle_path_out, size_t b
     }
     *slash1 = '\0';
     char* level_str = slash1 + 1;
-    // buf now holds just the prefix, e.g. "/MAP"
 
     int tile_x = atoi(tileX_str);
     int tile_y = atoi(tileY_str);  // atoi stops at the ".rle" suffix on its own
@@ -106,15 +263,11 @@ static bool parse_virtual_path(const char* path, char* bundle_path_out, size_t b
     return written > 0 && (size_t)written < bundle_path_max;
 }
 
-// Ensures s_shared_bundle_file is open and positioned on `bundle_path`.
-// Reuses the already-open handle if it's already pointing at the same
-// file (the common case); otherwise closes whatever was open and opens
-// the new one.
 static bool ensure_shared_bundle_open(const char* bundle_path)
 {
     if (s_shared_bundle_valid && strcmp(s_shared_bundle_path, bundle_path) == 0)
     {
-        return true;  // already open on the right file -- nothing to do
+        return true;
     }
 
     if (s_shared_bundle_valid)
@@ -144,6 +297,24 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
         return NULL;
     }
 
+    // 1. Check 96KB Tile LRU Cache Hit
+    int cache_idx = tile_cache_find(path);
+    if (cache_idx >= 0)
+    {
+        TileBundleFile_t* f = (TileBundleFile_t*)lv_mem_alloc(sizeof(TileBundleFile_t));
+        if (f == NULL)
+        {
+            LV_LOG_ERROR("TileBundle: out of memory");
+            return NULL;
+        }
+        f->tile_start = 0;
+        f->tile_length = s_cache_entries[cache_idx].length;
+        f->cursor = 0;
+        f->cache_data = &s_tile_cache_pool[s_cache_entries[cache_idx].pool_offset];
+        return f;
+    }
+
+    // 2. Cache Miss: Open from SD Card Bundle File
     char bundle_path[96];
     int local_x = 0, local_y = 0;
     if (!parse_virtual_path(path, bundle_path, sizeof(bundle_path), &local_x, &local_y))
@@ -154,10 +325,6 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
 
     if (!ensure_shared_bundle_open(bundle_path))
     {
-        // Bundle file itself missing -- could be a legitimately empty
-        // block (no tiles there at all), or could be a path/dirPath
-        // mismatch. Logging this is cheap and is the fastest way to
-        // tell those two cases apart while debugging.
         LV_LOG_WARN("TileBundle: could not open bundle file %s (from virtual path %s)", bundle_path, path);
         return NULL;
     }
@@ -190,7 +357,6 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
 
     if (offset == ABSENT_OFFSET || length == 0)
     {
-        // Tile genuinely doesn't exist in the map data -- not an error.
         lv_mem_free(f);
         return NULL;
     }
@@ -200,6 +366,7 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
     f->tile_start = data_section_start + offset;
     f->tile_length = length;
     f->cursor = 0;
+    f->cache_data = NULL;
 
     if (lv_fs_seek(&s_shared_bundle_file, f->tile_start, LV_FS_SEEK_SET) != LV_FS_RES_OK)
     {
@@ -208,16 +375,31 @@ static void* bundle_fs_open(lv_fs_drv_t* drv, const char* path, lv_fs_mode_t mod
         return NULL;
     }
 
+    // Try storing newly loaded tile into 96KB LRU Cache
+    int slot_idx = -1;
+    uint8_t* cached_buf = tile_cache_alloc_slot(path, length, &slot_idx);
+    if (cached_buf != NULL && slot_idx >= 0)
+    {
+        uint32_t read_bytes = 0;
+        if (lv_fs_read(&s_shared_bundle_file, cached_buf, length, &read_bytes) == LV_FS_RES_OK
+            && read_bytes == length)
+        {
+            f->cache_data = cached_buf;
+        }
+        else
+        {
+            s_cache_entries[slot_idx].valid = false;
+            tile_cache_compact();
+            lv_fs_seek(&s_shared_bundle_file, f->tile_start, LV_FS_SEEK_SET);
+        }
+    }
+
     return f;
 }
 
 static lv_fs_res_t bundle_fs_close(lv_fs_drv_t* drv, void* file_p)
 {
     LV_UNUSED(drv);
-    // Deliberately does NOT close s_shared_bundle_file here -- it's kept
-    // open so the next open() call can potentially reuse it (see
-    // ensure_shared_bundle_open's comment above). Only the small
-    // per-virtual-open state is freed.
     TileBundleFile_t* f = (TileBundleFile_t*)file_p;
     if (f)
     {
@@ -232,8 +414,18 @@ static lv_fs_res_t bundle_fs_read(lv_fs_drv_t* drv, void* file_p, void* buf, uin
     TileBundleFile_t* f = (TileBundleFile_t*)file_p;
 
     uint32_t remaining = f->tile_length - f->cursor;
-    uint32_t to_read = (btr < remaining) ? btr : remaining;  // never read past this tile's own bytes
+    uint32_t to_read = (btr < remaining) ? btr : remaining;
 
+    if (f->cache_data != NULL)
+    {
+        // 96KB SRAM Cache Hit: Fast Memory Copy
+        memcpy(buf, f->cache_data + f->cursor, to_read);
+        *br = to_read;
+        f->cursor += to_read;
+        return LV_FS_RES_OK;
+    }
+
+    // Uncached Read from SD Card
     lv_fs_res_t res = lv_fs_read(&s_shared_bundle_file, buf, to_read, br);
     if (res == LV_FS_RES_OK)
     {
@@ -242,9 +434,6 @@ static lv_fs_res_t bundle_fs_read(lv_fs_drv_t* drv, void* file_p, void* buf, uin
     return res;
 }
 
-// Only LV_FS_SEEK_SET is exercised by lv_img_rle.cpp today; CUR/END are
-// implemented for completeness but less thoroughly tested since nothing
-// currently calls them on this driver.
 static lv_fs_res_t bundle_fs_seek(lv_fs_drv_t* drv, void* file_p, uint32_t pos, lv_fs_whence_t whence)
 {
     LV_UNUSED(drv);
@@ -259,7 +448,7 @@ static lv_fs_res_t bundle_fs_seek(lv_fs_drv_t* drv, void* file_p, uint32_t pos, 
     {
         new_cursor = f->cursor + pos;
     }
-    else  // LV_FS_SEEK_END
+    else
     {
         new_cursor = f->tile_length + pos;
     }
@@ -269,6 +458,11 @@ static lv_fs_res_t bundle_fs_seek(lv_fs_drv_t* drv, void* file_p, uint32_t pos, 
         new_cursor = f->tile_length;
     }
     f->cursor = new_cursor;
+
+    if (f->cache_data != NULL)
+    {
+        return LV_FS_RES_OK;
+    }
 
     return lv_fs_seek(&s_shared_bundle_file, f->tile_start + f->cursor, LV_FS_SEEK_SET);
 }
@@ -283,6 +477,8 @@ static lv_fs_res_t bundle_fs_tell(lv_fs_drv_t* drv, void* file_p, uint32_t* pos_
 
 void TileBundleFS_Init(void)
 {
+    TileBundleFS_ClearCache();
+
     static lv_fs_drv_t drv;
     lv_fs_drv_init(&drv);
     drv.letter = TILE_BUNDLE_DRIVE_LETTER;
