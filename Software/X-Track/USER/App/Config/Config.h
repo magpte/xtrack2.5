@@ -44,7 +44,7 @@
 #ifdef ARDUINO
 #  define CONFIG_GPS_REFR_PERIOD              500  // ms -- 配合模块 PCAS02 提到的 2Hz 定位频率
 #else
-#  define CONFIG_GPS_REFR_PERIOD              10 // ms
+#  define CONFIG_GPS_REFR_PERIOD              500  // ms -- 对齐 2Hz 定位刷新，消除 10ms (100Hz) 高频空转
 #endif
 
 // 静止时把 LiveMap 的 GPS/瓦片检查间隔从 CONFIG_GPS_REFR_PERIOD 拉长到这个值，

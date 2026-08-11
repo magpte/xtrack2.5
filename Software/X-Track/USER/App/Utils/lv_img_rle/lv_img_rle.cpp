@@ -873,17 +873,24 @@ void lv_img_rle_set_src(lv_obj_t* obj, const char* src)
 
     if (src)
     {
+        if (img->src != NULL && strcmp(img->src, src) == 0)
+        {
+            return;
+        }
+
         size_t len = strlen(src) + 1;
         img->src = (char*)lv_mem_realloc(img->src, len);
         strcpy(img->src, src);
     }
     else
     {
-        if (img->src)
+        if (img->src == NULL)
         {
-            lv_mem_free(img->src);
-            img->src = NULL;
+            return;
         }
+
+        lv_mem_free(img->src);
+        img->src = NULL;
     }
 
     lv_obj_invalidate(obj);
