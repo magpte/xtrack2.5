@@ -48,7 +48,8 @@ void SystemInfosView::Create(lv_obj_t* root)
         "Altitude\n"
         "UTC Time\n\n"
         "Course\n"
-        "Speed"
+        "Speed\n"
+        "PDOP"
     );
 
     /* Sky View */
@@ -550,7 +551,8 @@ void SystemInfosView::SetGPS(
     float alt,
     const char* utc,
     float course,
-    float speed
+    float speed,
+    float pdop
 )
 {
     lv_label_set_text_fmt(
@@ -560,13 +562,15 @@ void SystemInfosView::SetGPS(
         "%0.2fm\n"
         "%s\n"
         "%0.1f deg\n"
-        "%0.1fkm/h",
+        "%0.1fkm/h\n"
+        "%0.1f",
         lat,
         lng,
         alt,
         utc,
         course,
-        speed
+        speed,
+        pdop
     );
 }
 

@@ -64,7 +64,8 @@ public:
         float alt,
         const char* utc,
         float course,
-        float speed
+        float speed,
+        float pdop
     );
     void SetIMU(
         int step,

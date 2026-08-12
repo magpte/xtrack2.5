@@ -27,6 +27,7 @@ typedef struct
     float altitude;
     float course;
     float speed;
+    float pdop;
     int16_t satellites;
     bool isVaild;
     Clock_Info_t clock;

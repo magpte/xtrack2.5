@@ -132,13 +132,13 @@ void SystemInfos::Update()
     else if (focused == View.ui.gps.icon)
     {
         double lat, lng;
-        float alt, course, speed;
-        Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
-        snprintf(tmpStr, sizeof(tmpStr), "%.5f|%.5f|%.1f|%s|%.1f|%.1f", lat, lng, alt, buf, course, speed);
+        float alt, course, speed, pdop;
+        Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed, &pdop);
+        snprintf(tmpStr, sizeof(tmpStr), "%.5f|%.5f|%.1f|%s|%.1f|%.1f|%.1f", lat, lng, alt, buf, course, speed, pdop);
         if (strcmp(cache.itemStr, tmpStr) != 0)
         {
             strcpy(cache.itemStr, tmpStr);
-            View.SetGPS(lat, lng, alt, buf, course, speed);
+            View.SetGPS(lat, lng, alt, buf, course, speed, pdop);
         }
     }
     else if (focused == View.sky.icon)
@@ -146,8 +146,8 @@ void SystemInfos::Update()
         if (skyUpdateCounter % 5 == 0)
         {
             double lat, lng;
-            float alt, course, speed;
-            Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
+            float alt, course, speed, pdop;
+            Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed, &pdop);
             View.SetSkyCourse(course);
         }
 

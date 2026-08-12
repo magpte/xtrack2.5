@@ -106,36 +106,7 @@ void LiveMapModel::TrackReload(TrackPointFilter::Callback_t callback, void* user
 
     PointContainer* pointContainer = (PointContainer*)info.pointCont;
 
-    PointContainer::BBox_t filterBox;
-    PointContainer::BBox_t* pFilterBox = nullptr;
-
-    if (area != nullptr)
-    {
-        int32_t padding = 256;
-        int32_t areaX0 = area->x0 - padding;
-        int32_t areaY0 = area->y0 - padding;
-        int32_t areaX1 = area->x1 + padding;
-        int32_t areaY1 = area->y1 + padding;
-
-        int diffLevel = mapConv.GetLevel() - info.level;
-        if (diffLevel >= 0)
-        {
-            filterBox.minX = areaX0 >> diffLevel;
-            filterBox.maxX = areaX1 >> diffLevel;
-            filterBox.minY = areaY0 >> diffLevel;
-            filterBox.maxY = areaY1 >> diffLevel;
-        }
-        else
-        {
-            filterBox.minX = areaX0 << -diffLevel;
-            filterBox.maxX = areaX1 << -diffLevel;
-            filterBox.minY = areaY0 << -diffLevel;
-            filterBox.maxY = areaY1 << -diffLevel;
-        }
-        pFilterBox = &filterBox;
-    }
-
-    pointContainer->PopStartWithArea(pFilterBox);
+    pointContainer->PopStart();
     pointFilter.Reset();
 
     TrackPointFilter ptFilter;

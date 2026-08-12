@@ -22,8 +22,6 @@ static const double pi = 3.14159265358979324;
 static const double a = 6378245.0;
 static const double ee = 0.00669342162296594323;
 
-static const float pi_f = 3.14159265358979324f;
-
 // GCJ-02（"火星坐标系"）偏移是中国大陆法规要求的坐标混淆算法，公式本身
 // 只在中国境内的范围内标定过、只在这个范围内有意义——用户反馈"在海外用
 // Live Map 有偏移"，根因就是这里原来完全没做"是否在中国境内"的判断，
@@ -39,24 +37,20 @@ static bool outOfChina(double lat, double lon)
 
 static double transformLat(double x, double y)
 {
-    float fx = (float)x;
-    float fy = (float)y;
-    float ret = -100.0f + 2.0f * fx + 3.0f * fy + 0.2f * fy * fy + 0.1f * fx * fy + 0.2f * FAST_SQRT(ABS(fx));
-    ret += (20.0f * FAST_SIN(6.0f * fx * pi_f) + 20.0f * FAST_SIN(2.0f * fx * pi_f)) * 2.0f / 3.0f;
-    ret += (20.0f * FAST_SIN(fy * pi_f) + 40.0f * FAST_SIN(fy / 3.0f * pi_f)) * 2.0f / 3.0f;
-    ret += (160.0f * FAST_SIN(fy / 12.0f * pi_f) + 320.0f * FAST_SIN(fy * pi_f / 30.0f)) * 2.0f / 3.0f;
-    return (double)ret;
+    double ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * sqrt(fabs(x));
+    ret += (20.0 * sin(6.0 * x * pi) + 20.0 * sin(2.0 * x * pi)) * 2.0 / 3.0;
+    ret += (20.0 * sin(y * pi) + 40.0 * sin(y / 3.0 * pi)) * 2.0 / 3.0;
+    ret += (160.0 * sin(y / 12.0 * pi) + 320.0 * sin(y * pi / 30.0)) * 2.0 / 3.0;
+    return ret;
 }
 
 static double transformLon(double x, double y)
 {
-    float fx = (float)x;
-    float fy = (float)y;
-    float ret = 300.0f + fx + 2.0f * fy + 0.1f * fx * fx + 0.1f * fx * fy + 0.1f * FAST_SQRT(ABS(fx));
-    ret += (20.0f * FAST_SIN(6.0f * fx * pi_f) + 20.0f * FAST_SIN(2.0f * fx * pi_f)) * 2.0f / 3.0f;
-    ret += (20.0f * FAST_SIN(fx * pi_f) + 40.0f * FAST_SIN(fx / 3.0f * pi_f)) * 2.0f / 3.0f;
-    ret += (150.0f * FAST_SIN(fx / 12.0f * pi_f) + 300.0f * FAST_SIN(fx / 30.0f * pi_f)) * 2.0f / 3.0f;
-    return (double)ret;
+    double ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * sqrt(fabs(x));
+    ret += (20.0 * sin(6.0 * x * pi) + 20.0 * sin(2.0 * x * pi)) * 2.0 / 3.0;
+    ret += (20.0 * sin(x * pi) + 40.0 * sin(x / 3.0 * pi)) * 2.0 / 3.0;
+    ret += (150.0 * sin(x / 12.0 * pi) + 300.0 * sin(x / 30.0 * pi)) * 2.0 / 3.0;
+    return ret;
 }
 
 void GPS_Transform(double wgLat, double wgLon, double* mgLat, double* mgLon)
@@ -71,11 +65,11 @@ void GPS_Transform(double wgLat, double wgLon, double* mgLat, double* mgLon)
     double dLat = transformLat(wgLon - 105.0, wgLat - 35.0);
     double dLon = transformLon(wgLon - 105.0, wgLat - 35.0);
     double radLat = wgLat / 180.0 * pi;
-    double magic = FAST_SIN(radLat);
+    double magic = sin(radLat);
     magic = 1.0 - ee * magic * magic;
-    double sqrtMagic = FAST_SQRT(magic);
+    double sqrtMagic = sqrt(magic);
     dLat = (dLat * 180.0) / ((a * (1.0 - ee)) / (magic * sqrtMagic) * pi);
-    dLon = (dLon * 180.0) / (a / sqrtMagic * FAST_COS(radLat) * pi);
+    dLon = (dLon * 180.0) / (a / sqrtMagic * cos(radLat) * pi);
     *mgLat = wgLat + dLat;
     *mgLon = wgLon + dLon;
 };

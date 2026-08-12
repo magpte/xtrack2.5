@@ -186,6 +186,7 @@ static bool NMEA_ValidateChecksum(const char* line, uint8_t len)
 
 // 决定这一条语句要不要写进日志文件。GSA/GSV 模块本身已经是目标频率，
 // 来一条收一条；GGA/RMC 模块仍是 2 倍频率，这里做 2:1 抽取。
+// （注：其余语句如 GLL/VTG/ZDA 等在 HAL_Init 的 PCAS03 配置指令中已在源头关闭）。
 static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
 {
     if (len < 6 || line[0] != '$') return false;
@@ -200,13 +201,14 @@ static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
 
     const char* type = comma - 3;
 
-    if (type[0] == 'G' && type[1] == 'S' && type[2] == 'A') return true;
-    if (type[0] == 'G' && type[1] == 'S' && type[2] == 'V') return true;
+    // GSA 与 GSV 模块已是目标频率，来一条收一条
+    if (type[0] == 'G' && type[1] == 'S' && (type[2] == 'A' || type[2] == 'V'))
+    {
+        return true;
+    }
 
-    // GGA 与 RMC 共享同一个周期抽样决策变量 s_keepCurrentEpoch。
-    // 每当同一周期的起始语句 GGA 到达时统一翻转决策，
-    // 随后的 RMC 直接复用该决策，确保 GGA 与 RMC 永远在同一周期内同留同丢，
-    // 彻底消除因独立标志位失步导致的 0.5s 时间跳动与语句成对缺失问题。
+    // GGA 与 RMC 模块为 2 倍频率，做 2:1 抽取。
+    // 共享同一个周期抽样决策变量 s_keepCurrentEpoch，确保 GGA 与 RMC 永远在同一周期内同留同丢。
     static bool s_keepCurrentEpoch = false;
 
     if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A')
@@ -219,7 +221,7 @@ static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
         return s_keepCurrentEpoch;
     }
 
-    return false; // 其余语句类型不落盘
+    return false;
 }
 
 static void NMEA_Log_ProcessLine(const char* line, uint8_t len)
@@ -230,6 +232,38 @@ static void NMEA_Log_ProcessLine(const char* line, uint8_t len)
     }
 }
 #endif
+
+static float s_pdopCurrent = 0.0f;
+
+static void GSA_ParseLine(char* line)
+{
+    if (line[0] != '$') return;
+    if (!(line[3] == 'G' && line[4] == 'S' && line[5] == 'A')) return;
+
+    char* star = strchr(line, '*');
+    if (star != NULL) *star = '\0';
+
+    char* fields[20];
+    int fieldCount = 0;
+    fields[fieldCount++] = line;
+    for (char* p = line; *p != '\0' && fieldCount < 20; p++)
+    {
+        if (*p == ',')
+        {
+            *p = '\0';
+            fields[fieldCount++] = p + 1;
+        }
+    }
+
+    if (fieldCount > 15 && fields[15][0] != '\0')
+    {
+        float val = (float)atof(fields[15]);
+        if (val > 0.0f)
+        {
+            s_pdopCurrent = val;
+        }
+    }
+}
 
 #if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
 static void NMEA_FeedLine(char c)
@@ -268,10 +302,11 @@ static void NMEA_FeedLine(char c)
         NMEA_Log_ProcessLine(s_nmeaLineBuf, s_nmeaLineLen);
 #endif
 
-        // 再执行会就地替换逗号为 '\0' 的 Sky Parse 解析
+        // 再执行会就地替换逗号为 '\0' 的 Sky Parse 和 GSA PDOP 解析
 #if CONFIG_GPS_SKY_ENABLE
         Sky_ParseLine(s_nmeaLineBuf);
 #endif
+        GSA_ParseLine(s_nmeaLineBuf);
 
         s_nmeaLineLen = 0;
     }
@@ -557,7 +592,10 @@ void HAL::GPS_Update()
 #endif
     }
 
-    while (GPS_SERIAL.available() > 0)
+    int bytesProcessed = 0;
+    const int MAX_GPS_BYTES_PER_TICK = 64; // 每次 Task Tick 最多处理 64 字节，配合 20ms 调度平滑分摊计算开销
+
+    while (GPS_SERIAL.available() > 0 && bytesProcessed < MAX_GPS_BYTES_PER_TICK)
     {
         char c = GPS_SERIAL.read();
 #if GPS_USE_TRANSPARENT
@@ -569,6 +607,7 @@ void HAL::GPS_Update()
 #endif
 
         gps.encode(c);
+        bytesProcessed++;
     }
 
 #if GPS_USE_TRANSPARENT
@@ -598,6 +637,12 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
     info->clock.minute = gps.time.minute();
     info->clock.second = gps.time.second();
     info->satellites = gps.satellites.value();
+
+    info->pdop = s_pdopCurrent;
+    if (info->pdop == 0.0f && gps.hdop.isValid())
+    {
+        info->pdop = (float)gps.hdop.hdop();
+    }
 
     return info->isVaild;
 }

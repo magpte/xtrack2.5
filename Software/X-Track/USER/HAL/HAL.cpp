@@ -104,7 +104,7 @@ void HAL::HAL_Init()
 #endif
 
     taskManager.Register(Power_EventMonitor, 100, true, "Power_EventMonitor");
-    taskManager.Register(GPS_Update, 200, true, "GPS_Update");
+    taskManager.Register(GPS_Update, 20, true, "GPS_Update"); // 高频 20ms 平滑调度
     taskManager.Register(SD_Update, 500, true, "SD_Update");
     taskManager.Register(Memory_DumpInfo, 1000, true, "Memory_DumpInfo");
     

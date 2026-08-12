@@ -24,7 +24,8 @@ public:
         float* alt,
         char* utc, uint32_t len,
         float* course,
-        float* speed
+        float* speed,
+        float* pdop
     );
 
     bool GetIMUInfo(
