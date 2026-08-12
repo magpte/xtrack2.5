@@ -83,119 +83,7 @@
 #define TILE_SD_DRIVE_LETTER  '/'
 
 // ---- Run-stream read buffer size ----------------------------------------
-// Each refill issues one lv_fs_read for up to this many bytes, replacing
-// O(runs) per-pair reads with O(tile_bytes / RLE_READ_BUF_SIZE) reads.
-// 256 = 128 (run_len, idx) pairs per SD read.  Power of two, fits on stack.
 #define RLE_READ_BUF_SIZE     512u
-
-// =========================================================================
-// 48KB Compressed Tile LRU Cache (SRAM Pool)
-// =========================================================================
-#define TILE_CACHE_TOTAL_POOL_SIZE (48 * 1024)
-#define TILE_CACHE_MAX_ENTRIES     16
-#define MAX_CACHEABLE_TILE_SIZE    (16 * 1024)
-
-typedef struct
-{
-    char     path[64];
-    uint32_t pool_offset;
-    uint32_t length;
-    uint32_t last_used_tick;
-    bool     valid;
-} TileCacheEntry_t;
-
-#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
-#  define ALIGN_WORD4 __attribute__((aligned(4)))
-#else
-#  define ALIGN_WORD4
-#endif
-
-static uint8_t s_tile_cache_pool[TILE_CACHE_TOTAL_POOL_SIZE] ALIGN_WORD4;
-static TileCacheEntry_t s_cache_entries[TILE_CACHE_MAX_ENTRIES];
-static uint32_t s_cache_used_bytes = 0;
-static uint32_t s_cache_hits = 0;
-static uint32_t s_cache_misses = 0;
-
-static const uint8_t* s_cur_tile_cached_data = NULL;
-static uint32_t       s_cur_tile_start_offset = 0;
-
-static void tile_cache_compact(void)
-{
-    uint32_t write_offset = 0;
-    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
-    {
-        if (s_cache_entries[i].valid)
-        {
-            if (s_cache_entries[i].pool_offset != write_offset)
-            {
-                memmove(&s_tile_cache_pool[write_offset],
-                        &s_tile_cache_pool[s_cache_entries[i].pool_offset],
-                        s_cache_entries[i].length);
-                s_cache_entries[i].pool_offset = write_offset;
-            }
-            write_offset += s_cache_entries[i].length;
-        }
-    }
-    s_cache_used_bytes = write_offset;
-}
-
-static void tile_cache_evict_one(void)
-{
-    int oldest_idx = -1;
-    uint32_t oldest_tick = 0xFFFFFFFFu;
-
-    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
-    {
-        if (s_cache_entries[i].valid && s_cache_entries[i].last_used_tick < oldest_tick)
-        {
-            oldest_tick = s_cache_entries[i].last_used_tick;
-            oldest_idx = i;
-        }
-    }
-
-    if (oldest_idx >= 0)
-    {
-        s_cache_entries[oldest_idx].valid = false;
-        tile_cache_compact();
-    }
-}
-
-static int tile_cache_find(const char* path)
-{
-    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
-    {
-        if (s_cache_entries[i].valid && strcmp(s_cache_entries[i].path, path) == 0)
-        {
-            s_cache_entries[i].last_used_tick = lv_tick_get();
-            s_cache_hits++;
-            uint32_t total = s_cache_hits + s_cache_misses;
-            if (total % 10 == 0)
-            {
-                char log_buf[128];
-                snprintf(log_buf, sizeof(log_buf),
-                         "[TileLRU] HIT! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
-                         (unsigned)s_cache_hits, (unsigned)s_cache_misses,
-                         (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
-                LV_LOG_USER("%s", log_buf);
-                HAL::SD_WriteCrashLog(log_buf);
-            }
-            return i;
-        }
-    }
-    s_cache_misses++;
-    uint32_t total = s_cache_hits + s_cache_misses;
-    if (total % 10 == 0)
-    {
-        char log_buf[128];
-        snprintf(log_buf, sizeof(log_buf),
-                 "[TileLRU] MISS! hits=%u, misses=%u, ratio=%u%%, pool_used=%uKB\r\n",
-                 (unsigned)s_cache_hits, (unsigned)s_cache_misses,
-                 (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
-        LV_LOG_USER("%s", log_buf);
-        HAL::SD_WriteCrashLog(log_buf);
-    }
-    return -1;
-}
 
 // =========================================================================
 // Shared bundle file handle
@@ -204,75 +92,8 @@ static lv_fs_file_t s_bundle_file;
 static char         s_bundle_path[96] = "";
 static bool         s_bundle_valid    = false;
 
-static uint8_t* tile_cache_alloc_slot(const char* path, uint32_t length, int* out_slot_idx)
-{
-    if (length == 0 || length > MAX_CACHEABLE_TILE_SIZE || length > TILE_CACHE_TOTAL_POOL_SIZE)
-    {
-        return NULL;
-    }
-
-    while (s_cache_used_bytes + length > TILE_CACHE_TOTAL_POOL_SIZE)
-    {
-        uint32_t prev_used = s_cache_used_bytes;
-        tile_cache_evict_one();
-        if (s_cache_used_bytes == prev_used)
-        {
-            return NULL;
-        }
-    }
-
-    int slot_idx = -1;
-    for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
-    {
-        if (!s_cache_entries[i].valid)
-        {
-            slot_idx = i;
-            break;
-        }
-    }
-
-    if (slot_idx < 0)
-    {
-        tile_cache_evict_one();
-        for (int i = 0; i < TILE_CACHE_MAX_ENTRIES; i++)
-        {
-            if (!s_cache_entries[i].valid)
-            {
-                slot_idx = i;
-                break;
-            }
-        }
-    }
-
-    if (slot_idx < 0)
-    {
-        return NULL;
-    }
-
-    TileCacheEntry_t* entry = &s_cache_entries[slot_idx];
-    strncpy(entry->path, path, sizeof(entry->path) - 1);
-    entry->path[sizeof(entry->path) - 1] = '\0';
-    entry->pool_offset = s_cache_used_bytes;
-    entry->length = length;
-    entry->last_used_tick = lv_tick_get();
-    entry->valid = true;
-
-    s_cache_used_bytes += length;
-    *out_slot_idx = slot_idx;
-
-    return &s_tile_cache_pool[entry->pool_offset];
-}
-
 static bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t* br)
 {
-    if (s_cur_tile_cached_data != NULL)
-    {
-        uint32_t rel_offset = abs_pos - s_cur_tile_start_offset;
-        memcpy(buf, s_cur_tile_cached_data + rel_offset, len);
-        *br = len;
-        return true;
-    }
-
     return (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) == LV_FS_RES_OK &&
             lv_fs_read(&s_bundle_file, buf, len, br) == LV_FS_RES_OK);
 }
@@ -352,7 +173,7 @@ static TileMeta_t s_meta = { "", false, 0, 0, 0, 0, 0, 0, 0, 0, {0}, {0} };
 // skipped and every draw falls back to the pre-cache decode path, so a
 // tight-RAM build still works correctly, just without this speedup.
 // =========================================================================
-#define RLE_PIXEL_CACHE_SLOTS   1
+#define RLE_PIXEL_CACHE_SLOTS   2
 
 typedef struct {
     char     path[80];
@@ -364,6 +185,7 @@ typedef struct {
                                           // 查表写 dest，无需逐像素 rgb565_to_lv_color。
                                           // RAM 不变（LV_COLOR_DEPTH==16 下 sizeof==2）
     uint8_t* pixels;              // width*height palette-index bytes, or NULL if not allocated
+    uint32_t last_access_tick;    // lv_tick_get() 时刻，用于防同帧颠簸驱逐
 } PixelCacheSlot_t;
 
 static PixelCacheSlot_t s_pixelCache[RLE_PIXEL_CACHE_SLOTS];
@@ -375,6 +197,7 @@ void lv_img_rle_cache_init()
     {
         s_pixelCache[i].path[0] = '\0';
         s_pixelCache[i].valid   = false;
+        s_pixelCache[i].last_access_tick = 0;
 
         if (s_pixelCache[i].pixels == NULL)
         {
@@ -405,6 +228,7 @@ void lv_img_rle_cache_deinit()
         }
         s_pixelCache[i].path[0] = '\0';
         s_pixelCache[i].valid   = false;
+        s_pixelCache[i].last_access_tick = 0;
     }
 }
 
@@ -417,6 +241,7 @@ static PixelCacheSlot_t* pixel_cache_find(const char* src)
             && s_pixelCache[i].valid
             && strcmp(s_pixelCache[i].path, src) == 0)
         {
+            s_pixelCache[i].last_access_tick = lv_tick_get();
             return &s_pixelCache[i];
         }
     }
@@ -429,6 +254,7 @@ static PixelCacheSlot_t* pixel_cache_find(const char* src)
 static PixelCacheSlot_t* pixel_cache_claim(const char* src)
 {
     PixelCacheSlot_t* slot = NULL;
+    uint32_t now = lv_tick_get();
 
     // Advance round-robin until it lands on a slot that actually has an
     // allocated buffer -- with more than one slot and a partial allocation
@@ -441,6 +267,12 @@ static PixelCacheSlot_t* pixel_cache_claim(const char* src)
 
         if (candidate->pixels != NULL)
         {
+            // 防同帧颠簸优化：如果当前槽位已填充且在 200ms 内被访问过，
+            // 保护该槽位不被同帧内的其他瓦片覆盖，避免互相驱逐并强制触发 Path A 全量解码。
+            if (candidate->valid && (now - candidate->last_access_tick < 200))
+            {
+                continue;
+            }
             slot = candidate;
             break;
         }
@@ -448,10 +280,11 @@ static PixelCacheSlot_t* pixel_cache_claim(const char* src)
 
     if (slot == NULL)
     {
-        return NULL;  // no allocated slots at all (alloc failed at init time)
+        return NULL;  // no eligible slots at all (all active slots protected, fallback to Path B)
     }
 
     slot->valid = false;  // mark invalid until the full decode below completes
+    slot->last_access_tick = now;
     size_t slen = strlen(src);
     if (slen >= sizeof(slot->path)) slen = sizeof(slot->path) - 1;
     memcpy(slot->path, src, slen);
@@ -510,13 +343,10 @@ static bool reader_seek(RleReader_t* r, uint32_t abs_pos, uint32_t tile_end)
     r->filled   = 0;
     r->error    = false;
 
-    if (s_cur_tile_cached_data == NULL)
+    if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
     {
-        if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
-        {
-            r->error = true;
-            return false;
-        }
+        r->error = true;
+        return false;
     }
     return true;
 }
@@ -662,30 +492,15 @@ static bool open_tile(const char* src,
                       uint32_t* tile_start_out,
                       uint32_t* tile_length_out)
 {
-    s_cur_tile_cached_data = NULL;
-    s_cur_tile_start_offset = 0;
-
-    int cache_idx = tile_cache_find(src);
-    if (cache_idx >= 0)
-    {
-        s_cur_tile_cached_data = &s_tile_cache_pool[s_cache_entries[cache_idx].pool_offset];
-        s_cur_tile_start_offset = 0;
-        *tile_start_out  = 0;
-        *tile_length_out = s_cache_entries[cache_idx].length;
-        return true;
-    }
-
     char bundle_path[96];
     int  local_x = 0, local_y = 0;
     if (!parse_tile_path(src, bundle_path, sizeof(bundle_path), &local_x, &local_y))
     {
-        LV_LOG_WARN("RLE: cannot parse path '%s'", src);
         return false;
     }
 
     if (!ensure_bundle_open(bundle_path))
     {
-        LV_LOG_WARN("RLE: cannot open bundle '%s' (from '%s')", bundle_path, src);
         return false;
     }
 
@@ -714,31 +529,8 @@ static bool open_tile(const char* src,
 
     uint32_t data_section_start = BUNDLE_HEADER_SIZE
                                    + (uint32_t)BUNDLE_BLOCK_SIZE * BUNDLE_BLOCK_SIZE * 8u;
-    uint32_t tile_start = data_section_start + offset;
-    *tile_start_out  = tile_start;
+    *tile_start_out  = data_section_start + offset;
     *tile_length_out = length;
-    s_cur_tile_start_offset = tile_start;
-
-    int slot_idx = -1;
-    uint8_t* cached_buf = tile_cache_alloc_slot(src, length, &slot_idx);
-    if (cached_buf != NULL && slot_idx >= 0)
-    {
-        uint32_t read_bytes = 0;
-        if (lv_fs_seek(&s_bundle_file, tile_start, LV_FS_SEEK_SET) == LV_FS_RES_OK
-            && lv_fs_read(&s_bundle_file, cached_buf, length, &read_bytes) == LV_FS_RES_OK
-            && read_bytes == length)
-        {
-            s_cur_tile_cached_data = cached_buf;
-            s_cur_tile_start_offset = 0;
-            *tile_start_out = 0;
-        }
-        else
-        {
-            s_cache_entries[slot_idx].valid = false;
-            tile_cache_compact();
-            s_cur_tile_cached_data = NULL;
-        }
-    }
 
     return true;
 }
@@ -1141,6 +933,7 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         if (pixel_idx >= total_pixels)
         {
             slot->valid = true;
+            slot->last_access_tick = lv_tick_get();
         }
     }
     else
