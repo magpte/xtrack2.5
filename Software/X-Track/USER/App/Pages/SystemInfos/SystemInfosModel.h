@@ -19,8 +19,8 @@ public:
     );
 
     void GetGPSInfo(
-        float* lat,
-        float* lng,
+        double* lat,
+        double* lng,
         float* alt,
         char* utc, uint32_t len,
         float* course,

@@ -61,12 +61,12 @@ int GPX_Parser::ReadNext(Point_t* point)
         if (index >= 0)
         {
             String lat = str.substring(str.indexOf('"') + 1);
-            point->latitude = lat.toFloat();
+            point->latitude = lat.toDouble();
             flag |= PARSER_FLAG_LAT;
 
             String lon = str.substring(str.indexOf("lon="));
             lon = lon.substring(lon.indexOf('"') + 1);
-            point->longitude = lon.toFloat();
+            point->longitude = lon.toDouble();
             flag |= PARSER_FLAG_LNG;
             continue;
         }

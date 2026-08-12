@@ -59,8 +59,8 @@ public:
         float maxSpd
     );
     void SetGPS(
-        float lat,
-        float lng,
+        double lat,
+        double lng,
         float alt,
         const char* utc,
         float course,

@@ -29,6 +29,21 @@
 class PointContainer
 {
 public:
+    typedef struct
+    {
+        int32_t minX;
+        int32_t minY;
+        int32_t maxX;
+        int32_t maxY;
+    } BBox_t;
+
+    typedef struct
+    {
+        BBox_t bbox;
+        uint32_t startPointIndex;
+        uint32_t pointCount;
+    } Chunk_t;
+
     PointContainer();
     ~PointContainer();
     void PushPoint(int32_t x, int32_t y)
@@ -51,6 +66,7 @@ public:
     }
 
     void PopStart();
+    void PopStartWithArea(const BBox_t* filterArea);
 
 private:
     typedef enum
@@ -85,11 +101,15 @@ private:
 
 private:
     std::vector<DiffPoint_t> vecPoints;
+    std::vector<Chunk_t> vecChunks;
     struct
     {
         FullPoint_t curPushPoint;
         FullPoint_t curPopPoint;
         uint32_t curPopIndex;
+        uint32_t curChunkIndex;
+        BBox_t filterArea;
+        bool useFilter;
     } priv;
 };
 

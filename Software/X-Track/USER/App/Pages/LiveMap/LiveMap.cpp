@@ -485,7 +485,7 @@ void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
     {
         LiveMap* instance = (LiveMap*)filter->userData;
         instance->Model.lineFilter.PushPoint((int32_t)point->x, (int32_t)point->y);
-    }, this);
+    }, this, area);
     Model.lineFilter.PushPoint(x, y);
     Model.lineFilter.PushEnd();
 }

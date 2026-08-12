@@ -25,6 +25,8 @@
 #include <stdlib.h>
 #include <limits.h>
 
+#define POINT_CONTAINER_CHUNK_SIZE 64
+
 PointContainer::PointContainer()
 {
     memset(&priv, 0, sizeof(priv));
@@ -52,32 +54,52 @@ bool PointContainer::IsFlag(const DiffPoint_t* point)
 
 void PointContainer::PushPoint(const FullPoint_t* point)
 {
-    size_t curIndex = vecPoints.size();
-    if (curIndex == 0)
+    bool needNewChunk = vecChunks.empty() || (vecChunks.back().pointCount >= POINT_CONTAINER_CHUNK_SIZE);
+
+    if (needNewChunk)
     {
+        Chunk_t chunk;
+        chunk.bbox.minX = point->x;
+        chunk.bbox.maxX = point->x;
+        chunk.bbox.minY = point->y;
+        chunk.bbox.maxY = point->y;
+        chunk.startPointIndex = (uint32_t)vecPoints.size();
+        chunk.pointCount = 1;
+
         priv.curPushPoint = *point;
         PushFullPoint(point);
-        return;
+        vecChunks.push_back(chunk);
     }
-
-    int32_t diffX = point->x - priv.curPushPoint.x;
-    int32_t diffY = point->y - priv.curPushPoint.y;
-    priv.curPushPoint = *point;
-
-    if (std::abs((int)diffX) > SCHAR_MAX || std::abs((int)diffY) > SCHAR_MAX)
+    else
     {
-        PushFullPoint(point);
-        return;
-    }
+        Chunk_t& curChunk = vecChunks.back();
+        if (point->x < curChunk.bbox.minX) curChunk.bbox.minX = point->x;
+        if (point->x > curChunk.bbox.maxX) curChunk.bbox.maxX = point->x;
+        if (point->y < curChunk.bbox.minY) curChunk.bbox.minY = point->y;
+        if (point->y > curChunk.bbox.maxY) curChunk.bbox.maxY = point->y;
+        curChunk.pointCount++;
 
-    const DiffPoint_t diffPoint = { (int8_t)diffX, (int8_t)diffY };
-    if (IsFlag(&diffPoint))
-    {
-        PushFullPoint(point);
-        return;
-    }
+        int32_t diffX = point->x - priv.curPushPoint.x;
+        int32_t diffY = point->y - priv.curPushPoint.y;
+        priv.curPushPoint = *point;
 
-    vecPoints.push_back(diffPoint);
+        if (std::abs((int)diffX) > SCHAR_MAX || std::abs((int)diffY) > SCHAR_MAX)
+        {
+            PushFullPoint(point);
+        }
+        else
+        {
+            const DiffPoint_t diffPoint = { (int8_t)diffX, (int8_t)diffY };
+            if (IsFlag(&diffPoint))
+            {
+                PushFullPoint(point);
+            }
+            else
+            {
+                vecPoints.push_back(diffPoint);
+            }
+        }
+    }
 }
 
 void PointContainer::PushFullPoint(const FullPoint_t* point)
@@ -110,6 +132,40 @@ bool PointContainer::PopFullPoint(FullPoint_t* point)
 bool PointContainer::PopPoint(FullPoint_t* point)
 {
     size_t size = vecPoints.size();
+
+    if (priv.useFilter)
+    {
+        while (priv.curChunkIndex < vecChunks.size())
+        {
+            const Chunk_t& chunk = vecChunks[priv.curChunkIndex];
+
+            if (priv.curPopIndex == chunk.startPointIndex)
+            {
+                bool intersects = !(chunk.bbox.maxX < priv.filterArea.minX ||
+                                    chunk.bbox.minX > priv.filterArea.maxX ||
+                                    chunk.bbox.maxY < priv.filterArea.minY ||
+                                    chunk.bbox.minY > priv.filterArea.maxY);
+                if (!intersects)
+                {
+                    uint32_t nextStart = (priv.curChunkIndex + 1 < vecChunks.size())
+                                         ? vecChunks[priv.curChunkIndex + 1].startPointIndex
+                                         : (uint32_t)size;
+                    priv.curPopIndex = nextStart;
+                    priv.curChunkIndex++;
+                    continue;
+                }
+            }
+
+            if (priv.curChunkIndex + 1 < vecChunks.size() &&
+                priv.curPopIndex >= vecChunks[priv.curChunkIndex + 1].startPointIndex)
+            {
+                priv.curChunkIndex++;
+                continue;
+            }
+
+            break;
+        }
+    }
 
     if (size - priv.curPopIndex == 0)
     {
@@ -144,4 +200,21 @@ bool PointContainer::PopPoint(FullPoint_t* point)
 void PointContainer::PopStart()
 {
     priv.curPopIndex = 0;
+    priv.curChunkIndex = 0;
+    priv.useFilter = false;
+}
+
+void PointContainer::PopStartWithArea(const BBox_t* filterArea)
+{
+    priv.curPopIndex = 0;
+    priv.curChunkIndex = 0;
+    if (filterArea != nullptr)
+    {
+        priv.filterArea = *filterArea;
+        priv.useFilter = true;
+    }
+    else
+    {
+        priv.useFilter = false;
+    }
 }

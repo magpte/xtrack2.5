@@ -115,8 +115,8 @@ typedef enum
 typedef struct
 {
     SysConfig_Cmd_t cmd;
-    float longitude;
-    float latitude;
+    double longitude;
+    double latitude;
     int16_t timeZone;
     bool soundEnable;
     int16_t screenBrightness;

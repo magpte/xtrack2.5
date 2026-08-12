@@ -23,8 +23,8 @@ public:
 
     typedef struct
     {
-        float longitude;
-        float latitude;
+        double longitude;
+        double latitude;
         float altitude;
         Time_t time;
     } Point_t;

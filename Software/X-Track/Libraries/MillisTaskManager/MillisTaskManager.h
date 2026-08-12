@@ -65,6 +65,7 @@ public:
         uint32_t Time;             //任务时间
         uint32_t TimePrev;         //任务上一次触发时间
         uint32_t TimeCost;         //任务时间开销(us)
+        uint32_t MaxTimeCost;      //任务最大时间开销(us)
         uint32_t TimeError;        //误差时间
         struct Task* Next;         //下一个节点
     };
@@ -80,6 +81,7 @@ public:
     bool SetState(TaskFunction_t func, bool state);
     bool SetIntervalTime(TaskFunction_t func, uint32_t timeMs);
     uint32_t GetTimeCost(TaskFunction_t func);
+    uint32_t GetMaxTimeCost(TaskFunction_t func);
     uint32_t GetTickElaps(uint32_t nowTick, uint32_t prevTick);
 #if (MTM_USE_CPU_USAGE == 1)
     float GetCPU_Usage();
@@ -91,5 +93,10 @@ private:
     Task_t* Tail;        //任务链表尾
     bool PriorityEnable; //优先级使能
 };
+
+inline uint32_t MillisTaskManager::GetTickElaps(uint32_t nowTick, uint32_t prevTick)
+{
+    return nowTick - prevTick;
+}
 
 #endif

@@ -40,8 +40,8 @@ void SystemInfosModel::GetSportInfo(
 }
 
 void SystemInfosModel::GetGPSInfo(
-    float* lat,
-    float* lng,
+    double* lat,
+    double* lng,
     float* alt,
     char* utc, uint32_t len,
     float* course,
@@ -50,8 +50,8 @@ void SystemInfosModel::GetGPSInfo(
 {
     HAL::GPS_Info_t gps = { 0 };
     account->Pull("GPS", &gps, sizeof(gps));
-    *lat = (float)gps.latitude;
-    *lng = (float)gps.longitude;
+    *lat = gps.latitude;
+    *lng = gps.longitude;
     *alt = gps.altitude;
     snprintf(
         utc, len,

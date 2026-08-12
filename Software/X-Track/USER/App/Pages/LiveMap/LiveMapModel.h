@@ -21,7 +21,7 @@ public:
     void GetGPS_Info(HAL::GPS_Info_t* info);
     void GetArrowTheme(char* buf, uint32_t size);
     bool GetTrackFilterActive();
-    void TrackReload(TrackPointFilter::Callback_t callback, void* userData);
+    void TrackReload(TrackPointFilter::Callback_t callback, void* userData, const TrackLineFilter::Area_t* area = nullptr);
     void SetStatusBarStyle(DataProc::StatusBar_Style_t style);
 
 public:

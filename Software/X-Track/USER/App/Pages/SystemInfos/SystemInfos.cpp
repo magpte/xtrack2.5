@@ -131,7 +131,8 @@ void SystemInfos::Update()
     }
     else if (focused == View.ui.gps.icon)
     {
-        float lat, lng, alt, course, speed;
+        double lat, lng;
+        float alt, course, speed;
         Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
         snprintf(tmpStr, sizeof(tmpStr), "%.5f|%.5f|%.1f|%s|%.1f|%.1f", lat, lng, alt, buf, course, speed);
         if (strcmp(cache.itemStr, tmpStr) != 0)
@@ -144,7 +145,8 @@ void SystemInfos::Update()
     {
         if (skyUpdateCounter % 5 == 0)
         {
-            float lat, lng, alt, course, speed;
+            double lat, lng;
+            float alt, course, speed;
             Model.GetGPSInfo(&lat, &lng, &alt, buf, sizeof(buf), &course, &speed);
             View.SetSkyCourse(course);
         }

@@ -205,8 +205,8 @@ static int onEvent(Account* account, Account::EventParam_t* param)
 
             if(gpsInfo.isVaild)
             {
-                sysConfig.longitude = (float)gpsInfo.longitude;
-                sysConfig.latitude  = (float)gpsInfo.latitude;
+                sysConfig.longitude = gpsInfo.longitude;
+                sysConfig.latitude  = gpsInfo.latitude;
 
                 // GPS 有效时同时记录当前 UTC unix 时间戳，供下次开机时
                 // 动态计算 posAcc/timeAcc（距上次定位越近，精度估计越紧，
@@ -286,8 +286,8 @@ do{ \
     sysConfig.fullChgCap  = CONFIG_GAUGE_FULL_CHG_CAP_DEFAULT;
 #endif
 
-    STORAGE_VALUE_REG(account, sysConfig.longitude,    STORAGE_TYPE_FLOAT);
-    STORAGE_VALUE_REG(account, sysConfig.latitude,     STORAGE_TYPE_FLOAT);
+    STORAGE_VALUE_REG(account, sysConfig.longitude,    STORAGE_TYPE_DOUBLE);
+    STORAGE_VALUE_REG(account, sysConfig.latitude,     STORAGE_TYPE_DOUBLE);
     STORAGE_VALUE_REG(account, sysConfig.lastFixUnix,  STORAGE_TYPE_INT);
 
     STORAGE_VALUE_REG(account, sysConfig.soundEnable, STORAGE_TYPE_INT);
