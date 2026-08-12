@@ -3,6 +3,11 @@
 #include "SdFat.h"
 #include <string.h>
 
+namespace DataProc
+{
+    void Recorder_PeriodicTask();
+}
+
 static SdFat SD(&CONFIG_SD_SPI);
 
 static bool SD_IsReady = false;
@@ -63,8 +68,8 @@ static bool SD_CheckDir(const char* path)
 // write() 的频率更接近、次数也更少，降低撞车概率。注意这是应用层
 // 缓冲区，跟 SdFat 内部那个写死 512 字节（SD 卡物理扇区大小）的
 // FatCache 是两回事，后者没法调大。
-#define NMEA_LOG_WRITE_BUF_SIZE     8192
-#define NMEA_LOG_SYNC_INTERVAL_MS   60000
+#define NMEA_LOG_WRITE_BUF_SIZE     26624 // 26KB (52 * 512B sectors)
+#define NMEA_LOG_SYNC_INTERVAL_MS   30000 // 30s
 #define SD_SECTOR_SIZE              512
 
 static File     s_nmeaLogFile;
@@ -147,9 +152,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
 
     if(!s_nmeaLogFileOpen)
     {
-        // 目录理论上已经在 SD_Init() 里建好了，这里再兜底检查一次——
-        // 万一用户在设备开机之后才插卡（走的是 SD_Check() 那条路径），
-        // 目录创建同样会在 SD_Init() 里重新做一遍，这行更多是防御性的。
+        // 目录理论上已经在 SD_Init() 里建好了，这里再兜底检查一次
         SD_CheckDir(CONFIG_NMEA_LOG_FILE_DIR_NAME);
 
         if(!NMEA_Log_Open())
@@ -160,35 +163,16 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
         s_nmeaLogFileOpen = true;
     }
 
-    // 单条 NMEA 语句最长也就 82 字节（NMEA 0183 规范上限），远小于
-    // 缓冲区容量，这里不像 Recorder 那样需要处理"单次写入内容本身就
-    // 超过缓冲区"的分支，但保留判断以防万一（比如未来改成整段转发）。
-    if(len >= NMEA_LOG_WRITE_BUF_SIZE)
+    // 纯内存写入：追加到 22KB 内存缓冲区中（耗时 < 5 us），绝不在此触发 sync()
+    if(s_nmeaLogWriteBufLen + len > NMEA_LOG_WRITE_BUF_SIZE)
     {
-        NMEA_Log_FlushBuffer(true);
-        s_nmeaLogFile.write((const uint8_t*)line, len);
-        s_nmeaLogNeedSync = true;
-    }
-    else
-    {
-        if(s_nmeaLogWriteBufLen + len > NMEA_LOG_WRITE_BUF_SIZE)
-        {
-            NMEA_Log_FlushBuffer(false);
-        }
-        memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
-        s_nmeaLogWriteBufLen += len;
+        NMEA_Log_FlushBuffer(false);
     }
 
-    uint32_t now = millis();
-    if(now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
+    if(s_nmeaLogWriteBufLen + len <= NMEA_LOG_WRITE_BUF_SIZE)
     {
-        if(s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
-        {
-            NMEA_Log_FlushBuffer(true);
-            s_nmeaLogFile.sync();
-            s_nmeaLogNeedSync = false;
-        }
-        s_nmeaLogLastSyncTick = now;
+        memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
+        s_nmeaLogWriteBufLen += len;
     }
 #endif
 }
@@ -345,6 +329,34 @@ void HAL::SD_Update()
     bool isInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
 
     CM_VALUE_MONITOR(isInsert, SD_Check(isInsert));
+
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+    // 在 SD_Update() 后台周期（500ms）中集中平滑刷新 NMEA 缓冲区与执行 sync()
+    if (SD_IsReady && s_nmeaLogFileOpen)
+    {
+        if (s_nmeaLogWriteBufLen >= SD_SECTOR_SIZE)
+        {
+            NMEA_Log_FlushBuffer(false);
+        }
+
+        uint32_t now = millis();
+        if (now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
+        {
+            if (s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
+            {
+                NMEA_Log_FlushBuffer(true);
+                s_nmeaLogFile.sync();
+                s_nmeaLogNeedSync = false;
+            }
+            s_nmeaLogLastSyncTick = now;
+        }
+    }
+#endif
+
+    if (SD_IsReady)
+    {
+        DataProc::Recorder_PeriodicTask();
+    }
 }
 
 // ��HAL_SD_CARD.cpp������  

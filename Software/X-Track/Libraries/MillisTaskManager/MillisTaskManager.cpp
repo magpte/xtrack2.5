@@ -21,6 +21,8 @@
  * SOFTWARE.
  */
 #include "MillisTaskManager.h"
+#include "Arduino.h"
+#include <stdio.h>
 
 #ifndef NULL
 #   define NULL nullptr
@@ -70,9 +72,10 @@ MillisTaskManager::~MillisTaskManager()
   * @param  func:任务函数指针
   * @param  timeMs:周期时间设定(毫秒)
   * @param  state:任务开关
+  * @param  name:任务名称标识
   * @retval 任务节点地址
   */
-MillisTaskManager::Task_t* MillisTaskManager::Register(TaskFunction_t func, uint32_t timeMs, bool state)
+MillisTaskManager::Task_t* MillisTaskManager::Register(TaskFunction_t func, uint32_t timeMs, bool state, const char* name)
 {
     /*寻找当前函数*/
     Task_t* task = Find(func);
@@ -83,6 +86,10 @@ MillisTaskManager::Task_t* MillisTaskManager::Register(TaskFunction_t func, uint
         /*更新信息*/
         task->Time = timeMs;
         task->State = state;
+        if(name != nullptr)
+        {
+            task->Name = name;
+        }
         return task;
     }
 
@@ -95,12 +102,15 @@ MillisTaskManager::Task_t* MillisTaskManager::Register(TaskFunction_t func, uint
         return nullptr;
     }
 
+    task->Name = name;            //任务名称
     task->Function = func;        //任务回调函数
     task->Time = timeMs;          //任务执行周期
     task->State = state;          //任务状态
     task->TimePrev = 0;           //上一次时间
     task->TimeCost = 0;           //时间开销
     task->MaxTimeCost = 0;        //最大时间开销
+    task->TotalTimeCost = 0;      //总时间开销
+    task->RunCount = 0;           //运行次数
     task->TimeError = 0;          //误差时间
     task->Next = nullptr;         //下一个节点
     
@@ -240,7 +250,6 @@ bool MillisTaskManager::SetIntervalTime(TaskFunction_t func, uint32_t timeMs)
 }
 
 #if (MTM_USE_CPU_USAGE == 1)
-#include "Arduino.h"                //需要使用micros()
 static uint32_t UserFuncLoopUs = 0; //累计时间
 /**
   * @brief  获取CPU占用率
@@ -260,17 +269,6 @@ float MillisTaskManager::GetCPU_Usage()
     return usage;
 }
 #endif
-
-/**
-  * @brief  时间差判定（利用32位无符号数自然溢出特性）
-  * @param  nowTick:当前时间
-  * @param  prevTick:上一个时间
-  * @retval 时间差
-  */
-uint32_t MillisTaskManager::GetTickElaps(uint32_t nowTick, uint32_t prevTick)
-{
-    return nowTick - prevTick;
-}
 
 /**
   * @brief  获取任务单次耗费时间(us)
@@ -298,6 +296,39 @@ uint32_t MillisTaskManager::GetMaxTimeCost(TaskFunction_t func)
         return 0;
 
     return task->MaxTimeCost;
+}
+
+/**
+  * @brief  导出所有任务的耗时统计信息到缓冲区
+  * @param  buffer:输出目标缓冲区
+  * @param  maxLen:缓冲区最大可写入字节数
+  * @retval 实际写入字节数
+  */
+size_t MillisTaskManager::DumpTaskStats(char* buffer, size_t maxLen)
+{
+    if (buffer == nullptr || maxLen == 0) return 0;
+
+    size_t offset = 0;
+    int len = snprintf(buffer + offset, maxLen - offset, "\n=== [Task Timing Stats] ===\n");
+    if (len > 0) offset += (size_t)len;
+
+    Task_t* now = Head;
+    while (now != nullptr && offset < maxLen)
+    {
+        uint32_t avgUs = (now->RunCount > 0) ? (now->TotalTimeCost / now->RunCount) : 0;
+        const char* taskName = (now->Name != nullptr) ? now->Name : "UnnamedTask";
+
+        len = snprintf(buffer + offset, maxLen - offset,
+                       "  * %-20s | Last: %6lu us | Max: %6lu us | Avg: %6lu us | Runs: %lu\n",
+                       taskName,
+                       (unsigned long)now->TimeCost,
+                       (unsigned long)now->MaxTimeCost,
+                       (unsigned long)avgUs,
+                       (unsigned long)now->RunCount);
+        if (len > 0) offset += (size_t)len;
+        now = now->Next;
+    }
+    return offset;
 }
 
 /**
@@ -331,29 +362,31 @@ void MillisTaskManager::Running(uint32_t tick)
                     now->TimePrev += now->Time;
                 }
 
-#if (MTM_USE_CPU_USAGE == 1)
-                /*记录开始时间*/
-                uint32_t start = micros();
-                
-                /*执行任务*/
+                /*测量单次任务运行时间(us)与统计信息*/
+                uint32_t startUs = micros();
                 now->Function();
-                
-                /*获取执行时间*/
-                uint32_t timeCost = micros() - start;
-                
-                /*记录执行时间与最大执行时间*/
-                now->TimeCost = timeCost;
-                if(timeCost > now->MaxTimeCost)
+                uint32_t endUs = micros();
+
+                /* 防御性校验：仅当时间单调递增且耗时在合理区间内时才纳入统计 */
+                if (endUs >= startUs)
                 {
-                    now->MaxTimeCost = timeCost;
-                }
-                
-                /*总时间累加*/
-                UserFuncLoopUs += timeCost;
-#else
-                now->Function();
+                    uint32_t timeCost = endUs - startUs;
+                    if (timeCost < 60000000UL) // 过滤 >60s 的异常下溢值
+                    {
+                        now->TimeCost = timeCost;
+                        if (timeCost > now->MaxTimeCost)
+                        {
+                            now->MaxTimeCost = timeCost;
+                        }
+                        now->TotalTimeCost += timeCost;
+                        now->RunCount++;
+
+#if (MTM_USE_CPU_USAGE == 1)
+                        UserFuncLoopUs += timeCost;
 #endif
-                
+                    }
+                }
+
                 /*判断是否开启优先级*/
                 if(PriorityEnable)
                 {

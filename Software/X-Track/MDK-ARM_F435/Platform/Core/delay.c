@@ -71,7 +71,21 @@ uint32_t millis(void)
   */
 uint32_t micros(void)
 {
-    return (SYSTICK_MILLIS * 1000 + (SYSTICK_LOAD_VALUE - SysTick->VAL) / CYCLES_PER_MICROSECOND);
+    uint32_t m;
+    uint32_t v;
+
+    do {
+        m = SystemTickCount;
+        v = SysTick->VAL;
+    } while (m != SystemTickCount);
+
+    /* 检查 SysTick 中断是否挂起且计数器已重载至上半区 */
+    if ((SCB->ICSR & SCB_ICSR_PENDSTSET_Msk) && (v > (SYSTICK_LOAD_VALUE / 2)))
+    {
+        m++;
+    }
+
+    return (m * SYSTICK_TICK_INTERVAL * 1000 + (SYSTICK_LOAD_VALUE - v) / CYCLES_PER_MICROSECOND);
 }
 
 /**

@@ -31,8 +31,8 @@ using namespace DataProc;
 // 配合这次一起做的另一项改动：把喂狗从协作式任务调度器挪到硬件定时器
 // 中断里（见 HAL.cpp），两者是互补关系，不是互相替代。
 // ---------------------------------------------------------------------
-#define RECORDER_WRITE_BUF_SIZE     8192
-#define RECORDER_SYNC_INTERVAL_MS   60000
+#define RECORDER_WRITE_BUF_SIZE     6144  // 6KB (12 * 512B sectors)
+#define RECORDER_SYNC_INTERVAL_MS   30000 // 30s
 
 typedef struct
 {
@@ -117,31 +117,7 @@ static lv_fs_res_t Recorder_BufferedWrite(Recorder_t* recorder, const char* str)
     return LV_FS_RES_OK;
 }
 
-// 落盘之后，视情况决定要不要真正 sync()——按时间判断，不是按点数/
-// 次数，原因见上面 RECORDER_SYNC_INTERVAL_MS 的注释。
-static void Recorder_MaybeSync(Recorder_t* recorder)
-{
-    uint32_t now = lv_tick_get();
-    if (lv_tick_elaps(recorder->lastSyncTick) < RECORDER_SYNC_INTERVAL_MS)
-    {
-        return;
-    }
 
-    SdFile* sdFile = (SdFile*)(recorder->file.file_d);
-    if (sdFile != NULL)
-    {
-        bool syncResult = sdFile->sync();
-        if (syncResult)
-        {
-            LV_LOG_USER("Track file synced successfully");
-        }
-        else
-        {
-            LV_LOG_WARN("Track file sync failed");
-        }
-    }
-    recorder->lastSyncTick = now;
-}
 
 static int Recorder_GetTimeConv(
     Recorder_t* recorder,
@@ -197,7 +173,7 @@ static void Recorder_RecPoint(Recorder_t* recorder, HAL::GPS_Info_t* gpsInfo)
                     );
 
     Recorder_BufferedWrite(recorder, gpxStr.c_str());
-    Recorder_MaybeSync(recorder);
+    // 纯内存写入：追加到 6KB 缓冲区（< 2us），落盘与 sync 已由 Recorder_PeriodicTask 后台统一处理
 }
 
 static void Recorder_RecStart(Recorder_t* recorder, uint16_t time)
@@ -355,6 +331,47 @@ static int onEvent(Account* account, Account::EventParam_t* param)
     return res;
 }
 
+static Recorder_t* s_pRecorderInstance = nullptr;
+
+void DataProc::Recorder_PeriodicTask()
+{
+    if (s_pRecorderInstance == nullptr || !s_pRecorderInstance->active)
+    {
+        return;
+    }
+
+    // 后台平滑按 512 字节整扇区对齐刷新缓冲区
+    if (s_pRecorderInstance->writeBufLen >= SD_SECTOR_SIZE)
+    {
+        Recorder_FlushBuffer(s_pRecorderInstance, false);
+    }
+
+    // 后台 30 秒定时集中 sync()
+    uint32_t now = lv_tick_get();
+    if (lv_tick_elaps(s_pRecorderInstance->lastSyncTick) >= RECORDER_SYNC_INTERVAL_MS)
+    {
+        if (s_pRecorderInstance->writeBufLen > 0)
+        {
+            Recorder_FlushBuffer(s_pRecorderInstance, true);
+        }
+
+        SdFile* sdFile = (SdFile*)(s_pRecorderInstance->file.file_d);
+        if (sdFile != NULL)
+        {
+            bool syncResult = sdFile->sync();
+            if (syncResult)
+            {
+                LV_LOG_USER("Track file synced successfully");
+            }
+            else
+            {
+                LV_LOG_WARN("Track file sync failed");
+            }
+        }
+        s_pRecorderInstance->lastSyncTick = now;
+    }
+}
+
 DATA_PROC_INIT_DEF(Recorder)
 {
     static Recorder_t recorder;
@@ -365,6 +382,7 @@ DATA_PROC_INIT_DEF(Recorder)
     recorder.writeBufLen = 0;
     recorder.lastSyncTick = lv_tick_get();
     account->UserData = &recorder;
+    s_pRecorderInstance = &recorder;
 
     account->Subscribe("GPS");
     account->Subscribe("Clock");

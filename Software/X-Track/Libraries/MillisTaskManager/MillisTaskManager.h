@@ -53,6 +53,11 @@
 #define MTM_USE_CPU_USAGE 0
 
 #include <stdint.h>
+#include <stddef.h>
+
+#ifndef nullptr
+#  define nullptr 0
+#endif
 
 class MillisTaskManager
 {
@@ -60,13 +65,16 @@ public:
     typedef void(*TaskFunction_t)(void);//任务回调函数
     struct Task
     {
+        const char* Name;          //任务名称
         bool State;                //任务状态
         TaskFunction_t Function;   //任务函数指针
-        uint32_t Time;             //任务时间
-        uint32_t TimePrev;         //任务上一次触发时间
+        uint32_t Time;             //任务时间(ms)
+        uint32_t TimePrev;         //任务上一次触发时间(ms)
         uint32_t TimeCost;         //任务时间开销(us)
         uint32_t MaxTimeCost;      //任务最大时间开销(us)
-        uint32_t TimeError;        //误差时间
+        uint32_t TotalTimeCost;    //任务总时间开销(us)
+        uint32_t RunCount;         //任务运行次数
+        uint32_t TimeError;        //误差时间(ms)
         struct Task* Next;         //下一个节点
     };
     typedef struct Task Task_t;//任务类型定义
@@ -74,7 +82,7 @@ public:
     MillisTaskManager(bool priorityEnable = false);
     ~MillisTaskManager();
 
-    Task_t* Register(TaskFunction_t func, uint32_t timeMs, bool state = true);
+    Task_t* Register(TaskFunction_t func, uint32_t timeMs, bool state = true, const char* name = nullptr);
     Task_t* Find(TaskFunction_t func);
     Task_t* GetPrev(Task_t* task);
     bool Logout(TaskFunction_t func);
@@ -83,6 +91,7 @@ public:
     uint32_t GetTimeCost(TaskFunction_t func);
     uint32_t GetMaxTimeCost(TaskFunction_t func);
     uint32_t GetTickElaps(uint32_t nowTick, uint32_t prevTick);
+    size_t DumpTaskStats(char* buffer, size_t maxLen);
 #if (MTM_USE_CPU_USAGE == 1)
     float GetCPU_Usage();
 #endif

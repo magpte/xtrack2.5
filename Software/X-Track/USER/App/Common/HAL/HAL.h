@@ -52,6 +52,7 @@ void Display_SetSendFinishCallback(Display_CallbackFunc_t func);
 /* FaultHandle */
 void FaultHandle_Init();
 bool SD_WriteCrashLog(const char* data); 
+void Task_DumpDiagnostics(); 
 
 // 主循环"心跳"——见 main.cpp 的 loop()，每跑完一圈（HAL_Update() +
 // lv_task_handler() 都执行完）就调用一次。HAL.cpp 里喂狗的定时器中断
