@@ -68,7 +68,7 @@ void Dialplate::onViewWillAppear()
 
 void Dialplate::onViewDidAppear()
 {
-    timer = lv_timer_create(onTimerUpdate, 1000, this);
+    timer = lv_timer_create(onTimerUpdate, 500, this);
 }
 
 void Dialplate::onViewWillDisappear()
@@ -121,6 +121,7 @@ void Dialplate::Update()
     if (!cache.valid)
     {
         memset(&cache, 0, sizeof(cache));
+        cache.lastAngle = -1;
         cache.valid = true;
     }
 
@@ -133,7 +134,7 @@ void Dialplate::Update()
         lv_label_set_text(View.ui.topInfo.labelSpeed, cache.speedStr);
     }
 
-    // 2. Avg Speed Label
+    // 2. Avg Speed Label (Index 0)
     snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km/h", Model.GetAvgSpeed());
     if (strcmp(cache.avgSpeedStr, tmpBuf) != 0)
     {
@@ -142,31 +143,44 @@ void Dialplate::Update()
         lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[0].lableValue, cache.avgSpeedStr);
     }
 
-    // 3. Time Label
-    DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, tmpBuf, sizeof(tmpBuf));
-    if (strcmp(cache.timeStr, tmpBuf) != 0)
-    {
-        strncpy(cache.timeStr, tmpBuf, sizeof(cache.timeStr) - 1);
-        cache.timeStr[sizeof(cache.timeStr) - 1] = '\0';
-        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[1].lableValue, cache.timeStr);
-    }
-
-    // 4. Distance Label
+    // 3. Trip Distance Label (Index 1)
     snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f km", Model.sportStatusInfo.singleDistance / 1000.0f);
     if (strcmp(cache.distStr, tmpBuf) != 0)
     {
         strncpy(cache.distStr, tmpBuf, sizeof(cache.distStr) - 1);
         cache.distStr[sizeof(cache.distStr) - 1] = '\0';
-        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[2].lableValue, cache.distStr);
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[1].lableValue, cache.distStr);
     }
 
-    // 5. Course Label
-    snprintf(tmpBuf, sizeof(tmpBuf), "%0.1f %s", Model.GetCourse(), Model.GetCourseDirection());
-    if (strcmp(cache.courseStr, tmpBuf) != 0)
+    // 4. Time Elapsed Label (Index 2)
+    DataProc::MakeTimeString(Model.sportStatusInfo.singleTime, tmpBuf, sizeof(tmpBuf));
+    if (strcmp(cache.timeStr, tmpBuf) != 0)
     {
-        strncpy(cache.courseStr, tmpBuf, sizeof(cache.courseStr) - 1);
+        strncpy(cache.timeStr, tmpBuf, sizeof(cache.timeStr) - 1);
+        cache.timeStr[sizeof(cache.timeStr) - 1] = '\0';
+        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[2].lableValue, cache.timeStr);
+    }
+
+    // 5. SkyView Custom Compass Update
+    float course = Model.GetCourse();
+    View.SetCompassCourse(course);
+
+    // Line 1: Course Angle Number (e.g. "346")
+    snprintf(tmpBuf, sizeof(tmpBuf), "%d", (int)course);
+    if (strcmp(cache.headingStr, tmpBuf) != 0)
+    {
+        strncpy(cache.headingStr, tmpBuf, sizeof(cache.headingStr) - 1);
+        cache.headingStr[sizeof(cache.headingStr) - 1] = '\0';
+        lv_label_set_text(View.ui.compass.labelAngle, cache.headingStr);
+    }
+
+    // Line 2: Direction Text (e.g. "NE")
+    const char* dirStr = Model.GetCourseDirection();
+    if (strcmp(cache.courseStr, dirStr) != 0)
+    {
+        strncpy(cache.courseStr, dirStr, sizeof(cache.courseStr) - 1);
         cache.courseStr[sizeof(cache.courseStr) - 1] = '\0';
-        lv_label_set_text(View.ui.bottomInfo.labelInfoGrp[3].lableValue, cache.courseStr);
+        lv_label_set_text(View.ui.compass.labelDir, cache.courseStr);
     }
 }
 

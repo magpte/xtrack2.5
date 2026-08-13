@@ -62,10 +62,12 @@ private:
         bool valid;
         char speedStr[16];
         char avgSpeedStr[32];
-        char timeStr[32];
         char distStr[32];
+        char timeStr[32];
+        char headingStr[32];
         char courseStr[32];
-        uint8_t buffer[3900]; // 4KB 专用 SRAM 缓存空间，消除无谓格式化与 LVGL 重绘开销
+        int16_t lastAngle;
+        uint8_t buffer[3800]; // 4KB 专用 SRAM 缓存空间
     } DialplateCache_t;
 
     DialplateCache_t cache;

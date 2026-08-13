@@ -49,10 +49,12 @@ public:
 		}  
   
     const char* GetCourseDirection()  
-		{  
+    {  
         float course = GetCourse();  
+        while (course < 0) course += 360.0f;
+        while (course >= 360.0f) course -= 360.0f;
         return TinyGPSPlus::cardinal(course);  
-		}
+    }
 
     void RecorderCommand(RecCmd_t cmd);
     void PlayMusic(const char* music);
