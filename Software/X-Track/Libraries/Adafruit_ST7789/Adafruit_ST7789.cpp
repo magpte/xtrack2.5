@@ -1,7 +1,7 @@
 #include "Adafruit_ST7789.h"
 #include "SPI.h"
 
-#define SCREEN_USE_LITTLE_ENDIAN    0
+#define SCREEN_USE_LITTLE_ENDIAN    1
 
 #if defined(__STM32__)
 #define SCREEN_CS_SET      GPIO_HIGH(csport,cspinmask)

@@ -51,6 +51,7 @@
 #define __MILLISTASKMANAGER_H
 
 #define MTM_USE_CPU_USAGE 0
+#define MTM_USE_TIMING_STATS 0
 
 #include <stdint.h>
 #include <stddef.h>

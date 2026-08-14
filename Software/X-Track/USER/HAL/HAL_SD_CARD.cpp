@@ -204,13 +204,8 @@ bool HAL::SD_Init()
     }
 
     Serial.print("SD: init...");
-    // 30MHz -> 15MHz：DMA 批量传输把原来逐字节软件轮询之间的间隙去掉了，
-    // 相当于同样的分频比下总线上真实跑出来的是背靠背的连续时钟，
-    // 之前"能用"可能部分吃的是那些间隙给走线/电平转换的余量。
-    // 目前没法接示波器确认信号完整性，先降速换稳定性；确认长时间读写
-    // 稳定之后如果需要更高吞吐，可以再逐步往上调（例如 20/25/30MHz）
-    // 并做长时间读写测试验证。
-    retval = SD.begin(CONFIG_SD_CS_PIN, SD_SCK_MHZ(30));
+    // AT32F435 主频 288MHz，硬件 SPI2 采用 8 分频输出 36MHz 时钟（符合 SD 卡 SPI 模式 <50MHz 规范的最佳极速）
+    retval = SD.begin(CONFIG_SD_CS_PIN, SD_SCK_MHZ(36));
 
     if(retval)
     {

@@ -362,6 +362,7 @@ void MillisTaskManager::Running(uint32_t tick)
                     now->TimePrev += now->Time;
                 }
 
+#if (MTM_USE_TIMING_STATS == 1)
                 /*测量单次任务运行时间(us)与统计信息*/
                 uint32_t startUs = micros();
                 now->Function();
@@ -386,6 +387,9 @@ void MillisTaskManager::Running(uint32_t tick)
 #endif
                     }
                 }
+#else
+                now->Function();
+#endif
 
                 /*判断是否开启优先级*/
                 if(PriorityEnable)

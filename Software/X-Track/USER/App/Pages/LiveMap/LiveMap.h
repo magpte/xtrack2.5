@@ -53,6 +53,10 @@ private:
         int      lastSpeedKph;        // 缓存上次速度（整数，km/h），初始 -1
         float    lastSingleDistance;  // 缓存上次里程（米），初始 -1.0f
         uint32_t lastSingleTime;      // 缓存上次骑行时间（秒），初始 UINT32_MAX
+
+        // 增量瓦片缓存：记录每个 tile 索引上次对应的 Tile 坐标 (pos.x, pos.y)
+        // 仅在坐标发生变化时调用 ConvertMapPath 和 SetMapTileSrc
+        std::vector<TileConv::Point_t> lastTilePosGroup;
     } priv;
 
 

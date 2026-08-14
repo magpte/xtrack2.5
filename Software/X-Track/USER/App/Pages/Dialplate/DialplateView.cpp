@@ -66,6 +66,7 @@ void DialplateView::TopInfo_Create(lv_obj_t* par)
     lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_65"), 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
     lv_label_set_text(label, "00");
+    lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
     lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 77);
     ui.topInfo.labelSpeed = label;
 
@@ -138,6 +139,7 @@ void DialplateView::SubInfoGrp_Create(lv_obj_t* par, SubInfo_t* info, const char
     lv_obj_t* label = lv_label_create(cont);
     lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_17"), 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
     info->lableValue = label;
 
     label = lv_label_create(cont);
@@ -177,42 +179,6 @@ void DialplateView::Compass_Create(lv_obj_t* par)
     lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
     ui.compass.ring = ring;
 
-    // North (N) Solid Red Circle Badge Container
-    lv_obj_t* contN = lv_obj_create(dial);
-    lv_obj_remove_style_all(contN);
-    lv_obj_set_size(contN, 16, 16);
-    lv_obj_set_style_radius(contN, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(contN, lv_color_hex(0xE74C3C), 0);
-    lv_obj_set_style_bg_opa(contN, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(contN, LV_OBJ_FLAG_SCROLLABLE);
-    ui.compass.contN = contN;
-
-    lv_obj_t* labelN = lv_label_create(contN);
-    lv_obj_set_style_text_font(labelN, ResourcePool::GetFont("bahnschrift_13"), 0);
-    lv_obj_set_style_text_color(labelN, lv_color_white(), 0);
-    lv_label_set_text(labelN, "N");
-    lv_obj_center(labelN);
-    ui.compass.labelN = labelN;
-
-    // S, W, E Direction Labels
-    lv_obj_t* labelS = lv_label_create(dial);
-    lv_obj_set_style_text_font(labelS, ResourcePool::GetFont("bahnschrift_13"), 0);
-    lv_obj_set_style_text_color(labelS, lv_color_hex(0xDDDDDD), 0);
-    lv_label_set_text(labelS, "S");
-    ui.compass.labelS = labelS;
-
-    lv_obj_t* labelW = lv_label_create(dial);
-    lv_obj_set_style_text_font(labelW, ResourcePool::GetFont("bahnschrift_13"), 0);
-    lv_obj_set_style_text_color(labelW, lv_color_hex(0xDDDDDD), 0);
-    lv_label_set_text(labelW, "W");
-    ui.compass.labelW = labelW;
-
-    lv_obj_t* labelE = lv_label_create(dial);
-    lv_obj_set_style_text_font(labelE, ResourcePool::GetFont("bahnschrift_13"), 0);
-    lv_obj_set_style_text_color(labelE, lv_color_hex(0xDDDDDD), 0);
-    lv_label_set_text(labelE, "E");
-    ui.compass.labelE = labelE;
-
     // Line 1: Course Angle Number (bahnschrift_17)
     lv_obj_t* labelAngle = lv_label_create(cont);
     lv_obj_set_style_text_font(labelAngle, ResourcePool::GetFont("bahnschrift_17"), 0);
@@ -229,55 +195,9 @@ void DialplateView::Compass_Create(lv_obj_t* par)
     lv_obj_align(labelDir, LV_ALIGN_CENTER, 0, 24);
     ui.compass.labelDir = labelDir;
 
-    // Register Draw Event Callback for Compass Center Red Pointer
+    // Register Draw Event Callback for Compass Center Red Pointer & N/S/E/W Markers
     compassCourse = -1.0f;
     lv_obj_add_event_cb(dial, onCompassDraw, LV_EVENT_DRAW_POST_END, this);
-
-    UpdateCompassPositions(0.0f);
-}
-
-void DialplateView::UpdateCompassPositions(float course)
-{
-    if (!ui.compass.contN || !ui.compass.labelS || !ui.compass.labelW || !ui.compass.labelE) return;
-
-    while (course < 0) course += 360.0f;
-    while (course >= 360.0f) course -= 360.0f;
-
-    int16_t rel_angle_N = (int16_t)(-course);
-    while (rel_angle_N < 0) rel_angle_N += 360;
-    while (rel_angle_N >= 360) rel_angle_N -= 360;
-
-    lv_coord_t cx = 50;
-    lv_coord_t cy = 50;
-    lv_coord_t R = 42; // Outer Ring Radius
-
-    // N Red Circle Badge Position
-    int32_t sin_N = (int32_t)lv_trigo_sin(rel_angle_N);
-    int32_t cos_N = (int32_t)lv_trigo_cos(rel_angle_N);
-    lv_coord_t nx = cx + (lv_coord_t)(((int32_t)R * sin_N) >> 15);
-    lv_coord_t ny = cy - (lv_coord_t)(((int32_t)R * cos_N) >> 15);
-    lv_obj_set_pos(ui.compass.contN, nx - 8, ny - 8);
-
-    // S (+180°), W (+270°), E (+90°) Markers
-    const struct { int16_t add_angle; lv_obj_t* label; } markers[] = {
-        { 180, ui.compass.labelS },
-        { 270, ui.compass.labelW },
-        {  90, ui.compass.labelE }
-    };
-
-    for (int i = 0; i < 3; i++)
-    {
-        if (!markers[i].label) continue;
-        int16_t angle = rel_angle_N + markers[i].add_angle;
-        while (angle < 0) angle += 360;
-        while (angle >= 360) angle -= 360;
-
-        int32_t sin_m = (int32_t)lv_trigo_sin(angle);
-        int32_t cos_m = (int32_t)lv_trigo_cos(angle);
-        lv_coord_t mx = cx + (lv_coord_t)(((int32_t)R * sin_m) >> 15);
-        lv_coord_t my = cy - (lv_coord_t)(((int32_t)R * cos_m) >> 15);
-        lv_obj_set_pos(markers[i].label, mx - 5, my - 7);
-    }
 }
 
 void DialplateView::SetCompassCourse(float course)
@@ -290,7 +210,6 @@ void DialplateView::SetCompassCourse(float course)
     if (newAngle != oldAngle)
     {
         compassCourse = course;
-        UpdateCompassPositions(course);
         if (ui.compass.dialBg)
         {
             lv_obj_invalidate(ui.compass.dialBg);
@@ -308,8 +227,72 @@ void DialplateView::onCompassDraw(lv_event_t* event)
 
     lv_coord_t cx = plotArea.x1 + 50;
     lv_coord_t cy = plotArea.y1 + 50;
+    lv_coord_t R = 42; // Outer Ring Radius
 
-    // Draw Center Red Pointer Triangle (3 points, zero dynamic buffer allocations)
+    float course = view->compassCourse;
+    if (course < 0) course = 0.0f;
+
+    int16_t rel_angle_N = (int16_t)(-course);
+    while (rel_angle_N < 0) rel_angle_N += 360;
+    while (rel_angle_N >= 360) rel_angle_N -= 360;
+
+    // 1. Draw N Red Circle Badge
+    int32_t sin_N = (int32_t)lv_trigo_sin(rel_angle_N);
+    int32_t cos_N = (int32_t)lv_trigo_cos(rel_angle_N);
+    lv_coord_t nx = cx + (lv_coord_t)(((int32_t)R * sin_N) >> 15);
+    lv_coord_t ny = cy - (lv_coord_t)(((int32_t)R * cos_N) >> 15);
+
+    lv_draw_rect_dsc_t n_bg_dsc;
+    lv_draw_rect_dsc_init(&n_bg_dsc);
+    n_bg_dsc.bg_color = lv_color_hex(0xE74C3C);
+    n_bg_dsc.bg_opa = LV_OPA_COVER;
+    n_bg_dsc.radius = LV_RADIUS_CIRCLE;
+
+    lv_area_t n_area;
+    n_area.x1 = nx - 8;
+    n_area.y1 = ny - 8;
+    n_area.x2 = n_area.x1 + 15;
+    n_area.y2 = n_area.y1 + 15;
+    lv_draw_rect(draw_ctx, &n_bg_dsc, &n_area);
+
+    lv_draw_label_dsc_t label_dsc;
+    lv_draw_label_dsc_init(&label_dsc);
+    label_dsc.color = lv_color_white();
+    label_dsc.font = ResourcePool::GetFont("bahnschrift_13");
+
+    lv_area_t txt_area = n_area;
+    txt_area.x1 += 3;
+    txt_area.y1 += 1;
+    lv_draw_label(draw_ctx, &label_dsc, &txt_area, "N", nullptr);
+
+    // 2. Draw S, W, E Markers
+    label_dsc.color = lv_color_hex(0xDDDDDD);
+    const struct { int16_t add_angle; const char* txt; } markers[] = {
+        { 180, "S" },
+        { 270, "W" },
+        {  90, "E" }
+    };
+
+    for (int i = 0; i < 3; i++)
+    {
+        int16_t angle = rel_angle_N + markers[i].add_angle;
+        while (angle < 0) angle += 360;
+        while (angle >= 360) angle -= 360;
+
+        int32_t sin_m = (int32_t)lv_trigo_sin(angle);
+        int32_t cos_m = (int32_t)lv_trigo_cos(angle);
+        lv_coord_t mx = cx + (lv_coord_t)(((int32_t)R * sin_m) >> 15);
+        lv_coord_t my = cy - (lv_coord_t)(((int32_t)R * cos_m) >> 15);
+
+        lv_area_t m_area;
+        m_area.x1 = mx - 5;
+        m_area.y1 = my - 7;
+        m_area.x2 = m_area.x1 + 12;
+        m_area.y2 = m_area.y1 + 14;
+        lv_draw_label(draw_ctx, &label_dsc, &m_area, markers[i].txt, nullptr);
+    }
+
+    // 3. Draw Center Red Pointer Triangle (3 points, zero dynamic buffer allocations)
     lv_point_t arrow_pts[3];
     arrow_pts[0].x = cx;       arrow_pts[0].y = cy - 24; // Tip
     arrow_pts[1].x = cx - 6;   arrow_pts[1].y = cy - 10; // Left wing

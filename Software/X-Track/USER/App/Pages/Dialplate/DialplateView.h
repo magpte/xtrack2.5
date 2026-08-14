@@ -38,11 +38,6 @@ public:
             lv_obj_t* cont;
             lv_obj_t* dialBg;
             lv_obj_t* ring;
-            lv_obj_t* contN;
-            lv_obj_t* labelN;
-            lv_obj_t* labelS;
-            lv_obj_t* labelE;
-            lv_obj_t* labelW;
             lv_obj_t* labelAngle;
             lv_obj_t* labelDir;
         } compass;
@@ -80,7 +75,6 @@ private:
     void BottomInfo_Create(lv_obj_t* par);
     void SubInfoGrp_Create(lv_obj_t* par, SubInfo_t* info, const char* unitText);
     void Compass_Create(lv_obj_t* par);
-    void UpdateCompassPositions(float course);
     static void onCompassDraw(lv_event_t* event);
     void BtnCont_Create(lv_obj_t* par);
     void Brightness_Create(lv_obj_t* par);

@@ -221,6 +221,7 @@ void LiveMapView::SportInfo_Create(lv_obj_t* par)
     /* speed */
     lv_obj_t* label = lv_label_create(obj);
     lv_label_set_text(label, "00");
+    lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_font(label, ResourcePool::GetFont("bahnschrift_32"), 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 20, -10);
@@ -245,6 +246,7 @@ lv_obj_t* LiveMapView::ImgLabel_Create(lv_obj_t* par, const void* img_src, lv_co
 
     lv_obj_t* label = lv_label_create(par);
     lv_label_set_text(label, "--");
+    lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
     lv_obj_add_style(label, &ui.styleLabel, 0);
     lv_obj_align_to(label, img, LV_ALIGN_OUT_RIGHT_MID, x_ofs, 0);
     return label;

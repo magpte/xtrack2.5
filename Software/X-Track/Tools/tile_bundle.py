@@ -190,6 +190,14 @@ def _encode_block(args):
             failed.append((str(path_or_target), str(exc)))
             continue
 
+        # Align (data_section_start + data_offset) to 512-byte physical sector boundary
+        data_section_start = 14 + (block_size * block_size * 8)
+        current_abs_pos = data_section_start + data_offset
+        pad = (512 - (current_abs_pos % 512)) % 512
+        if pad > 0:
+            data_chunks.append(b"\x00" * pad)
+            data_offset += pad
+
         idx = local_y * block_size + local_x
         index[idx] = (data_offset, len(encoded))
         data_chunks.append(encoded)

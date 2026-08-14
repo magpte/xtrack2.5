@@ -33,6 +33,7 @@ LiveMap::~LiveMap()
 void LiveMap::onCustomAttrConfig()
 {
     SetCustomCacheEnable(false);
+    SetCustomLoadAnimType(PageManager::LOAD_ANIM_NONE);
 }
 
 void LiveMap::onViewLoad()
@@ -152,6 +153,8 @@ void LiveMap::onViewDidAppear()
     priv.lastSingleDistance = -1.0f;
     priv.lastSingleTime     = (uint32_t)-1;
 
+    priv.lastTilePosGroup.clear();
+
     priv.isTrackAvtive = Model.GetTrackFilterActive();
     if (!priv.isTrackAvtive)
     {
@@ -161,6 +164,9 @@ void LiveMap::onViewDidAppear()
     lv_group_t* group = lv_group_get_default();
     lv_group_add_obj(group, View.ui.zoom.slider);
     lv_group_set_editing(group, View.ui.zoom.slider);
+
+    // 立即执行首帧位置计算与瓦片载入，彻底消除 500ms 的 Timer 启动盲等延迟！
+    Update();
 }
 
 void LiveMap::onViewWillDisappear()
@@ -448,16 +454,27 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
 
 void LiveMap::MapTileContReload()
 {
-    /* tile src */
-    for (uint32_t i = 0; i < View.ui.map.tileNum; i++)
+    uint32_t tileNum = View.ui.map.tileNum;
+    if (priv.lastTilePosGroup.size() != tileNum)
+    {
+        priv.lastTilePosGroup.resize(tileNum, { INT32_MIN, INT32_MIN });
+    }
+
+    /* tile src - 增量更新：仅对坐标变动（移入视野）的新瓦片拼接路径并更新 src */
+    for (uint32_t i = 0; i < tileNum; i++)
     {
         TileConv::Point_t pos;
         Model.tileConv.GetTilePos(i, &pos);
 
-        char path[64];
-        Model.mapConv.ConvertMapPath(pos.x, pos.y, path, sizeof(path));
+        if (pos.x != priv.lastTilePosGroup[i].x || pos.y != priv.lastTilePosGroup[i].y)
+        {
+            priv.lastTilePosGroup[i] = pos;
 
-        View.SetMapTileSrc(i, path);
+            char path[64];
+            Model.mapConv.ConvertMapPath(pos.x, pos.y, path, sizeof(path));
+
+            View.SetMapTileSrc(i, path);
+        }
     }
 }
 

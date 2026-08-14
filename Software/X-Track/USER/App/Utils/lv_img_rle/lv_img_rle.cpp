@@ -83,7 +83,7 @@
 #define TILE_SD_DRIVE_LETTER  '/'
 
 // ---- Run-stream read buffer size ----------------------------------------
-#define RLE_READ_BUF_SIZE     512u
+#define RLE_READ_BUF_SIZE     2048u
 
 // =========================================================================
 // Shared bundle file handle
@@ -536,7 +536,7 @@ static bool open_tile(const char* src,
 }
 
 // =========================================================================
-// RLE2 metadata load (with cache)
+// RLE2 metadata load (with single-read optimization & cache)
 // =========================================================================
 static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length)
 {
@@ -545,22 +545,25 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
         return true;
     }
 
-    uint8_t  header[RLE_HEADER_SIZE];
+    // Header (14) + max palette (512) + max checkpoints (128) = 654 bytes max
+    uint8_t  meta_buf[RLE_HEADER_SIZE + RLE_MAX_PALETTE * sizeof(uint16_t) + RLE_MAX_CHECKPOINTS * sizeof(uint32_t)];
+    uint32_t to_read = (tile_length < sizeof(meta_buf)) ? tile_length : (uint32_t)sizeof(meta_buf);
     uint32_t br = 0;
-    if (!tile_read_bytes(tile_start, header, sizeof(header), &br)
-        || br != sizeof(header)
-        || memcmp(header, RLE_MAGIC, 4) != 0)
+
+    if (!tile_read_bytes(tile_start, meta_buf, to_read, &br)
+        || br < RLE_HEADER_SIZE
+        || memcmp(meta_buf, RLE_MAGIC, 4) != 0)
     {
         LV_LOG_WARN("RLE: bad RLE2 header in '%s'", src);
         s_meta.valid = false;
         return false;
     }
 
-    uint16_t width              = (uint16_t)(header[4]  | ((uint16_t)header[5]  << 8));
-    uint16_t height             = (uint16_t)(header[6]  | ((uint16_t)header[7]  << 8));
-    uint16_t paletteCount       = (uint16_t)(header[8]  | ((uint16_t)header[9]  << 8));
-    uint16_t checkpointInterval = (uint16_t)(header[10] | ((uint16_t)header[11] << 8));
-    uint16_t checkpointCount    = (uint16_t)(header[12] | ((uint16_t)header[13] << 8));
+    uint16_t width              = (uint16_t)(meta_buf[4]  | ((uint16_t)meta_buf[5]  << 8));
+    uint16_t height             = (uint16_t)(meta_buf[6]  | ((uint16_t)meta_buf[7]  << 8));
+    uint16_t paletteCount       = (uint16_t)(meta_buf[8]  | ((uint16_t)meta_buf[9]  << 8));
+    uint16_t checkpointInterval = (uint16_t)(meta_buf[10] | ((uint16_t)meta_buf[11] << 8));
+    uint16_t checkpointCount    = (uint16_t)(meta_buf[12] | ((uint16_t)meta_buf[13] << 8));
 
     if (paletteCount == 0 || paletteCount > RLE_MAX_PALETTE)
     {
@@ -587,23 +590,24 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
         return false;
     }
 
-    if (!tile_read_bytes(tile_start + RLE_HEADER_SIZE, s_meta.palette,
-                         (uint32_t)paletteCount * sizeof(uint16_t), &br)
-        || br != (uint32_t)paletteCount * sizeof(uint16_t))
+    uint32_t palette_bytes = (uint32_t)paletteCount * sizeof(uint16_t);
+    uint32_t cp_bytes      = (uint32_t)checkpointCount * sizeof(uint32_t);
+    uint32_t total_meta    = RLE_HEADER_SIZE + palette_bytes + cp_bytes;
+
+    if (br < total_meta)
     {
-        LV_LOG_WARN("RLE: truncated palette in '%s'", src);
-        s_meta.valid = false;
-        return false;
+        uint32_t extra_br = 0;
+        if (!tile_read_bytes(tile_start + br, meta_buf + br, total_meta - br, &extra_br)
+            || (br + extra_br) < total_meta)
+        {
+            LV_LOG_WARN("RLE: truncated meta in '%s'", src);
+            s_meta.valid = false;
+            return false;
+        }
     }
 
-    if (!tile_read_bytes(tile_start + RLE_HEADER_SIZE + (uint32_t)paletteCount * sizeof(uint16_t),
-                         s_meta.checkpoints, (uint32_t)checkpointCount * sizeof(uint32_t), &br)
-        || br != (uint32_t)checkpointCount * sizeof(uint32_t))
-    {
-        LV_LOG_WARN("RLE: truncated checkpoint table in '%s'", src);
-        s_meta.valid = false;
-        return false;
-    }
+    memcpy(s_meta.palette, meta_buf + RLE_HEADER_SIZE, palette_bytes);
+    memcpy(s_meta.checkpoints, meta_buf + RLE_HEADER_SIZE + palette_bytes, cp_bytes);
 
     s_meta.tile_start         = tile_start;
     s_meta.tile_length        = tile_length;
@@ -612,9 +616,7 @@ static bool load_meta(const char* src, uint32_t tile_start, uint32_t tile_length
     s_meta.paletteCount       = paletteCount;
     s_meta.checkpointInterval = checkpointInterval;
     s_meta.checkpointCount    = checkpointCount;
-    s_meta.run_stream_start   = RLE_HEADER_SIZE
-                                 + (uint32_t)paletteCount   * sizeof(uint16_t)
-                                 + (uint32_t)checkpointCount * sizeof(uint32_t);
+    s_meta.run_stream_start   = total_meta;
 
     size_t slen = strlen(src);
     if (slen >= sizeof(s_meta.path)) slen = sizeof(s_meta.path) - 1;

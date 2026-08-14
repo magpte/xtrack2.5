@@ -115,6 +115,23 @@ void SystemInfos::Update()
         cache.lastFocused = focused;
         cache.itemStr[0] = '\0';
         skyUpdateCounter = 0;
+
+        if (timer)
+        {
+            uint32_t period = (focused == View.ui.storage.icon || focused == View.ui.system.icon) ? 1000 : 200;
+            lv_timer_set_period(timer, period);
+        }
+    }
+
+    if (focused != nullptr)
+    {
+        lv_area_t focus_area, root_area, inter_area;
+        lv_obj_get_coords(focused, &focus_area);
+        lv_obj_get_coords(_root, &root_area);
+        if (!_lv_area_intersect(&inter_area, &focus_area, &root_area))
+        {
+            return;
+        }
     }
 
     if (focused == View.ui.sport.icon)

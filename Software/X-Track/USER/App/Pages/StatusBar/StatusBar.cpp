@@ -25,9 +25,10 @@
 #include "Common/DataProc/DataProc.h"
 #include "Utils/lv_anim_label/lv_anim_label.h"
 
-/* TEST BRANCH: 跨页面性能监控 overlay (电流/CPU/内存)
- * 改为 0 即可彻底关掉，正式版去掉此段即可 */
-#define CONFIG_PERF_MONITOR_ENABLE 1
+/* 跨页面性能监控 overlay (FPS/CPU/内存)
+ * 0: 关闭（恢复原版单行 StatusBar）
+ * 1: 开启（双行显示性能监控数据） */
+#define CONFIG_PERF_MONITOR_ENABLE 0
 
 #define BATT_USAGE_HEIGHT (lv_obj_get_style_height(ui.battery.img, 0) - 6)
 #define BATT_USAGE_WIDTH (lv_obj_get_style_width(ui.battery.img, 0) - 4)
