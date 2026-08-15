@@ -62,6 +62,7 @@ public:
 
     int32_t GetScreenBrightness();
     void SetScreenBrightness(int32_t value);
+    void SetScreenLock(bool locked);
 
 private:
     Account* account;

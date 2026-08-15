@@ -110,11 +110,13 @@ typedef enum
     SYSCONFIG_CMD_SAVE,
     SYSCONFIG_CMD_SET_BRIGHTNESS,
     SYSCONFIG_CMD_ENCODER_ACTIVITY,
+    SYSCONFIG_CMD_SET_LOCK_STATE,
 } SysConfig_Cmd_t;
 
 typedef struct
 {
     SysConfig_Cmd_t cmd;
+    bool isLocked;
     double longitude;
     double latitude;
     int16_t timeZone;

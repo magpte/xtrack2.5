@@ -133,3 +133,15 @@ void DialplateModel::SetScreenBrightness(int32_t value)
 
     account->Notify("SysConfig", &info, sizeof(info));
 }
+
+void DialplateModel::SetScreenLock(bool locked)
+{
+    DataProc::SysConfig_Info_t info;
+    DATA_PROC_INIT_STRUCT(info);
+
+    info.cmd = DataProc::SYSCONFIG_CMD_SET_LOCK_STATE;
+    info.isLocked = locked;
+
+    account->Notify("SysConfig", &info, sizeof(info));
+}
+

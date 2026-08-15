@@ -136,7 +136,6 @@ static bool NMEA_Log_Open()
     }
 
     Serial.printf("NMEA: logging to \"%s\"\r\n", path);
-    s_nmeaLogWriteBufLen = 0;
     s_nmeaLogNeedSync = false;
     s_nmeaLogLastSyncTick = millis();
     return true;
@@ -150,25 +149,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
         return;
     }
 
-    if(!s_nmeaLogFileOpen)
-    {
-        // 目录理论上已经在 SD_Init() 里建好了，这里再兜底检查一次
-        SD_CheckDir(CONFIG_NMEA_LOG_FILE_DIR_NAME);
-
-        if(!NMEA_Log_Open())
-        {
-            s_nmeaLogOpenFailed = true;
-            return;
-        }
-        s_nmeaLogFileOpen = true;
-    }
-
-    // 纯内存写入：追加到 22KB 内存缓冲区中（耗时 < 5 us），绝不在此触发 sync()
-    if(s_nmeaLogWriteBufLen + len > NMEA_LOG_WRITE_BUF_SIZE)
-    {
-        NMEA_Log_FlushBuffer(false);
-    }
-
+    // 纯内存写入：追加到 22KB 内存缓冲区中（耗时 < 2 us），绝不在高频 GPS 任务中同步创建文件或执行 SPI 写操作
     if(s_nmeaLogWriteBufLen + len <= NMEA_LOG_WRITE_BUF_SIZE)
     {
         memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
@@ -194,7 +175,7 @@ void HAL::NMEA_Log_Close()
 
 bool HAL::SD_Init()
 {
-    bool retval = true;
+    bool retval = false;
 
     pinMode(CONFIG_SD_CD_PIN, INPUT_PULLUP);
     if(digitalRead(CONFIG_SD_CD_PIN))
@@ -202,9 +183,21 @@ bool HAL::SD_Init()
         Serial.println("SD: CD pin HIGH (checking SPI direct)...");
     }
 
+    // 给 SD 卡内部上电与控制器启动预留充分稳定时间（50ms）
+    delay(50);
+
     Serial.print("SD: init...");
     // AT32F435 主频 288MHz，硬件 SPI2 采用 8 分频输出 36MHz 时钟（符合 SD 卡 SPI 模式 <50MHz 规范的最佳极速）
-    retval = SD.begin(CONFIG_SD_CS_PIN, SD_SCK_MHZ(36));
+    // 最多重试 2 次，增强冷启动慢速卡与上电瞬态容错
+    for (int retry = 0; retry < 2; retry++)
+    {
+        retval = SD.begin(CONFIG_SD_CS_PIN, SD_SCK_MHZ(36));
+        if (retval)
+        {
+            break;
+        }
+        delay(30);
+    }
 
     if(retval)
     {
@@ -331,49 +324,79 @@ void HAL::SD_SetEventCallback(SD_CallbackFunction_t callback)
 
 void HAL::SD_Update()
 {
-    // 1. 如果 SD 卡已在开机时成功就绪（SD_IsReady == true），
-    //    绝对不要在主循环中重复调用 SD_Init() 或 SD.begin()！
-    //    消除一切浮空 CD 引脚或触点杂波引发的重复 1 秒重挂载阻塞。
-    if (!SD_IsReady)
-    {
-        bool rawInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
-        static uint8_t s_insertCount = 0;
+    // SD 卡热插拔状态机：
+    // 基于引脚物理跳变边沿检测与 1.5 秒消抖（3 个 500ms 周期），
+    // 仅在真实发生物理拔插（电平改变）时触发一次动作，
+    // 杜绝无边沿时的周期性轮询与开机动画期间的 SPI 超时阻塞。
+    bool rawInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
+    static bool s_lastPhysicalState = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
+    static uint8_t s_debounceCount = 0;
 
-        if (rawInsert)
+    if (rawInsert != s_lastPhysicalState)
+    {
+        s_debounceCount++;
+        if (s_debounceCount >= 3)
         {
-            s_insertCount++;
-            // 连续 3 次 500ms 周期（1.5s）消抖，且开机动画（2.5s）结束后才尝试热插拔重挂载
-            if (s_insertCount >= 3 && millis() > 2500)
+            s_lastPhysicalState = rawInsert;
+            s_debounceCount = 0;
+
+            if (rawInsert)
             {
-                s_insertCount = 0;
-                SD_Check(true);
+                if (!SD_IsReady)
+                {
+                    SD_Check(true);
+                }
+            }
+            else
+            {
+                if (SD_IsReady)
+                {
+                    SD_Check(false);
+                }
             }
         }
-        else
-        {
-            s_insertCount = 0;
-        }
+    }
+    else
+    {
+        s_debounceCount = 0;
     }
 
 #if CONFIG_GPS_NMEA_LOG_ENABLE
-    // 在 SD_Update() 后台周期（500ms）中集中平滑刷新 NMEA 缓冲区与执行 sync()
-    if (SD_IsReady && s_nmeaLogFileOpen)
+    // 在 SD_Update() 后台周期（500ms）中集中平滑处理文件打开、刷新 NMEA 缓冲区与执行 sync()
+    if (SD_IsReady)
     {
-        if (s_nmeaLogWriteBufLen >= SD_SECTOR_SIZE)
+        // 开机动画阶段（前 3.0 秒）不执行 SD 卡文件创建，将 NMEA 数据暂存在 22KB 内存缓冲区中，
+        // 确保开机动画及页面切换 100% 满帧无任何 SPI I/O 阻塞。
+        if (!s_nmeaLogFileOpen && !s_nmeaLogOpenFailed && s_nmeaLogWriteBufLen > 0 && millis() > 3000)
         {
-            NMEA_Log_FlushBuffer(false);
+            if (!NMEA_Log_Open())
+            {
+                s_nmeaLogOpenFailed = true;
+            }
+            else
+            {
+                s_nmeaLogFileOpen = true;
+            }
         }
 
-        uint32_t now = millis();
-        if (now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
+        if (s_nmeaLogFileOpen)
         {
-            if (s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
+            if (s_nmeaLogWriteBufLen >= SD_SECTOR_SIZE)
             {
-                NMEA_Log_FlushBuffer(true);
-                s_nmeaLogFile.sync();
-                s_nmeaLogNeedSync = false;
+                NMEA_Log_FlushBuffer(false);
             }
-            s_nmeaLogLastSyncTick = now;
+
+            uint32_t now = millis();
+            if (now - s_nmeaLogLastSyncTick >= NMEA_LOG_SYNC_INTERVAL_MS)
+            {
+                if (s_nmeaLogNeedSync || s_nmeaLogWriteBufLen > 0)
+                {
+                    NMEA_Log_FlushBuffer(true);
+                    s_nmeaLogFile.sync();
+                    s_nmeaLogNeedSync = false;
+                }
+                s_nmeaLogLastSyncTick = now;
+            }
         }
     }
 #endif

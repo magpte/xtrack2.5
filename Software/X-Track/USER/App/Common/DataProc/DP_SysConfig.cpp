@@ -11,6 +11,7 @@ static SysConfig_Info_t sysConfig;
 static float s_lastKnownSpeed = 0.0f;
 static bool s_lastGpsValid = false;
 static bool s_isAutoDimmed = false;
+static bool s_isScreenLocked = false;
 static int16_t s_lastAppliedBrightness = -1;
 static uint32_t s_lastEncoderActivityTick = 0;
 
@@ -24,6 +25,16 @@ static int16_t SysConfig_NormalizeBrightness(int16_t val, int16_t defaultVal)
 
 static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, uint16_t animTime)
 {
+    if (s_isScreenLocked)
+    {
+        if (s_lastAppliedBrightness != 0)
+        {
+            s_lastAppliedBrightness = 0;
+            HAL::Backlight_SetGradual(0, animTime);
+        }
+        return;
+    }
+
     int16_t highBrightThresh = SysConfig_NormalizeBrightness(sysConfig.autoDimBrightThresh, CONFIG_AUTO_DIM_BRIGHT_THRESH_DEFAULT);
     int16_t targetLowBright  = SysConfig_NormalizeBrightness(sysConfig.autoDimTargetBright, CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT);
     float speedThresh        = sysConfig.autoDimSpeedThresh;
@@ -194,6 +205,20 @@ static int onEvent(Account* account, Account::EventParam_t* param)
         {
             s_lastEncoderActivityTick = DataProc::GetTick();
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 300);
+        }
+        else if (info->cmd == SYSCONFIG_CMD_SET_LOCK_STATE)
+        {
+            s_isScreenLocked = info->isLocked;
+            if (s_isScreenLocked)
+            {
+                s_lastAppliedBrightness = 0;
+                HAL::Backlight_SetGradual(0, 500);
+            }
+            else
+            {
+                s_lastAppliedBrightness = -1; // 强制重新计算并平滑恢复原本背光
+                SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
+            }
         }
         else if (info->cmd == SYSCONFIG_CMD_SAVE)
         {

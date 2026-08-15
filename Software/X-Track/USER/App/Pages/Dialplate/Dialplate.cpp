@@ -335,13 +335,9 @@ void Dialplate::LockMode_Enter()
     }
 
     isLocked = true;
+    Model.SetScreenLock(true);
 
-    // 记下当前亮度，退出的时候恢复这个值，而不是写死恢复到某个固定
-    // 亮度（不然会覆盖掉用户在设置里调好的亮度）。
-    savedBrightness = HAL::Backlight_GetValue();
-    HAL::Backlight_SetGradual(0, 500);
-
-    // 暂停这个页面自己的 1 秒刷新定时器——速度/时长/距离这些标签既然
+    // 暂停这个页面自己的刷新定时器——速度/时长/距离这些标签既然
     // 看不见了，没必要还每秒重新计算+触发重绘。
     // GPS 解析、轨迹写入、看门狗完全不受影响：它们各自走的是 DataProc
     // 自己的 LVGL 定时器和硬件定时器中断，不依赖这个页面级的定时器，
@@ -359,8 +355,8 @@ void Dialplate::LockMode_Enter()
 void Dialplate::LockMode_Exit()
 {
     isLocked = false;
+    Model.SetScreenLock(false);
 
-    HAL::Backlight_SetGradual(savedBrightness, 500);
     lv_timer_resume(timer);
     HAL::IMU_SetEnable(true);
 
@@ -384,12 +380,15 @@ void Dialplate::onEvent(lv_event_t* event)
     {
         // 不管这时候焦点具体在哪个按钮上（屏幕是黑的，编码器意外转动
         // 会让焦点在 Rec/Map/Menu 之间跳，用户根本看不见跳到哪了）——
-        // 只要是长按，就退出锁屏。之前写死判断"必须是 btnMap 的长按"，
-        // 一旦焦点被意外转走，长按会落在别的按钮上被无声忽略掉，用户
-        // 会误以为设备卡死/关机了。
+        // 只要是长按，就退出锁屏。
         if (code == LV_EVENT_LONG_PRESSED)
         {
             instance->LockMode_Exit();
+        }
+        else if (code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED)
+        {
+            // 锁屏状态下若用户短按，发出轻微提示音提示处于锁屏（需长按解锁），防止误以为死机
+            HAL::Buzz_Tone(300, 15);
         }
         return;
     }

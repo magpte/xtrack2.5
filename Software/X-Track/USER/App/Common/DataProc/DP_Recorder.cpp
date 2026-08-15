@@ -147,6 +147,12 @@ static int Recorder_GetTimeConv(
 
 static void Recorder_RecPoint(Recorder_t* recorder, HAL::GPS_Info_t* gpsInfo)
 {
+    // 校验定位有效性：未定位或经纬度为 0 时跳过记录，避免在冷启动/未搜到星时记录假点 (0,0) 以及星历校准时产生的时间回跳
+    if (!gpsInfo->isVaild || (gpsInfo->longitude == 0.0 && gpsInfo->latitude == 0.0))
+    {
+        return;
+    }
+
     //LV_LOG_USER("Track recording...");
 
     char timeBuf[64];

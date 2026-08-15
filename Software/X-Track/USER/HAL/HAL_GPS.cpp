@@ -207,18 +207,78 @@ static bool NMEA_Log_ShouldKeep(const char* line, uint8_t len)
         return true;
     }
 
-    // GGA 与 RMC 模块为 2 倍频率，做 2:1 抽取。
-    // 共享同一个周期抽样决策变量 s_keepCurrentEpoch，确保 GGA 与 RMC 永远在同一周期内同留同丢。
-    static bool s_keepCurrentEpoch = false;
+    // GGA 与 RMC 做 2:1 抽取为 1Hz：
+    // 基于时间戳 Epoch 识别与整秒对齐机制：
+    // 1. 同一时间戳的 GGA 与 RMC 共享相同的保留/丢弃判决，100% 确保同一 Epoch 内同留同丢；
+    // 2. 当有时间戳时，每个整秒（秒数递增）只保留首个子帧，消除 0.5s 相位跳变；
+    // 3. 在开机未获时钟前（时间戳为空），平滑降级为交替翻转。
+    static char s_currentEpochTime[16] = {0};
+    static bool s_currentEpochKept = false;
+    static uint32_t s_lastKeptSecInt = 0xFFFFFFFF;
+    static bool s_fallbackToggle = false;
 
-    if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A')
+    if ((type[0] == 'G' && type[1] == 'G' && type[2] == 'A') ||
+        (type[0] == 'R' && type[1] == 'M' && type[2] == 'C'))
     {
-        s_keepCurrentEpoch = !s_keepCurrentEpoch;
-        return s_keepCurrentEpoch;
-    }
-    if (type[0] == 'R' && type[1] == 'M' && type[2] == 'C')
-    {
-        return s_keepCurrentEpoch;
+        const char* nextComma = strchr(comma + 1, ',');
+        uint8_t timeLen = nextComma ? (uint8_t)(nextComma - (comma + 1)) : 0;
+
+        if (timeLen >= 6)
+        {
+            // 如果与当前记录的 Epoch 时间戳完全相同（如 GGA 先到达被判定后，RMC 随后以同时间到达）
+            if (s_currentEpochTime[0] != '\0' &&
+                memcmp(comma + 1, s_currentEpochTime, timeLen) == 0 &&
+                s_currentEpochTime[timeLen] == '\0')
+            {
+                return s_currentEpochKept;
+            }
+
+            // 新 Epoch 时间戳到达，更新 Epoch 标识
+            if (timeLen < sizeof(s_currentEpochTime))
+            {
+                memcpy(s_currentEpochTime, comma + 1, timeLen);
+                s_currentEpochTime[timeLen] = '\0';
+            }
+
+            // 解析前 6 位整数秒 hhmmss
+            uint32_t secInt = 0;
+            for (uint8_t i = 0; i < 6; i++)
+            {
+                char c = comma[1 + i];
+                if (c >= '0' && c <= '9')
+                {
+                    secInt = secInt * 10 + (c - '0');
+                }
+            }
+
+            // 若进入了新的整数秒（如 1 秒 2 帧中只保留第 1 帧），则保留并更新记录
+            if (secInt != s_lastKeptSecInt)
+            {
+                s_lastKeptSecInt = secInt;
+                s_currentEpochKept = true;
+            }
+            else
+            {
+                s_currentEpochKept = false;
+            }
+
+            return s_currentEpochKept;
+        }
+        else
+        {
+            // 时间戳尚为空时（冷启动搜星初期的未定位包）
+            if (type[0] == 'G' && type[1] == 'G' && type[2] == 'A')
+            {
+                s_fallbackToggle = !s_fallbackToggle;
+                s_currentEpochKept = s_fallbackToggle;
+                s_currentEpochTime[0] = '\0';
+                return s_fallbackToggle;
+            }
+            if (type[0] == 'R' && type[1] == 'M' && type[2] == 'C')
+            {
+                return s_currentEpochKept;
+            }
+        }
     }
 
     return false;
