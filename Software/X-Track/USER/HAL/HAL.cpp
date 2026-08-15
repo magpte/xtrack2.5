@@ -46,7 +46,6 @@ void HAL::Task_DumpDiagnostics()
     static char statsBuf[1024];
     taskManager.DumpTaskStats(statsBuf, sizeof(statsBuf));
     Serial.print(statsBuf);
-    HAL::SD_WriteCrashLog(statsBuf);
 }
 
 static void HAL_TimerInterrputUpdate()
@@ -113,11 +112,6 @@ void HAL::HAL_Init()
 #endif
 
     taskManager.Register(HAL_LVGL_Update, 0, true, "LVGL_Render");
-
-#if (MTM_USE_TIMING_STATS == 1)
-    // 每 5 秒导出一次所有 HAL 任务的耗时统计并打印到串口与 /crash.log
-    taskManager.Register(HAL::Task_DumpDiagnostics, 5000, true, "TaskStats_Dump");
-#endif
 
     Timer_SetInterrupt(CONFIG_HAL_UPDATE_TIM, 10 * 1000, HAL_TimerInterrputUpdate);
     Timer_SetEnable(CONFIG_HAL_UPDATE_TIM, true);

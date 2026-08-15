@@ -199,8 +199,7 @@ bool HAL::SD_Init()
     pinMode(CONFIG_SD_CD_PIN, INPUT_PULLUP);
     if(digitalRead(CONFIG_SD_CD_PIN))
     {
-        Serial.println("SD: CARD was not inserted");
-        retval = false;
+        Serial.println("SD: CD pin HIGH (checking SPI direct)...");
     }
 
     Serial.print("SD: init...");
@@ -225,6 +224,7 @@ bool HAL::SD_Init()
     {
         uint32_t err = SD.cardErrorCode();
         Serial.printf("failed: 0x%x\r\n", err);
+        SD_CardSize = 0;
     }
 
     SD_IsReady = retval;
@@ -278,6 +278,11 @@ static void SD_Check(bool isInsert)
 {
     if(isInsert)
     {
+        if(SD_IsReady)
+        {
+            return; // 已经就绪，不重复初始化
+        }
+
         bool ret = HAL::SD_Init();
 
         if(ret && SD_EventCallback)
@@ -296,6 +301,11 @@ static void SD_Check(bool isInsert)
     }
     else
     {
+        if(!SD_IsReady)
+        {
+            return; // 本来就未就绪，不重复执行拔卡清理
+        }
+
         // 卡被拔出之前先把 NMEA 日志缓冲区落盘、关文件——如果等
         // SD_IsReady 已经置 false 之后再关，HAL::NMEA_Log_Write() 会
         // 因为看到 SD_IsReady==false 而直接跳过，缓冲区里剩的那点数据
@@ -303,11 +313,11 @@ static void SD_Check(bool isInsert)
         HAL::NMEA_Log_Close();
 
         SD_IsReady = false;
+        SD_CardSize = 0;
 
         if(SD_EventCallback)
         {
             SD_EventCallback(false);
-            SD_CardSize = 0;
         }
 
         HAL::Audio_PlayMusic("DevicePullout");
@@ -321,9 +331,29 @@ void HAL::SD_SetEventCallback(SD_CallbackFunction_t callback)
 
 void HAL::SD_Update()
 {
-    bool isInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
+    // 1. 如果 SD 卡已在开机时成功就绪（SD_IsReady == true），
+    //    绝对不要在主循环中重复调用 SD_Init() 或 SD.begin()！
+    //    消除一切浮空 CD 引脚或触点杂波引发的重复 1 秒重挂载阻塞。
+    if (!SD_IsReady)
+    {
+        bool rawInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
+        static uint8_t s_insertCount = 0;
 
-    CM_VALUE_MONITOR(isInsert, SD_Check(isInsert));
+        if (rawInsert)
+        {
+            s_insertCount++;
+            // 连续 3 次 500ms 周期（1.5s）消抖，且开机动画（2.5s）结束后才尝试热插拔重挂载
+            if (s_insertCount >= 3 && millis() > 2500)
+            {
+                s_insertCount = 0;
+                SD_Check(true);
+            }
+        }
+        else
+        {
+            s_insertCount = 0;
+        }
+    }
 
 #if CONFIG_GPS_NMEA_LOG_ENABLE
     // 在 SD_Update() 后台周期（500ms）中集中平滑刷新 NMEA 缓冲区与执行 sync()

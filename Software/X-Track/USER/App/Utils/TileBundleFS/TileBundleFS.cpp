@@ -123,7 +123,6 @@ static int tile_cache_find(const char* path)
                          (unsigned)s_cache_hits, (unsigned)s_cache_misses,
                          (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
                 LV_LOG_USER("%s", log_buf);
-                HAL::SD_WriteCrashLog(log_buf);
             }
             return i;
         }
@@ -138,7 +137,6 @@ static int tile_cache_find(const char* path)
                  (unsigned)s_cache_hits, (unsigned)s_cache_misses,
                  (unsigned)((s_cache_hits * 100) / total), (unsigned)(s_cache_used_bytes / 1024));
         LV_LOG_USER("%s", log_buf);
-        HAL::SD_WriteCrashLog(log_buf);
     }
     return -1;
 }

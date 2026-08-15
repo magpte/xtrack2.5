@@ -408,9 +408,7 @@ static bool ensure_bundle_open(const char* bundle_path)
 
     if (lv_fs_open(&s_bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
     {
-        char logBuf[128];
-        snprintf(logBuf, sizeof(logBuf), "[TileBundle] FAIL open '%s'\r\n", bundle_path);
-        HAL::SD_WriteCrashLog(logBuf);
+        LV_LOG_WARN("[TileBundle] FAIL open '%s'", bundle_path);
         return false;
     }
 

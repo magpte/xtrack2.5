@@ -49,21 +49,45 @@ static void onTimer(Account* account)
 
     uint32_t timeElaps = DataProc::GetTickElaps(sportStatus.lastTick);
 
-    float speedKph = 0.0f;
-    bool isSignalInterruption = (gpsInfo.isVaild && (gpsInfo.satellites == 0));
+    // 1. 获取本周期（500ms）与上个有效坐标点之间的实际物理距离（单位：米）
+    double distOffset = SportStatus_GetDistanceOffset(&gpsInfo);
 
-    if (gpsInfo.satellites >= 3)
+    // 2. 由经纬度物理位移与时间间隔计算即时位移速度（km/h）
+    float calcSpeedKph = 0.0f;
+    if (timeElaps > 0 && distOffset > 0.0)
     {
-        float spd = gpsInfo.speed;
-        speedKph = spd > 1 ? spd : 0;
+        calcSpeedKph = (float)(distOffset * 1000.0 / timeElaps * 3.6);
     }
 
-    if (speedKph > 0.0f || isSignalInterruption)
+    // 3. 双通道自适应运动状态判决：
+    //    通道 A（GPS 模块自主测速）：模块经多普勒/PVT 解算的速度 > 1.0 km/h。
+    //    通道 B（物理位移融合兜底）：当模块内部因静态导航锁死报 0 速时，
+    //          若连续经纬度位移折算速度 > 1.2 km/h 且单次位移超过 0.15 米（避免静态噪点），
+    //          自动判定用户处于真实移动状态（如步行起步），打破 0 速死区。
+    float speedKph = 0.0f;
+    bool isMoving = false;
+    bool isSignalInterruption = (gpsInfo.isVaild && (gpsInfo.satellites == 0));
+
+    if (gpsInfo.satellites >= 3 && gpsInfo.isVaild)
+    {
+        if (gpsInfo.speed > 1.0f)
+        {
+            isMoving = true;
+            speedKph = gpsInfo.speed;
+        }
+        else if (calcSpeedKph > 1.2f && calcSpeedKph < 150.0f && distOffset >= 0.15)
+        {
+            isMoving = true;
+            speedKph = calcSpeedKph;
+        }
+    }
+
+    if (isMoving || isSignalInterruption)
     {
         sportStatus.singleTime += timeElaps;
         sportStatus.totalTime += timeElaps;
 
-        if (speedKph > 0.0f)
+        if (isMoving && distOffset > 0.0)
         {
             // 骑行记录用 double 做累加，避免长时间骑行下 float 累加误差
             // 逐渐放大（Cortex-M4 只有单精度硬件 FPU，double 运算会由
@@ -85,10 +109,8 @@ static void onTimer(Account* account)
                 s_totalDistanceAccum = (double)sportStatus.totalDistance;
             }
 
-            double dist = SportStatus_GetDistanceOffset(&gpsInfo);
-
-            s_singleDistanceAccum += dist;
-            s_totalDistanceAccum += dist;
+            s_singleDistanceAccum += distOffset;
+            s_totalDistanceAccum += distOffset;
 
             sportStatus.singleDistance = (float)s_singleDistanceAccum;
             sportStatus.totalDistance = (float)s_totalDistanceAccum;
@@ -108,11 +130,6 @@ static void onTimer(Account* account)
                 sportStatus.speedMaxKph = speedKph;
             }
         }
-    }
-    else
-    {
-        // 速度为 0 时，同步更新基准坐标，防止后续恢复运动时与久远历史坐标计算跨度增量
-        SportStatus_GetDistanceOffset(&gpsInfo);
     }
 
     sportStatus.speedKph = speedKph;
