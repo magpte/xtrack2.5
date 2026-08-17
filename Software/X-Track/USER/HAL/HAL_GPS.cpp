@@ -653,9 +653,13 @@ void HAL::GPS_Update()
     }
 
     int bytesProcessed = 0;
-    const int MAX_GPS_BYTES_PER_TICK = 128; // 每次 Task Tick 最多处理 128 字节，平滑应对 38400 波特率下的 GSV 突发洪峰
+    int maxBytes = 128;
+    if (available > 256)
+    {
+        maxBytes = 256; // 缓冲区积压时加大单次 Tick 消化容量，防止数据套圈
+    }
 
-    while (GPS_SERIAL.available() > 0 && bytesProcessed < MAX_GPS_BYTES_PER_TICK)
+    while (GPS_SERIAL.available() > 0 && bytesProcessed < maxBytes)
     {
         char c = GPS_SERIAL.read();
 #if GPS_USE_TRANSPARENT

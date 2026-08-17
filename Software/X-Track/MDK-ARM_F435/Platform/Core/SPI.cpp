@@ -337,6 +337,14 @@ void SPIClass::read(uint8_t *buf, uint32_t len)
     if (len == 0)
         return;
 
+    if (SPIx == SPI2 && len >= 32)
+    {
+        if (transferDMA(NULL, buf, len))
+        {
+            return;
+        }
+    }
+
     SPI_I2S_RXDATA_VOLATILE(SPIx);
     SPI_I2S_TXDATA(SPIx, 0x00FF);
 
@@ -373,6 +381,17 @@ void SPIClass::write(uint16_t data, uint32_t n)
 
 void SPIClass::write(const uint8_t *data, uint32_t length)
 {
+    if (length == 0)
+        return;
+
+    if (SPIx == SPI2 && length >= 32)
+    {
+        if (transferDMA(data, NULL, length))
+        {
+            return;
+        }
+    }
+
     while (length--)
     {
         SPI_I2S_WAIT_TX(SPIx);
@@ -516,52 +535,40 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         return true;
     }
 
-    // 每次传输前先完整复位整个 SPI2 外设再按缓存的配置重新初始化。
-    // 只重置 DMA 通道（dma_reset(DMA2_CHANNELx)）不够——实测第 2、3
-    // 次复用同一个 DMA 通道时，读回来的数据会是错的/跟上一次调用
-    // 的内容重复，说明真正卡住状态的残留在 SPI2 外设内部（不是 DMA
-    // 控制器），完整 spi_i2s_reset() 才能把这层状态也清干净。
-    // spi_init_struct 是成员变量，一直缓存着 beginTransaction()/
-    // setClock() 等最后一次设置的配置，可以直接复用重新加载。
-    spi_i2s_reset(SPIx);
-    spi_init(SPIx, &spi_init_struct);
-    spi_enable(SPIx, TRUE);
-
-    // spi_i2s_reset() 会把 RXDMAEN/TXDMAEN 这两个 DMA 请求使能位也
-    // 一起清掉，所以每次都要在这里重新置位，不能只在 _initDMA() 里
-    // 设一次。
-    spi_i2s_dma_receiver_enable(SPIx, TRUE);
-    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
-
     if(!_initDMA())
     {
         return false;
     }
 
+    /* 1. 先关闭 SPI 的 DMA 请求，防止配置过程中发生竞争 */
+    spi_i2s_dma_receiver_enable(SPIx, FALSE);
+    spi_i2s_dma_transmitter_enable(SPIx, FALSE);
+
+    /* 2. 等待上一轮 SPI 物理总线移位完成 (BUSY == 0) */
+    while(spi_i2s_flag_get(SPIx, SPI_I2S_BF_FLAG) != RESET);
+
+    /* 3. 排干 SPI RX FIFO 中的残余数据 (RDBF == 1 时不断读取) */
+    while(spi_i2s_flag_get(SPIx, SPI_I2S_RDBF_FLAG) != RESET)
+    {
+        spi_i2s_data_receive(SPIx);
+    }
+
+    /* 4. 清除 SPI 接收溢出错误标志 (ROERR)，解锁 SPI 的 DMA Request 发送能力 */
+    if(spi_i2s_flag_get(SPIx, SPI_I2S_ROERR_FLAG) != RESET)
+    {
+        spi_i2s_flag_clear(SPIx, SPI_I2S_ROERR_FLAG);
+    }
+
+    /* 5. 禁用通道并清除 DMA 控制器完成标志 */
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);
     dma_flag_clear(DMA2_FDT2_FLAG);
 
-    // 显式 dma_reset() 把两个通道打回上电缺省状态，再用 dma_init()
-    // 整体重新配置，而不是只 disable + 改字段——避免通道内部状态
-    // （影子计数器/地址寄存器）带着上一次传输的痕迹进入这一次。
-    dma_reset(DMA2_CHANNEL1);
-    dma_reset(DMA2_CHANNEL2);
-
-    // 通过 dma_init() 整体重新配置两个通道，而不是直接改写寄存器
-    // 位域：仓库里目前没有 at32f435_437_dma.h 的完整拷贝可供核对具体
-    // 位域名字/偏移，但 dma_init_type 结构体的字段名已经在本文件和
-    // adc.c 里被反复验证过，全部走公开的 dma_init() 更保险。相对于
-    // 直接写寄存器，每次传输多付出的只是一次 dma_init() 的开销（远小
-    // 于 512 字节的实际传输时间），换来的是不会因为猜错位域布局而
-    // 写坏寄存器。
     dma_init_type dma_init_struct;
     dma_default_para_init(&dma_init_struct);
 
-    // RX：有真实缓冲区就自增写入，没有（调用方不关心收到什么，例如
-    // SD 卡写操作）就固定写向同一个丢弃字节，省去准备一块同样大的
-    // 垃圾缓冲区
+    // RX 通道
     dma_init_struct.direction = DMA_DIR_PERIPHERAL_TO_MEMORY;
     dma_init_struct.peripheral_base_addr = (uint32_t)&(SPIx->dt);
     dma_init_struct.peripheral_inc_enable = FALSE;
@@ -582,9 +589,7 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     }
     dma_init(DMA2_CHANNEL1, &dma_init_struct);
 
-    // TX：有真实数据就自增读出，没有（调用方只是想读一块数据回来，
-    // 例如 SD 卡读操作，SPI 协议要求主机在读的同时仍要不断发时钟/占
-    // 位字节）就固定从同一个 0xFF 常量读，省去准备一块全 0xFF 缓冲区
+    // TX 通道
     dma_init_struct.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
     if(txBuf != NULL)
     {
@@ -598,15 +603,14 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
     }
     dma_init(DMA2_CHANNEL2, &dma_init_struct);
 
-    // 先使能 RX 通道再使能 TX 通道：SPI 收到第一个字节之前先要有地方
-    // 接，避免出现 TX 已经把第一个字节推进移位寄存器、RX 通道却还没
-    // 准备好导致的竞争。
+    /* 6. 重新使能 SPI DMA 请求与 DMA 通道 */
+    spi_i2s_dma_receiver_enable(SPIx, TRUE);
+    spi_i2s_dma_transmitter_enable(SPIx, TRUE);
+
     dma_channel_enable(DMA2_CHANNEL1, TRUE);
     dma_channel_enable(DMA2_CHANNEL2, TRUE);
 
-    // 用"传输完成"标志轮询等待，而不是逐字节轮询 TDBE/RDBF——CPU 被
-    // 打扰的次数从 O(length) 降到 O(1)，等待期间可以插入其它逻辑
-    // （这里保持和仓库里其它阻塞式 API 一致的同步语义，直接轮询）。
+    /* 7. 轮询等待 DMA RX 传输完成 */
     uint32_t startTime = millis();
     while(dma_flag_get(DMA2_FDT1_FLAG) == RESET)
     {
@@ -618,11 +622,13 @@ bool SPIClass::transferDMA(const uint8_t* txBuf, uint8_t* rxBuf, uint32_t length
         }
     }
 
-    SPI_I2S_WAIT_BUSY(SPIx);
+    /* 8. 传输完成保护：等待物理移位完成并清空尾部残留 */
+    while(spi_i2s_flag_get(SPIx, SPI_I2S_BF_FLAG) != RESET);
+    while(spi_i2s_flag_get(SPIx, SPI_I2S_RDBF_FLAG) != RESET)
+    {
+        spi_i2s_data_receive(SPIx);
+    }
 
-    // 成功路径也必须显式关闭两个通道，跟超时分支保持一致——否则通道
-    // 会带着 count=0 一直停留在"使能"状态，直到下一次 transferDMA()
-    // 开头才被动关掉。
     dma_channel_enable(DMA2_CHANNEL1, FALSE);
     dma_channel_enable(DMA2_CHANNEL2, FALSE);
     dma_flag_clear(DMA2_FDT1_FLAG);

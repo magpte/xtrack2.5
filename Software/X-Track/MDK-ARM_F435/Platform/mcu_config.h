@@ -32,7 +32,7 @@
 #define SYSTICK_PRIORITY                    0
 
 /* Hardware Serial */
-#define SERIAL_RX_BUFFER_SIZE               512
+#define SERIAL_RX_BUFFER_SIZE               2048
 #define SERIAL_PREEMPTIONPRIORITY_DEFAULT   1
 #define SERIAL_SUBPRIORITY_DEFAULT          3
 #define SERIAL_CONFIG_DEFAULT               SERIAL_8N1

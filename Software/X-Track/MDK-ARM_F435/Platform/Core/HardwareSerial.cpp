@@ -113,8 +113,7 @@ void HardwareSerial::IRQHandler()
     {
         /* DMA RX 模式：数据搬运完全由 DMA 完成，RDBF 中断从未被使能。
          * 1. 检查并清除 Overrun / Framing / Noise 硬件错误标志，防止 USART 接收器卡死。
-         *    AT32/STM32 硬件规定：在 DMA 模式下若抛出 ROERR 错误，USART 硬件接收器
-         *    会终止发送 DMA 请求，必须由软件手动清除标志位才能恢复。 */
+         *    项 5：在串口错误中断触发时即时清除错误标志并恢复接收。 */
         if(usart_flag_get(_USARTx, USART_ROERR_FLAG) != RESET ||
            usart_flag_get(_USARTx, USART_FERR_FLAG) != RESET ||
            usart_flag_get(_USARTx, USART_NERR_FLAG) != RESET)
@@ -308,9 +307,8 @@ bool HardwareSerial::enableRxDMA(
     // 之前的版本在没有实际中断源、也没有 ISR 的情况下把这个向量在 NVIC
     // 里使能了，属于占着位置不干活的隐患；真要加半传输/错误中断，
     // 到时候再把 nvic_irq_enable() 和对应的 IRQHandler 一起加回来。
-    (void)dmaIRQn; (void)preemptionPriority; (void)subPriority;
-
     usart_interrupt_enable(_USARTx, USART_IDLE_INT, TRUE);
+    usart_interrupt_enable(_USARTx, USART_ERR_INT, TRUE);
 
     dma_channel_enable(dmaChannel, TRUE);
 

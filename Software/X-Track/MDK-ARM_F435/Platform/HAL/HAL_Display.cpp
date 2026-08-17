@@ -132,6 +132,11 @@ static void Display_SPI_DMA_Send(const void* buf, uint32_t size)
 
 extern "C" void EDMA_Stream1_IRQHandler(void)
 {
+    if(edma_flag_get(EDMA_DTERR1_FLAG) != RESET || edma_flag_get(EDMA_FERR1_FLAG) != RESET)
+    {
+        edma_flag_clear(EDMA_DTERR1_FLAG | EDMA_FERR1_FLAG);
+    }
+
     if(edma_flag_get(DISP_EDMA_FDT_FLAG) != RESET)
     {
         edma_flag_clear(DISP_EDMA_FDT_FLAG);
@@ -141,6 +146,8 @@ extern "C" void EDMA_Stream1_IRQHandler(void)
         }
         else
         {
+            /* 项 1：等待 SPI1 物理总线移位完成后再拉高 CS 脚，消除边缘截断 */
+            while(spi_i2s_flag_get(SPI1, SPI_I2S_BF_FLAG) != RESET);
             digitalWrite_HIGH(CONFIG_SCREEN_CS_PIN);
 
             if(Disp_Callback)
@@ -195,7 +202,8 @@ static void Display_SPI_DMA_Init()
 
     NVIC_EnableIRQ(DISP_EDMA_IRQn);
 
-    edma_interrupt_enable(DISP_EDMA_STREAM, EDMA_FDT_INT, TRUE);
+    /* 项 2：使能传输完成、传输错误与 FIFO 错误中断 */
+    edma_interrupt_enable(DISP_EDMA_STREAM, EDMA_FDT_INT | EDMA_DTERR_INT | EDMA_FERR_INT, TRUE);
 }
 
 void HAL::Display_Init()
@@ -248,7 +256,7 @@ void HAL::Display_DumpCrashInfo(const char* info)
         screen.printf("%d:0x%08X\n", i, call_stack_buf[i]);  
     }  
       
-    screen.setCursor(0, screen.height() - 8 * 6);  // ֱ  ʹ  8  
+    screen.setCursor(0, screen.height() - 8 * 6);  // 直接使用 8 像素高
     screen.println("Error code:");  
     screen.printf("MMFAR = 0x%08X\r\n", SCB->MMFAR);  
     screen.printf("BFAR  = 0x%08X\r\n", SCB->BFAR);  
@@ -256,7 +264,7 @@ void HAL::Display_DumpCrashInfo(const char* info)
     screen.printf("HFSR  = 0x%08X\r\n", SCB->HFSR);  
     screen.printf("DFSR  = 0x%08X\r\n", SCB->DFSR);  
       
-    screen.setCursor(0, screen.height() - 8);  // ֱ  ʹ  8  
+    screen.setCursor(0, screen.height() - 8);  // 直接使用 8 像素高
     screen.print("Press KEY to reboot..");  
 }
 

@@ -58,7 +58,7 @@ static bool SD_CheckDir(const char* path)
 // 避免 GPS 还没吐出任何数据、或者这次开机 GPS 模块干脆没接好的情况下
 // 平白在 SD 卡上留一个空文件。
 // ---------------------------------------------------------------------
-#define NMEA_LOG_FILE_NAME_FMT      "/" CONFIG_NMEA_LOG_FILE_DIR_NAME "/NMEA_%04d%02d%02d_%02d%02d%02d.log"
+#define NMEA_LOG_FILE_NAME_FMT      "/" CONFIG_NMEA_LOG_FILE_DIR_NAME "/%02d%02d%02d%02d.LOG"
 // 跟 DP_Recorder.cpp 的 RECORDER_WRITE_BUF_SIZE（1024）看齐，不是凑巧
 // 选一样的数字——SdFat（FatVolume::m_cache）整张卡只有一个 512 字节的
 // 扇区缓存，NMEA 日志和 GPX 轨迹这两个文件共用它。缓冲区越小，我们
@@ -120,22 +120,24 @@ static bool NMEA_Log_Open()
     HAL::Clock_Info_t clock;
     HAL::Clock_GetInfo(&clock);
 
-    char path[64];
+    char path[32];
     snprintf(
         path, sizeof(path),
         NMEA_LOG_FILE_NAME_FMT,
-        clock.year, clock.month, clock.day,
-        clock.hour, clock.minute, clock.second
+        clock.month, clock.day,
+        clock.hour, clock.minute
     );
 
+    // SdFat 打开严格符合 8.3 格式的 SFN 路径时，会自动进入极速 SFN 分支，
+    // 仅分配 1 个 32 字节目录槽位，且支持同一分钟内开机自动 Append 追加
     s_nmeaLogFile = SD.open(path, FILE_WRITE);
     if(!s_nmeaLogFile)
     {
-        Serial.printf("NMEA: log file \"%s\" open failed\r\n", path);
+        Serial.printf("NMEA: SFN log file \"%s\" open failed\r\n", path);
         return false;
     }
 
-    Serial.printf("NMEA: logging to \"%s\"\r\n", path);
+    Serial.printf("NMEA: logging to SFN \"%s\"\r\n", path);
     s_nmeaLogNeedSync = false;
     s_nmeaLogLastSyncTick = millis();
     return true;
@@ -324,27 +326,45 @@ void HAL::SD_SetEventCallback(SD_CallbackFunction_t callback)
 
 void HAL::SD_Update()
 {
-    // SD 卡热插拔状态机：
-    // 基于引脚物理跳变边沿检测与 1.5 秒消抖（3 个 500ms 周期），
-    // 仅在真实发生物理拔插（电平改变）时触发一次动作，
-    // 杜绝无边沿时的周期性轮询与开机动画期间的 SPI 超时阻塞。
+    // SD 卡热插拔加固状态机：
+    // 1. 开机保护期（前 3.0 秒）：仅同步电平基准，屏蔽上电瞬态毛刺与机械接触抖动；
+    // 2. 4 周期（2.0 秒）严格消抖；
+    // 3. 失败冷却保护：挂载失败后进入 10 秒冷却期，杜绝无卡/坏卡时的死循环 2 秒超时卡死；
+    // 4. 已就绪保护：若 SD 卡在开机时已成功就绪，避免因无硬件 CD 开关导致的误卸载。
     bool rawInsert = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
     static bool s_lastPhysicalState = (digitalRead(CONFIG_SD_CD_PIN) == LOW);
     static uint8_t s_debounceCount = 0;
+    static uint32_t s_lastFailedRetryTick = 0;
 
-    if (rawInsert != s_lastPhysicalState)
+    uint32_t now = millis();
+
+    if (now < 3000)
+    {
+        s_lastPhysicalState = rawInsert;
+        s_debounceCount = 0;
+    }
+    else if (rawInsert != s_lastPhysicalState)
     {
         s_debounceCount++;
-        if (s_debounceCount >= 3)
+        if (s_debounceCount >= 4)
         {
             s_lastPhysicalState = rawInsert;
             s_debounceCount = 0;
 
             if (rawInsert)
             {
-                if (!SD_IsReady)
+                // 只有未就绪且脱离失败冷却期（10s）时才尝试挂载
+                if (!SD_IsReady && (s_lastFailedRetryTick == 0 || (now - s_lastFailedRetryTick > 10000)))
                 {
                     SD_Check(true);
+                    if (!SD_IsReady)
+                    {
+                        s_lastFailedRetryTick = now;
+                    }
+                    else
+                    {
+                        s_lastFailedRetryTick = 0;
+                    }
                 }
             }
             else
@@ -353,6 +373,7 @@ void HAL::SD_Update()
                 {
                     SD_Check(false);
                 }
+                s_lastFailedRetryTick = 0; // 物理拔出后复位失败标记，允许下次插入时立即尝试
             }
         }
     }
