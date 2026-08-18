@@ -184,11 +184,12 @@ void HAL::Power_EventMonitor()
             Power.EventCallback();
         }
 
-        // 关机前把 NMEA 原始日志缓冲区里还没落盘的内容写掉、sync()，
-        // 不然缓冲区最多能攒 NMEA_LOG_WRITE_BUF_SIZE(8192) 字节数据，
+        // 关机前把 NMEA 原始日志和串口日志缓冲区里还没落盘的内容写掉、sync()，
         // 断电瞬间这部分会丢（跟下面 GPX 轨迹在 Recorder_RecStop 里
         // 处理的是同一类问题）。
+#if CONFIG_GPS_NMEA_LOG_ENABLE
         HAL::NMEA_Log_Close();
+#endif
 
         Backlight_SetGradual(0, 500);
         digitalWrite(CONFIG_POWER_EN_PIN, LOW);

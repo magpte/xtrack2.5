@@ -139,31 +139,6 @@ double GPS_GetDistanceOffset(GPS_Info_t* info, double preLong, double preLat);
 void GPS_SendAidingData(double latitude, double longitude, const Clock_Info_t& clock,
                         uint32_t lastFixUnix = 0, uint32_t nowUnix = 0);
 
-// 历书文件头部结构定义（32 字节）
-#pragma pack(push, 1)
-typedef struct {
-    uint32_t magic;         // 魔数: 0x4D4C4147 ('GALM')
-    uint32_t version;       // 版本: 1
-    uint32_t saveUnixTime;  // 保存时的 UTC unix 时间戳
-    uint32_t payloadSize;   // 后续原始 CASIC 历书数据包的总字节数
-    uint32_t packetCount;   // 包含的 CASIC 数据包数量
-    uint32_t crc32;         // payload 数据的校验和
-    uint32_t reserved[2];   // 保留字段
-} GPS_Almanac_Header_t;
-#pragma pack(pop)
-
-// 注入从 SD 卡读取的历书数据（验证头部、有效期和校验后，流式下发给 GPS 模块）
-bool GPS_SendAlmanacData(const uint8_t* buffer, uint32_t size, uint32_t nowUnix);
-
-// 向 GPS 模块发送历书轮询请求，开始在后台收集历书包
-void GPS_PollAlmanac();
-
-// 检查本次运行是否已成功在后台收集到完整历书
-bool GPS_IsAlmanacHarvestReady();
-
-// 获取已收集的历书数据（包括头部），写入 outBuffer，返回总字节数（0 表示无有效数据）
-uint32_t GPS_GetHarvestedAlmanac(uint8_t* outBuffer, uint32_t maxLen, uint32_t nowUnix);
-
 // 拿最近一次解析完整的 GSV 天球数据（方位角/仰角/信噪比/星座）。
 // 独立于 GPS_Info_t 之外，不随 2Hz 定位一起刷新——GSV 本身被节流成
 // 5 秒一次（见 HAL_GPS.cpp 里的 PCAS03 配置），跟星星在天上移动的

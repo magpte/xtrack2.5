@@ -58,7 +58,7 @@
 
 /* GPS */
 #define CONFIG_GPS_SERIAL           Serial2
-#define CONFIG_GPS_USE_TRANSPARENT  1
+#define CONFIG_GPS_USE_TRANSPARENT  0
 #define CONFIG_GPS_BUF_OVERLOAD_CHK 0
 
 // 实测已确认 PCAS04 Mode=7（GPS+BDS+GLONASS 三星座联合定位）有效——
@@ -96,21 +96,16 @@
 // 控制"要不要发这条辅助信息"，跟 NMEA log/GSA/GSV 那些配置无关。
 #define CONFIG_GPS_AID_ENABLE        1
 
-// 卫星历书 (Almanac) 后台抓取与开机回灌辅助。
-// 开启后，在开机且稳定定位满 15 分钟后在后台静默向 GPS 模块查询并暂存完整历书，
-// 并在关机保存 (SYSCONFIG_CMD_SAVE) 时极速写入 SD 卡根目录 /gpsalm.bin；
-// 下次开机加载配置时，会自动将历书数据流式注入给 GPS 模块，进一步缩短搜星时间。
-#define CONFIG_GPS_ALMANAC_AID_ENABLE     1
-
-// 历书缓存文件的最大有效天数（默认 60 天）。超过该天数的文件会被自动视为过期并忽略。
-#define CONFIG_GPS_ALMANAC_MAX_AGE_DAYS   60
-
 #define CONFIG_GPS_TX_PIN           PA3
 #define CONFIG_GPS_RX_PIN           PA2
+#define CONFIG_GPS_BAUD_RATE        9600
+
+/* Mag */
+#define CONFIG_MAG_USE_QMC5883L     1
 
 /* IMU */
-#define CONFIG_IMU_INT1_PIN         PB10
-#define CONFIG_IMU_INT2_PIN         PB11
+#define CONFIG_IMU_INT1_PIN         PB0
+#define CONFIG_IMU_INT2_PIN         PB1
 
 /* I2C */
 #define CONFIG_MCU_SDA_PIN          PB7

@@ -301,11 +301,12 @@ static void SD_Check(bool isInsert)
             return; // 本来就未就绪，不重复执行拔卡清理
         }
 
-        // 卡被拔出之前先把 NMEA 日志缓冲区落盘、关文件——如果等
-        // SD_IsReady 已经置 false 之后再关，HAL::NMEA_Log_Write() 会
-        // 因为看到 SD_IsReady==false 而直接跳过，缓冲区里剩的那点数据
-        // 就再也没机会写进去了，所以顺序上必须放在这一行前面。
+        // 卡被拔出之前先把 NMEA 和串口日志缓冲区落盘、关文件——如果等
+        // SD_IsReady 已经置 false 之后再关，数据写入会直接跳过，
+        // 缓冲区里剩的数据就再也没机会写进去了，所以顺序上必须放在这一行前面。
+#if CONFIG_GPS_NMEA_LOG_ENABLE
         HAL::NMEA_Log_Close();
+#endif
 
         SD_IsReady = false;
         SD_CardSize = 0;

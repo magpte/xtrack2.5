@@ -73,9 +73,6 @@
 // 原始 NMEA 语句日志目录（采用短目录 "N"，配合 8.3 SFN 格式极速读写）。
 #define CONFIG_NMEA_LOG_FILE_DIR_NAME         "N"
 
-// 卫星历书 (Almanac) 缓存文件路径（根目录 8.3 SFN 格式）
-#define CONFIG_GPS_ALMANAC_FILE_PATH          "/gpsalm.bin"
-
 #define CONFIG_MAP_USE_WGS84_DEFAULT          true
 #define CONFIG_MAP_DIR_PATH_DEFAULT           "/MAPRB"
 

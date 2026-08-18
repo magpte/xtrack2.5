@@ -105,30 +105,6 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             s_lastKnownSpeed = (float)gpsInfo->speed;
             s_lastGpsValid = gpsInfo->isVaild;
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
-
-#if CONFIG_GPS_ALMANAC_AID_ENABLE
-            // 连续稳定定位满 15 分钟（15 * 60 * 1000 ms）后，在后台触发一次全量历书轮询提取
-            static uint32_t s_gpsFixStartTick = 0;
-            static bool s_almanacHarvestTriggered = false;
-
-            if (gpsInfo->isVaild)
-            {
-                if (s_gpsFixStartTick == 0)
-                {
-                    s_gpsFixStartTick = DataProc::GetTick();
-                }
-                else if (!s_almanacHarvestTriggered &&
-                         DataProc::GetTickElaps(s_gpsFixStartTick) >= 15 * 60 * 1000)
-                {
-                    s_almanacHarvestTriggered = true;
-                    HAL::GPS_PollAlmanac();
-                }
-            }
-            else
-            {
-                s_gpsFixStartTick = 0;
-            }
-#endif
         }
         return Account::RES_OK;
     }
@@ -205,37 +181,6 @@ static int onEvent(Account* account, Account::EventParam_t* param)
                     sysConfig.lastFixUnix,
                     nowUnix
                 );
-
-#if CONFIG_GPS_ALMANAC_AID_ENABLE
-                // 尝试从 SD 卡根目录加载历书缓存文件 (/gpsalm.bin)
-                // 若文件存在且通过校验/未过期，流式下发给 GPS 模块进一步加速搜星
-                lv_fs_file_t almFile;
-                if (lv_fs_open(&almFile, CONFIG_GPS_ALMANAC_FILE_PATH, LV_FS_MODE_RD) == LV_FS_RES_OK)
-                {
-                    uint32_t bufSize = 4096 + sizeof(HAL::GPS_Almanac_Header_t);
-                    uint8_t* almBuffer = (uint8_t*)lv_mem_alloc(bufSize);
-                    if (almBuffer != NULL)
-                    {
-                        uint32_t bytesRead = 0;
-                        lv_fs_read(&almFile, almBuffer, bufSize, &bytesRead);
-
-                        if (bytesRead >= sizeof(HAL::GPS_Almanac_Header_t))
-                        {
-                            HAL::GPS_SendAlmanacData(almBuffer, bytesRead, nowUnix);
-                        }
-                        else
-                        {
-                            LV_LOG_WARN("GPS: /gpsalm.bin corrupted or incomplete, skipping.");
-                        }
-                        lv_mem_free(almBuffer);
-                    }
-                    lv_fs_close(&almFile);
-                }
-                else
-                {
-                    LV_LOG_USER("GPS: /gpsalm.bin not found, skipping almanac aiding.");
-                }
-#endif
             }
         }
         else if (info->cmd == SYSCONFIG_CMD_SET_BRIGHTNESS)
@@ -311,38 +256,6 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             // 存储电量计缓存数据，掉电或电量计POR可以恢复缓存
             if (sysConfig.fullChgCap > powerInfo.fullcharge_capacity){
                 sysConfig.fullChgCap = powerInfo.fullcharge_capacity;
-            }
-#endif
-
-#if CONFIG_GPS_ALMANAC_AID_ENABLE
-            // 关机落盘：若运行期间在后台成功捕获到了完整历书，极速写入 SD 卡根目录 /gpsalm.bin
-            if (HAL::GPS_IsAlmanacHarvestReady())
-            {
-                uint32_t bufSize = 4096 + sizeof(HAL::GPS_Almanac_Header_t);
-                uint8_t* almSaveBuffer = (uint8_t*)lv_mem_alloc(bufSize);
-                if (almSaveBuffer != NULL)
-                {
-                    uint32_t nowUnix = (uint32_t)now();
-                    uint32_t totalSize = HAL::GPS_GetHarvestedAlmanac(almSaveBuffer, bufSize, nowUnix);
-
-                    if (totalSize > 0)
-                    {
-                        lv_fs_file_t saveFile;
-                        if (lv_fs_open(&saveFile, CONFIG_GPS_ALMANAC_FILE_PATH, LV_FS_MODE_WR) == LV_FS_RES_OK)
-                        {
-                            uint32_t bytesWritten = 0;
-                            lv_fs_write(&saveFile, almSaveBuffer, totalSize, &bytesWritten);
-                            lv_fs_close(&saveFile);
-                            LV_LOG_USER("GPS: Saved harvested almanac to %s (%d bytes)",
-                                        CONFIG_GPS_ALMANAC_FILE_PATH, (int)bytesWritten);
-                        }
-                        else
-                        {
-                            LV_LOG_ERROR("GPS: Failed to open /gpsalm.bin for writing!");
-                        }
-                    }
-                    lv_mem_free(almSaveBuffer);
-                }
             }
 #endif
         }
