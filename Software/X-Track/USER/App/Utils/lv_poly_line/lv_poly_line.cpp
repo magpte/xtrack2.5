@@ -150,15 +150,11 @@ lv_poly_line::single_line_t* lv_poly_line::get_end_line()
 
 const lv_point_t* lv_poly_line::get_points(single_line_t* single_line)
 {
-    const lv_point_t* points =  nullptr;
+    const lv_point_t* points = nullptr;
 
     if (single_line->points.size())
     {
         points = &single_line->points[0];
-    }
-    else
-    {
-        LV_LOG_WARN("NOT found");
     }
 
     return points;

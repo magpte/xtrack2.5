@@ -184,13 +184,11 @@ void LiveMapView::ZoomCtrl_Create(lv_obj_t* par)
     static const lv_style_prop_t prop[] =
     {
         LV_STYLE_X,
-        LV_STYLE_OPA,
         LV_STYLE_PROP_INV
     };
     static lv_style_transition_dsc_t tran;
     lv_style_transition_dsc_init(&tran, prop, lv_anim_path_ease_out, 200, 0, nullptr);
     lv_obj_set_style_x(cont, lv_obj_get_style_width(par, 0), LV_STATE_USER_1);
-    lv_obj_set_style_opa(cont, LV_OPA_TRANSP, LV_STATE_USER_1);
     lv_obj_set_style_transition(cont, &tran, LV_STATE_USER_1);
     lv_obj_set_style_transition(cont, &tran, LV_STATE_DEFAULT);
     lv_obj_add_state(cont, LV_STATE_USER_1);

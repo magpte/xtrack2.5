@@ -420,24 +420,312 @@ static void GPS_UtcToWeekTow(const HAL::Clock_Info_t& clock, uint16_t* outWeek, 
     *outTow  = totalSec - (double)week * 604800.0;
 }
 
-// CASIC 协议专用校验和（不是 NMEA 的 XOR），len 必须是 4 的整数倍——
-// AID-INI 是 56 字节，满足这个要求。
+// CASIC 协议专用校验和（不是 NMEA 的 XOR），按 4 字节为单位进行累加
 static uint32_t CASIC_Checksum(uint8_t classId, uint8_t msgId, uint16_t len, const uint8_t* payload)
 {
     uint32_t ckSum = (uint32_t)len
                    | ((uint32_t)classId << 16)
                    | ((uint32_t)msgId   << 24);
 
-    for (uint16_t i = 0; i < len; i += 4)
+    if (payload != NULL)
     {
-        uint32_t word = (uint32_t)payload[i]
-                       | ((uint32_t)payload[i + 1] << 8)
-                       | ((uint32_t)payload[i + 2] << 16)
-                       | ((uint32_t)payload[i + 3] << 24);
-        ckSum += word;
+        for (uint16_t i = 0; i < len; i += 4)
+        {
+            uint32_t word = 0;
+            if (i < len)     word |= (uint32_t)payload[i];
+            if (i + 1 < len) word |= ((uint32_t)payload[i + 1] << 8);
+            if (i + 2 < len) word |= ((uint32_t)payload[i + 2] << 16);
+            if (i + 3 < len) word |= ((uint32_t)payload[i + 3] << 24);
+            ckSum += word;
+        }
     }
     return ckSum;
 }
+
+#if CONFIG_GPS_ALMANAC_AID_ENABLE
+// ---------------------------------------------------------------------
+// 卫星历书 (Almanac) 辅助注入与后台提取 (CASIC 协议 Class 0x0B)
+// ---------------------------------------------------------------------
+#define ALMANAC_HARVEST_MAX_SIZE  4096
+static uint8_t* s_almanacHarvestBuf = NULL;
+static uint16_t s_almanacPayloadLen = 0;
+static uint16_t s_almanacPacketCount = 0;
+static bool     s_almanacHarvesting = false;
+static bool     s_almanacHarvestReady = false;
+static uint32_t s_almanacPollStartTick = 0;
+static uint32_t s_lastAlmanacPacketTick = 0;
+
+// IEEE 802.3 CRC32 标准校验
+static uint32_t Almanac_CalcCRC32(const uint8_t* data, uint32_t len)
+{
+    uint32_t crc = 0xFFFFFFFF;
+    for (uint32_t i = 0; i < len; i++)
+    {
+        crc ^= (uint32_t)data[i];
+        for (uint8_t j = 0; j < 8; j++)
+        {
+            if (crc & 1)
+                crc = (crc >> 1) ^ 0xEDB88320;
+            else
+                crc >>= 1;
+        }
+    }
+    return ~crc;
+}
+
+static enum {
+    CASIC_S_SYNC1 = 0,
+    CASIC_S_SYNC2,
+    CASIC_S_LEN_L,
+    CASIC_S_LEN_H,
+    CASIC_S_CLASS,
+    CASIC_S_MSG,
+    CASIC_S_PAYLOAD,
+    CASIC_S_CKSUM
+} s_casicState = CASIC_S_SYNC1;
+
+static uint16_t s_casicLen = 0;
+static uint8_t  s_casicClass = 0;
+static uint8_t  s_casicMsg = 0;
+static uint16_t s_casicPayloadIdx = 0;
+static uint8_t  s_casicPayloadBuf[256];
+static uint8_t  s_casicCksumIdx = 0;
+static uint8_t  s_casicCksumBuf[4];
+
+static void CASIC_FeedByte(uint8_t c)
+{
+    switch (s_casicState)
+    {
+    case CASIC_S_SYNC1:
+        if (c == 0xBA) s_casicState = CASIC_S_SYNC2;
+        break;
+
+    case CASIC_S_SYNC2:
+        if (c == 0xCE) s_casicState = CASIC_S_LEN_L;
+        else if (c != 0xBA) s_casicState = CASIC_S_SYNC1;
+        break;
+
+    case CASIC_S_LEN_L:
+        s_casicLen = c;
+        s_casicState = CASIC_S_LEN_H;
+        break;
+
+    case CASIC_S_LEN_H:
+        s_casicLen |= ((uint16_t)c << 8);
+        if (s_casicLen > sizeof(s_casicPayloadBuf))
+        {
+            s_casicState = CASIC_S_SYNC1;
+        }
+        else
+        {
+            s_casicState = CASIC_S_CLASS;
+        }
+        break;
+
+    case CASIC_S_CLASS:
+        s_casicClass = c;
+        s_casicState = CASIC_S_MSG;
+        break;
+
+    case CASIC_S_MSG:
+        s_casicMsg = c;
+        if (s_casicLen > 0)
+        {
+            s_casicPayloadIdx = 0;
+            s_casicState = CASIC_S_PAYLOAD;
+        }
+        else
+        {
+            s_casicCksumIdx = 0;
+            s_casicState = CASIC_S_CKSUM;
+        }
+        break;
+
+    case CASIC_S_PAYLOAD:
+        s_casicPayloadBuf[s_casicPayloadIdx++] = c;
+        if (s_casicPayloadIdx >= s_casicLen)
+        {
+            s_casicCksumIdx = 0;
+            s_casicState = CASIC_S_CKSUM;
+        }
+        break;
+
+    case CASIC_S_CKSUM:
+        s_casicCksumBuf[s_casicCksumIdx++] = c;
+        if (s_casicCksumIdx >= 4)
+        {
+            uint32_t recvCkSum = (uint32_t)s_casicCksumBuf[0]
+                               | ((uint32_t)s_casicCksumBuf[1] << 8)
+                               | ((uint32_t)s_casicCksumBuf[2] << 16)
+                               | ((uint32_t)s_casicCksumBuf[3] << 24);
+
+            uint32_t calcCkSum = CASIC_Checksum(s_casicClass, s_casicMsg, s_casicLen, s_casicPayloadBuf);
+
+            if (recvCkSum == calcCkSum)
+            {
+                // 校验通过的合法 CASIC 二进制帧
+                if (s_almanacHarvesting && s_casicClass == 0x0B && s_almanacHarvestBuf != NULL)
+                {
+                    uint16_t totalPacketLen = 6 + s_casicLen + 4;
+                    if (s_almanacPayloadLen + totalPacketLen <= ALMANAC_HARVEST_MAX_SIZE)
+                    {
+                        uint8_t* p = &s_almanacHarvestBuf[s_almanacPayloadLen];
+                        p[0] = 0xBA;
+                        p[1] = 0xCE;
+                        p[2] = (uint8_t)(s_casicLen & 0xFF);
+                        p[3] = (uint8_t)(s_casicLen >> 8);
+                        p[4] = s_casicClass;
+                        p[5] = s_casicMsg;
+                        if (s_casicLen > 0)
+                        {
+                            memcpy(&p[6], s_casicPayloadBuf, s_casicLen);
+                        }
+                        memcpy(&p[6 + s_casicLen], s_casicCksumBuf, 4);
+
+                        s_almanacPayloadLen += totalPacketLen;
+                        s_almanacPacketCount++;
+                        s_lastAlmanacPacketTick = millis();
+                    }
+                }
+            }
+
+            s_casicState = CASIC_S_SYNC1;
+        }
+        break;
+
+    default:
+        s_casicState = CASIC_S_SYNC1;
+        break;
+    }
+}
+
+bool HAL::GPS_SendAlmanacData(const uint8_t* buffer, uint32_t size, uint32_t nowUnix)
+{
+    if (!buffer || size < sizeof(GPS_Almanac_Header_t))
+    {
+        Serial.println("GPS: Almanac buffer invalid or too small");
+        return false;
+    }
+
+    const GPS_Almanac_Header_t* hdr = (const GPS_Almanac_Header_t*)buffer;
+
+    // 校验魔数和版本
+    if (hdr->magic != 0x4D4C4147 || hdr->version != 1) // 'GALM'
+    {
+        Serial.println("GPS: Almanac magic/version mismatch");
+        return false;
+    }
+
+    if (sizeof(GPS_Almanac_Header_t) + hdr->payloadSize != size)
+    {
+        Serial.println("GPS: Almanac file size mismatch");
+        return false;
+    }
+
+    // 校验 CRC32
+    const uint8_t* payload = buffer + sizeof(GPS_Almanac_Header_t);
+    uint32_t calcCrc = Almanac_CalcCRC32(payload, hdr->payloadSize);
+    if (calcCrc != hdr->crc32)
+    {
+        Serial.println("GPS: Almanac CRC32 verification failed!");
+        return false;
+    }
+
+    // 校验文件时效性（超过最大有效天数自动丢弃）
+    if (nowUnix > 0 && hdr->saveUnixTime > 0 && nowUnix >= hdr->saveUnixTime)
+    {
+        uint32_t ageDays = (nowUnix - hdr->saveUnixTime) / 86400U;
+        if (ageDays > CONFIG_GPS_ALMANAC_MAX_AGE_DAYS)
+        {
+            Serial.printf("GPS: Almanac expired (%u days old > %u days max), skipping.\r\n",
+                          ageDays, CONFIG_GPS_ALMANAC_MAX_AGE_DAYS);
+            return false;
+        }
+    }
+
+    // 流式注入给 GPS 串口
+    GPS_SERIAL.write(payload, hdr->payloadSize);
+
+    uint32_t ageHours = (nowUnix >= hdr->saveUnixTime) ? (nowUnix - hdr->saveUnixTime) / 3600U : 0;
+    Serial.printf("GPS: Injected %u almanac packets (%u bytes, saved %u hours ago)\r\n",
+                  hdr->packetCount, hdr->payloadSize, ageHours);
+
+    return true;
+}
+
+void HAL::GPS_PollAlmanac()
+{
+    if (s_almanacHarvestBuf == NULL)
+    {
+        s_almanacHarvestBuf = (uint8_t*)malloc(ALMANAC_HARVEST_MAX_SIZE);
+        if (!s_almanacHarvestBuf)
+        {
+            Serial.println("GPS: Failed to allocate almanac harvest buffer!");
+            return;
+        }
+    }
+
+    s_almanacPayloadLen = 0;
+    s_almanacPacketCount = 0;
+    s_almanacHarvesting = true;
+    s_almanacHarvestReady = false;
+    s_almanacPollStartTick = millis();
+    s_lastAlmanacPacketTick = millis();
+
+    // 1. Poll AID-HUI (Class 0x0B, ID 0x03)
+    const uint8_t pollHui[] = { 0xBA, 0xCE, 0x00, 0x00, 0x0B, 0x03, 0x00, 0x00, 0x0B, 0x03 };
+    GPS_SERIAL.write(pollHui, sizeof(pollHui));
+
+    // 2. Poll AID-ALM (Class 0x0B, ID 0x04)
+    const uint8_t pollAlm1[] = { 0xBA, 0xCE, 0x00, 0x00, 0x0B, 0x04, 0x00, 0x00, 0x0B, 0x04 };
+    GPS_SERIAL.write(pollAlm1, sizeof(pollAlm1));
+
+    // 3. Poll AID-ALM (Class 0x0B, ID 0x30)
+    const uint8_t pollAlm2[] = { 0xBA, 0xCE, 0x00, 0x00, 0x0B, 0x30, 0x00, 0x00, 0x0B, 0x30 };
+    GPS_SERIAL.write(pollAlm2, sizeof(pollAlm2));
+
+    Serial.println("GPS: Almanac polling requests sent (AID-HUI + AID-ALM)");
+}
+
+bool HAL::GPS_IsAlmanacHarvestReady()
+{
+    return s_almanacHarvestReady && (s_almanacPayloadLen > 0) && (s_almanacHarvestBuf != NULL);
+}
+
+uint32_t HAL::GPS_GetHarvestedAlmanac(uint8_t* outBuffer, uint32_t maxLen, uint32_t nowUnix)
+{
+    if (!s_almanacHarvestReady || s_almanacPayloadLen == 0 || s_almanacHarvestBuf == NULL) return 0;
+    uint32_t totalSize = sizeof(GPS_Almanac_Header_t) + s_almanacPayloadLen;
+    if (totalSize > maxLen || outBuffer == NULL) return 0;
+
+    GPS_Almanac_Header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = 0x4D4C4147; // 'GALM'
+    hdr.version = 1;
+    hdr.saveUnixTime = nowUnix;
+    hdr.payloadSize = s_almanacPayloadLen;
+    hdr.packetCount = s_almanacPacketCount;
+    hdr.crc32 = Almanac_CalcCRC32(s_almanacHarvestBuf, s_almanacPayloadLen);
+
+    memcpy(outBuffer, &hdr, sizeof(hdr));
+    memcpy(outBuffer + sizeof(hdr), s_almanacHarvestBuf, s_almanacPayloadLen);
+
+    // 复制完成后释放临时缓冲区，归还系统内存
+    free(s_almanacHarvestBuf);
+    s_almanacHarvestBuf = NULL;
+    s_almanacHarvestReady = false;
+
+    return totalSize;
+}
+#else
+bool HAL::GPS_SendAlmanacData(const uint8_t* buffer, uint32_t size, uint32_t nowUnix)
+{
+    return false;
+}
+void HAL::GPS_PollAlmanac() {}
+bool HAL::GPS_IsAlmanacHarvestReady() { return false; }
+uint32_t HAL::GPS_GetHarvestedAlmanac(uint8_t* outBuffer, uint32_t maxLen, uint32_t nowUnix) { return 0; }
+#endif
 
 void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock_Info_t& clock,
                              uint32_t lastFixUnix, uint32_t nowUnix)
@@ -670,9 +958,40 @@ void HAL::GPS_Update()
         NMEA_FeedLine(c);
 #endif
 
+#if CONFIG_GPS_ALMANAC_AID_ENABLE
+        CASIC_FeedByte((uint8_t)c);
+#endif
+
         gps.encode(c);
         bytesProcessed++;
     }
+
+#if CONFIG_GPS_ALMANAC_AID_ENABLE
+    if (s_almanacHarvesting)
+    {
+        if (s_almanacPacketCount > 0 && (millis() - s_lastAlmanacPacketTick > 2000))
+        {
+            s_almanacHarvesting = false;
+            s_almanacHarvestReady = true;
+            Serial.printf("GPS: Almanac harvest complete (%u packets, %u bytes)\r\n",
+                          s_almanacPacketCount, s_almanacPayloadLen);
+        }
+        else if (millis() - s_almanacPollStartTick > 8000)
+        {
+            s_almanacHarvesting = false;
+            if (s_almanacPacketCount > 0)
+            {
+                s_almanacHarvestReady = true;
+                Serial.printf("GPS: Almanac harvest complete by timeout (%u packets, %u bytes)\r\n",
+                              s_almanacPacketCount, s_almanacPayloadLen);
+            }
+            else
+            {
+                Serial.println("GPS: Almanac poll timeout with no response packets");
+            }
+        }
+    }
+#endif
 
 #if GPS_USE_TRANSPARENT
     while (DEBUG_SERIAL.available() > 0)

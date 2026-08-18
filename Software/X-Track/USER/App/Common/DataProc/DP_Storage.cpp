@@ -17,9 +17,16 @@ static bool MapConvGetRange(const char* dirName, int16_t* min, int16_t* max)
     bool retval = false;
     lv_fs_dir_t dir;
 
-    if (lv_fs_dir_open(&dir, dirName) == LV_FS_RES_OK)
+    // 如果是 TileBundleFS 的虚拟驱动盘符 'B:'，探测目录时映射到底层的 SD 物理路径（如 "/MAPRB"）
+    const char* realDir = dirName;
+    if ((dirName[0] == 'B' || dirName[0] == 'b') && dirName[1] == ':')
     {
-        LV_LOG_USER("%s open success", dirName);
+        realDir = dirName + 2;
+    }
+
+    if (lv_fs_dir_open(&dir, realDir) == LV_FS_RES_OK)
+    {
+        LV_LOG_USER("%s open success", realDir);
 
         int16_t levelMin = MAP_LEVEL_MAX;
         int16_t levelMax = MAP_LEVEL_MIN;
@@ -68,7 +75,7 @@ static bool MapConvGetRange(const char* dirName, int16_t* min, int16_t* max)
     }
     else
     {
-        LV_LOG_ERROR("%s open faild", dirName);
+        LV_LOG_ERROR("%s open failed", dirName);
     }
     return retval;
 }

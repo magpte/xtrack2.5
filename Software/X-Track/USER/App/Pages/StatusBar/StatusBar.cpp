@@ -71,29 +71,6 @@ struct {
 #endif
 } ui;
 
-static void StatusBar_ConBattSetOpa(lv_obj_t *obj, int32_t opa) {
-  lv_obj_set_style_opa(obj, opa, 0);
-}
-
-static void StatusBar_onAnimOpaFinish(lv_anim_t *a) {
-  lv_obj_t *obj = (lv_obj_t *)a->var;
-  StatusBar_ConBattSetOpa(obj, LV_OPA_COVER);
-  StatusBar_AnimCreate(obj);
-}
-
-static void StatusBar_onAnimHeightFinish(lv_anim_t *a) {
-  lv_anim_t a_opa;
-  lv_anim_init(&a_opa);
-  lv_anim_set_var(&a_opa, a->var);
-  lv_anim_set_exec_cb(&a_opa, (lv_anim_exec_xcb_t)StatusBar_ConBattSetOpa);
-  lv_anim_set_ready_cb(&a_opa, StatusBar_onAnimOpaFinish);
-  lv_anim_set_values(&a_opa, LV_OPA_COVER, LV_OPA_TRANSP);
-  lv_anim_set_early_apply(&a_opa, true);
-  lv_anim_set_delay(&a_opa, 500);
-  lv_anim_set_time(&a_opa, 500);
-  lv_anim_start(&a_opa);
-}
-
 static void StatusBar_AnimCreate(lv_obj_t *contBatt) {
   lv_anim_t a;
   lv_anim_init(&a);
@@ -102,7 +79,8 @@ static void StatusBar_AnimCreate(lv_obj_t *contBatt) {
       &a, [](void *var, int32_t v) { lv_obj_set_height((lv_obj_t *)var, v); });
   lv_anim_set_values(&a, 0, BATT_USAGE_HEIGHT);
   lv_anim_set_time(&a, 1000);
-  lv_anim_set_ready_cb(&a, StatusBar_onAnimHeightFinish);
+  lv_anim_set_repeat_delay(&a, 400);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
   lv_anim_start(&a);
 }
 
@@ -121,23 +99,6 @@ static lv_obj_t *StatusBar_RecAnimLabelCreate(lv_obj_t *par) {
   lv_anim_label_add_style(alabel, &style_label);
 
   lv_obj_align(alabel, LV_ALIGN_RIGHT_MID, -45, 0);
-  // lv_obj_set_style_border_color(alabel, lv_color_white(), 0);
-  // lv_obj_set_style_border_width(alabel, 1, 0);
-
-  lv_anim_t a_enter;
-  lv_anim_init(&a_enter);
-  lv_anim_set_early_apply(&a_enter, true);
-  lv_anim_set_values(&a_enter, LV_OPA_TRANSP, LV_OPA_COVER);
-  lv_anim_set_exec_cb(&a_enter, [](void *var, int32_t v) {
-    lv_obj_set_style_opa((lv_obj_t *)var, v, 0);
-  });
-  lv_anim_set_time(&a_enter, 300);
-
-  lv_anim_t a_exit = a_enter;
-  lv_anim_set_values(&a_exit, LV_OPA_COVER, LV_OPA_TRANSP);
-
-  lv_anim_label_set_custom_enter_anim(alabel, &a_enter);
-  lv_anim_label_set_custom_exit_anim(alabel, &a_exit);
 
   return alabel;
 }
@@ -192,7 +153,6 @@ static void StatusBar_Update(lv_timer_t *timer) {
   } else {
     if (Is_BattChargingAnimActive) {
       lv_anim_del(contBatt, nullptr);
-      StatusBar_ConBattSetOpa(contBatt, LV_OPA_COVER);
       Is_BattChargingAnimActive = false;
     }
     lv_coord_t height = lv_map(power.usage, 0, 100, 0, BATT_USAGE_HEIGHT);
@@ -250,7 +210,7 @@ static void StatusBar_StyleInit(lv_obj_t *cont) {
   lv_obj_set_style_shadow_width(cont, 10, LV_STATE_USER_1);
 
   static lv_style_transition_dsc_t tran;
-  static const lv_style_prop_t prop[] = {LV_STYLE_BG_COLOR, LV_STYLE_OPA,
+  static const lv_style_prop_t prop[] = {LV_STYLE_BG_COLOR, LV_STYLE_BG_OPA,
                                          LV_STYLE_PROP_INV};
   lv_style_transition_dsc_init(&tran, prop, lv_anim_path_ease_out, 200, 0,
                                nullptr);
