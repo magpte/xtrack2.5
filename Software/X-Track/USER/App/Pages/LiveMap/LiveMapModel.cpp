@@ -38,8 +38,9 @@ void LiveMapModel::GetGPS_Info(HAL::GPS_Info_t* info)
         return;
     }
 
-    /* Use default location */
-    if (!info->isVaild)
+    /* 仅在从未获取过定位（经纬度均为 0.0）时使用默认/保存的位置兜底；
+     * 若此前已有定位点，在信号丢失（如进室内）时必须保持最后已知位置（LKP），严禁跳回原点 */
+    if (info->longitude == 0.0 && info->latitude == 0.0)
     {
         DataProc::SysConfig_Info_t sysConfig;
         if(account->Pull("SysConfig", &sysConfig, sizeof(sysConfig)) == Account::RES_OK)

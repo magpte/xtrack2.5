@@ -1,4 +1,4 @@
-﻿#include "HAL.h"
+#include "HAL.h"
 #include "TinyGPSPlus/src/TinyGPS++.h"
 #include "App/Utils/Time/TimeLib.h"
 #include <stdlib.h>
@@ -322,6 +322,15 @@ void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock
 #endif
 }
 
+#if CONFIG_GPS_TRY_MODE7_ENABLE
+static void GPS_SendConfigCommands()
+{
+    GPS_SERIAL.print("$PCAS04,7*1E\r\n");
+    GPS_SERIAL.print("$PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0*04\r\n");
+    GPS_SERIAL.print("$PCAS02,500*1A\r\n");
+}
+#endif
+
 void HAL::GPS_Init()
 {
     GPS_SERIAL.begin(9600);
@@ -348,14 +357,52 @@ void HAL::GPS_Init()
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
-    GPS_SERIAL.print("$PCAS04,7*1E\r\n");
-    GPS_SERIAL.print("$PCAS03,1,0,2,4,1,0,0,0,0,0,,,0,0*04\r\n");
-    GPS_SERIAL.print("$PCAS02,500*1A\r\n");
+    GPS_SendConfigCommands();
 #endif
 
     Serial.print("GPS: TinyGPS++ library v. ");
     Serial.print(TinyGPSPlus::libraryVersion());
     Serial.println(" by Mikal Hart");
+}
+
+static void GPS_Recover()
+{
+#if defined(AT32F435xx)
+    // 硬件级清除 USART2 错误与空闲标志
+    (void)usart_data_receive(USART2);
+    usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG | USART_IDLEF_FLAG);
+#endif
+
+#if CONFIG_GPS_TRY_MODE7_ENABLE
+    // 盲发一条 38400 指令（以防模块实际工作在 38400 但处于静默状态）
+    GPS_SERIAL.print("$PCAS01,3*1F\r\n");
+
+    // 重新通过 9600 波特率向可能复位的 GPS 模块握手并切回 38400
+    GPS_SERIAL.end();
+    GPS_SERIAL.begin(9600);
+    delay(20);
+    GPS_SERIAL.print("$PCAS01,3*1F\r\n");
+
+#if defined(AT32F435xx)
+    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET);
+#endif
+    delay(20);
+
+    GPS_SERIAL.begin(38400);
+#endif
+
+#if defined(AT32F435xx)
+    GPS_SERIAL.enableRxDMA(
+        DMA1_CHANNEL4,
+        DMA1MUX_CHANNEL4,
+        DMAMUX_DMAREQ_ID_USART2_RX,
+        DMA1_Channel4_IRQn
+    );
+#endif
+
+#if CONFIG_GPS_TRY_MODE7_ENABLE
+    GPS_SendConfigCommands();
+#endif
 }
 
 void HAL::GPS_Update()
@@ -371,23 +418,37 @@ void HAL::GPS_Update()
 #endif
 
     static uint32_t s_lastRxTick = 0;
+    static uint32_t s_lastRecoverTick = 0;
+    uint32_t now = millis();
     int available = GPS_SERIAL.available();
 
     if (available > 0)
     {
-        s_lastRxTick = millis();
+        s_lastRxTick = now;
     }
-    else if (s_lastRxTick > 0 && (millis() - s_lastRxTick > 3000))
+    else if (s_lastRxTick > 0)
     {
-#if defined(AT32F435xx)
-        if (usart_flag_get(USART2, USART_ROERR_FLAG) != RESET ||
-            usart_flag_get(USART2, USART_FERR_FLAG) != RESET ||
-            usart_flag_get(USART2, USART_NERR_FLAG) != RESET)
+        // 阶梯自愈看门狗：
+        // 阶段 1 (> 2500ms)：快速清除 USART 硬件错误标志，防止 DMA 挂起
+        if (now - s_lastRxTick > 2500)
         {
-            usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG);
-            usart_data_receive(USART2);
-        }
+#if defined(AT32F435xx)
+            if (usart_flag_get(USART2, USART_ROERR_FLAG) != RESET ||
+                usart_flag_get(USART2, USART_FERR_FLAG) != RESET ||
+                usart_flag_get(USART2, USART_NERR_FLAG) != RESET)
+            {
+                (void)usart_data_receive(USART2);
+                usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG);
+            }
 #endif
+        }
+
+        // 阶段 2 (> 4500ms)：GPS 模块可能掉电/复位重置回 9600 波特率，执行全自动重连自愈
+        if (now - s_lastRxTick > 4500 && (now - s_lastRecoverTick > 4000))
+        {
+            s_lastRecoverTick = now;
+            GPS_Recover();
+        }
     }
 
     int bytesProcessed = 0;
@@ -400,6 +461,7 @@ void HAL::GPS_Update()
     while (GPS_SERIAL.available() > 0 && bytesProcessed < maxBytes)
     {
         char c = GPS_SERIAL.read();
+        s_lastRxTick = millis(); // 成功读出字节，实时更新心跳
 #if GPS_USE_TRANSPARENT
         DEBUG_SERIAL.write(c);
 #endif
@@ -424,23 +486,32 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
 {
     memset(info, 0, sizeof(GPS_Info_t));
 
-    info->isVaild = gps.location.isValid();
+    // 时效性校验：超过 2.5 秒未收到新数据即判定为定位丢失，防止假点写入与时钟冻结
+    bool isLocationValid = gps.location.isValid() && (gps.location.age() < 2500);
+    bool isTimeValid     = gps.time.isValid() && (gps.time.age() < 2500);
+
+    info->isVaild = isLocationValid;
     info->longitude = gps.location.lng();
     info->latitude = gps.location.lat();
     info->altitude = gps.altitude.meters();
-    info->speed = gps.speed.kmph();
-    info->course = gps.course.deg();
+    info->speed = isLocationValid ? (float)gps.speed.kmph() : 0.0f;
+    info->course = isLocationValid ? (float)gps.course.deg() : 0.0f;
 
-    info->clock.year = gps.date.year();
-    info->clock.month = gps.date.month();
-    info->clock.day = gps.date.day();
-    info->clock.hour = gps.time.hour();
-    info->clock.minute = gps.time.minute();
-    info->clock.second = gps.time.second();
-    info->satellites = gps.satellites.value();
+    if (isTimeValid)
+    {
+        info->clock.year = gps.date.year();
+        info->clock.month = gps.date.month();
+        info->clock.day = gps.date.day();
+        info->clock.hour = gps.time.hour();
+        info->clock.minute = gps.time.minute();
+        info->clock.second = gps.time.second();
+        info->clock.millisecond = gps.time.centisecond() * 10;
+    }
+
+    info->satellites = (gps.satellites.isValid() && gps.satellites.age() < 2500) ? gps.satellites.value() : 0;
 
     info->pdop = s_pdopCurrent;
-    if (info->pdop == 0.0f && gps.hdop.isValid())
+    if (info->pdop == 0.0f && gps.hdop.isValid() && gps.hdop.age() < 2500)
     {
         info->pdop = (float)gps.hdop.hdop();
     }
@@ -450,7 +521,7 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
 
 bool HAL::GPS_LocationIsValid()
 {
-    return gps.location.isValid();
+    return gps.location.isValid() && (gps.location.age() < 2500);
 }
 
 double HAL::GPS_GetDistanceOffset(GPS_Info_t* info,  double preLong, double preLat)

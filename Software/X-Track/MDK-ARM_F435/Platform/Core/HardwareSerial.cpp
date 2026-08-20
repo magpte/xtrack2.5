@@ -118,14 +118,14 @@ void HardwareSerial::IRQHandler()
            usart_flag_get(_USARTx, USART_FERR_FLAG) != RESET ||
            usart_flag_get(_USARTx, USART_NERR_FLAG) != RESET)
         {
-            usart_flag_clear(_USARTx, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG);
-            usart_data_receive(_USARTx);
+            (void)usart_data_receive(_USARTx);
+            usart_flag_clear(_USARTx, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG);
         }
 
         /* 2. IDLE (空闲线) 中断处理，通知上层有数据到达 */
         if(usart_flag_get(_USARTx, USART_IDLEF_FLAG) != RESET)
         {
-            usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
+            (void)usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
             usart_flag_clear(_USARTx, USART_IDLEF_FLAG);
 
             if(_callbackFunction)

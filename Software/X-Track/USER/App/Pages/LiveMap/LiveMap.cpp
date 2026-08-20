@@ -304,12 +304,11 @@ void LiveMap::CheckPosition()
     HAL::GPS_Info_t gpsInfo;
     Model.GetGPS_Info(&gpsInfo);
 
-    // 静止判断（双阈值迟滞）：没有有效定位时一律按"非静止"处理，保证一旦
-    // 重新定位成功能尽快追上真实位置，不被静止节流拖慢。
+    // 静止判断（双阈值迟滞）：没有有效定位时保持静止状态，避免室内无信号时产生漂移和跳跃
     bool wasStationary = priv.isStationary;
     if (!gpsInfo.isVaild)
     {
-        priv.isStationary = false;
+        priv.isStationary = true;
     }
     else if (priv.isStationary)
     {
@@ -376,8 +375,8 @@ void LiveMap::CheckPosition()
 
     MapTileContUpdate(mapX, mapY, gpsInfo.course);
 
-    // 优化3：静止时停止向轨迹点过滤器推送漂移点，消除静止时的轨迹计算与重画
-    if (priv.isTrackAvtive && !priv.isStationary)
+    // 优化3：定位有效且非静止时才向轨迹点过滤器推送点，消除静止与无信号时的假点与漂移
+    if (priv.isTrackAvtive && gpsInfo.isVaild && !priv.isStationary)
     {
         Model.pointFilter.PushPoint(mapX, mapY);
     }
