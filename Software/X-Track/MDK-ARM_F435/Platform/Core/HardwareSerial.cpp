@@ -366,9 +366,12 @@ int HardwareSerial::available(void)
   */
 int HardwareSerial::read(void)
 {
-    if(_rxDmaChannel != NULL)
+    if (_rxBufferHead == _rxBufferTail)
     {
-        _syncHeadFromDMA();
+        if (_rxDmaChannel != NULL)
+        {
+            _syncHeadFromDMA();
+        }
     }
 
     // if the head isn't ahead of the tail, we don't have any characters
@@ -391,9 +394,12 @@ int HardwareSerial::read(void)
   */
 int HardwareSerial::peek(void)
 {
-    if(_rxDmaChannel != NULL)
+    if (_rxBufferHead == _rxBufferTail)
     {
-        _syncHeadFromDMA();
+        if (_rxDmaChannel != NULL)
+        {
+            _syncHeadFromDMA();
+        }
     }
 
     if (_rxBufferHead == _rxBufferTail)

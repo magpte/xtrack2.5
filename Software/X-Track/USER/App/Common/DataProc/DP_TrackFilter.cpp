@@ -24,6 +24,11 @@ static void onNotify(Account* account, TrackFilter_Info_t* info)
     switch (info->cmd)
     {
     case TRACK_FILTER_CMD_START:
+        if (trackFilter.pointContainer != nullptr)
+        {
+            delete trackFilter.pointContainer;
+            trackFilter.pointContainer = nullptr;
+        }
         trackFilter.pointContainer = new PointContainer;
         trackFilter.pointFilter.Reset();
         trackFilter.isActive = true;
@@ -66,6 +71,16 @@ static void onNotify(Account* account, TrackFilter_Info_t* info)
 
 static void onPublish(Account* account, HAL::GPS_Info_t* gps)
 {
+    if (!trackFilter.isStarted || !trackFilter.isActive || trackFilter.pointContainer == nullptr)
+    {
+        return;
+    }
+
+    if (!gps->isVaild || (gps->longitude == 0.0 && gps->latitude == 0.0))
+    {
+        return;
+    }
+
     int32_t mapX, mapY;
     trackFilter.mapConv.ConvertMapCoordinate(
         gps->longitude,

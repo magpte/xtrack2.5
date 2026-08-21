@@ -182,8 +182,16 @@ static void Recorder_RecPoint(Recorder_t* recorder, HAL::GPS_Info_t* gpsInfo)
     // 纯内存写入：追加到 6KB 缓冲区（< 2us），落盘与 sync 已由 Recorder_PeriodicTask 后台统一处理
 }
 
+static void Recorder_RecStop(Recorder_t* recorder);
+
 static void Recorder_RecStart(Recorder_t* recorder, uint16_t time)
 {
+    if (recorder->active)
+    {
+        LV_LOG_WARN("Track recorder already active, stopping previous session first");
+        Recorder_RecStop(recorder);
+    }
+
     LV_LOG_USER("Track record start");
 
     char filepath[128];

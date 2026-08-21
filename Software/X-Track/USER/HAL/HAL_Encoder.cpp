@@ -83,8 +83,10 @@ void HAL::Encoder_Update()
 
 int32_t HAL::Encoder_GetDiff()
 {
+    noInterrupts();
     int32_t diff = EncoderDiff;
     EncoderDiff = 0;
+    interrupts();
     return diff;
 }
 

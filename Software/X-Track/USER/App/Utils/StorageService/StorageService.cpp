@@ -56,7 +56,10 @@ public:
 
     ~FileWrapper()
     {
-        lv_fs_close(&file);
+        if (fs_res == LV_FS_RES_OK)
+        {
+            lv_fs_close(&file);
+        }
     }
 
     uint8_t read()

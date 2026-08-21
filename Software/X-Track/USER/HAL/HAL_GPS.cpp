@@ -51,10 +51,14 @@ static void Sky_ParseLine(const char* line)
     int msgNum    = NMEA_ParseIntField(line, 2);
     if (totalMsgs <= 0 || msgNum <= 0 || msgNum > totalMsgs) return;
 
-    if (msgNum == 1 && sys == HAL::SKY_CONSTELLATION_GPS)
+    static uint32_t s_lastGsvTick = 0;
+    uint32_t now = millis();
+
+    if ((now - s_lastGsvTick > 1500) || (msgNum == 1 && (sys == HAL::SKY_CONSTELLATION_GPS || now - s_lastGsvTick > 500)))
     {
         memset(&s_skyBuilding, 0, sizeof(s_skyBuilding));
     }
+    s_lastGsvTick = now;
 
     int field = 4;
     while (s_skyBuilding.count < SKY_MAX_SATELLITES)
@@ -489,6 +493,7 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
     // 时效性校验：超过 2.5 秒未收到新数据即判定为定位丢失，防止假点写入与时钟冻结
     bool isLocationValid = gps.location.isValid() && (gps.location.age() < 2500);
     bool isTimeValid     = gps.time.isValid() && (gps.time.age() < 2500);
+    bool isDateValid     = gps.date.isValid() && (gps.date.age() < 2500);
 
     info->isVaild = isLocationValid;
     info->longitude = gps.location.lng();
@@ -499,9 +504,12 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
 
     if (isTimeValid)
     {
-        info->clock.year = gps.date.year();
-        info->clock.month = gps.date.month();
-        info->clock.day = gps.date.day();
+        if (isDateValid)
+        {
+            info->clock.year = gps.date.year();
+            info->clock.month = gps.date.month();
+            info->clock.day = gps.date.day();
+        }
         info->clock.hour = gps.time.hour();
         info->clock.minute = gps.time.minute();
         info->clock.second = gps.time.second();

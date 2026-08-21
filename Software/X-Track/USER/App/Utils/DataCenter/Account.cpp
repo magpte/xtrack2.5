@@ -102,17 +102,19 @@ Account::~Account()
     }
 
     /* Let subscribers unfollow */
-    for(auto iter : subscribers)
+    while (!subscribers.empty())
     {
-        iter->Unsubscribe(ID);
-        DC_LOG_INFO("sub[%s] unsubscribed pub[%s]", iter->ID, ID);
+        Account* sub = subscribers.back();
+        sub->Unsubscribe(ID);
+        DC_LOG_INFO("sub[%s] unsubscribed pub[%s]", sub->ID, ID);
     }
 
     /* Ask the publisher to delete this subscriber */
-    for (auto iter : publishers)
+    while (!publishers.empty())
     {
-        Center->Remove(&iter->subscribers, this);
-        DC_LOG_INFO("pub[%s] removed sub[%s]", iter->ID, ID);
+        Account* pub = publishers.back();
+        Unsubscribe(pub->ID);
+        DC_LOG_INFO("pub[%s] removed sub[%s]", pub->ID, ID);
     }
 
     /* Let the data center delete the account */

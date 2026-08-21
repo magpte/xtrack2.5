@@ -107,7 +107,7 @@ static void * fs_open (lv_fs_drv_t * drv, const char * path, lv_fs_mode_t mode)
 
     if(mode == LV_FS_MODE_WR)
     {
-        oflag = O_WRONLY;
+        oflag = O_WRONLY | O_CREAT | O_TRUNC;
     }
     else if(mode == LV_FS_MODE_RD)
     {
@@ -115,7 +115,7 @@ static void * fs_open (lv_fs_drv_t * drv, const char * path, lv_fs_mode_t mode)
     }
     else if(mode == (LV_FS_MODE_WR | LV_FS_MODE_RD))
     {
-        oflag = O_RDWR | O_CREAT;
+        oflag = O_RDWR | O_CREAT | O_TRUNC;
     }
 
     file_t* file_p = new file_t;

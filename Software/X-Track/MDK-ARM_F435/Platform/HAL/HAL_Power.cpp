@@ -170,6 +170,11 @@ void HAL::Power_EventMonitor()
         {
             Power.EventCallback();
         }
+
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+        HAL::NMEA_Log_Close();
+#endif
+
         Backlight_SetGradual(0, 500);
         digitalWrite(CONFIG_POWER_EN_PIN, LOW);
         Serial.println("Power: OFF");

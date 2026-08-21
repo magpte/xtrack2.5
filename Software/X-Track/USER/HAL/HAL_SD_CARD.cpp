@@ -68,7 +68,7 @@ static bool SD_CheckDir(const char* path)
 // write() 的频率更接近、次数也更少，降低撞车概率。注意这是应用层
 // 缓冲区，跟 SdFat 内部那个写死 512 字节（SD 卡物理扇区大小）的
 // FatCache 是两回事，后者没法调大。
-#define NMEA_LOG_WRITE_BUF_SIZE     26624 // 26KB (52 * 512B sectors)
+#define NMEA_LOG_WRITE_BUF_SIZE     24576 // 24KB (48 * 512B sectors)
 #define NMEA_LOG_SYNC_INTERVAL_MS   30000 // 30s
 #define SD_SECTOR_SIZE              512
 

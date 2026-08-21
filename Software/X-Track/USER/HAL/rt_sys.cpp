@@ -38,12 +38,28 @@ FILEHANDLE _sys_open(const char *name, int openmode)
     else if (name == __stderr_name)
         return STDERR;
 
-    uint8_t oflag = O_RDONLY;
-    if(openmode & OPEN_R) oflag |= O_RDONLY;
-    if(openmode & OPEN_W) oflag |= (O_WRONLY | O_CREAT);
-    if(openmode & OPEN_A) oflag |= O_APPEND;
-    if(openmode & OPEN_B) oflag |= O_RDWR;
-    if(openmode & OPEN_PLUS) oflag |= O_CREAT;
+    uint8_t oflag = 0;
+    if (openmode & OPEN_PLUS)
+    {
+        oflag |= O_RDWR;
+    }
+    else if ((openmode & OPEN_W) || (openmode & OPEN_A))
+    {
+        oflag |= O_WRONLY;
+    }
+    else
+    {
+        oflag |= O_RDONLY;
+    }
+
+    if (openmode & OPEN_W)
+    {
+        oflag |= (O_CREAT | O_TRUNC);
+    }
+    else if (openmode & OPEN_A)
+    {
+        oflag |= (O_CREAT | O_APPEND);
+    }
 
     file_t* file_p = new file_t;
     if(file_p->open(name, oflag))

@@ -240,8 +240,8 @@ bool TrackPointFilter::GetLine(Line_t* line, const Point_t* point0, const Point_
     else if (x_diff_abs > FLOAT_0 && y_diff_abs > FLOAT_0)
     {
         a = (y1 - y0) / (x0 - x1);
-        b = (a * (x0 - x1)) / (y1 - y0);
-        c = 0 - a * x0 - b * y0;
+        b = 1.0;
+        c = -a * x0 - y0;
     }
     else
     {

@@ -56,7 +56,7 @@ static void onTimer(Account* account)
     float calcSpeedKph = 0.0f;
     if (timeElaps > 0 && distOffset > 0.0)
     {
-        calcSpeedKph = (float)(distOffset * 1000.0 / timeElaps * 3.6);
+        calcSpeedKph = (float)distOffset * 1000.0f / (float)timeElaps * 3.6f;
     }
 
     // 3. 双通道自适应运动状态判决：

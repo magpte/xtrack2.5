@@ -83,7 +83,7 @@
 #define TILE_SD_DRIVE_LETTER  '/'
 
 // ---- Run-stream read buffer size ----------------------------------------
-#define RLE_READ_BUF_SIZE     2048u
+#define RLE_READ_BUF_SIZE     8192u
 
 // =========================================================================
 // Shared bundle file handle
@@ -306,6 +306,8 @@ typedef struct {
     uint32_t filled;              // valid byte count in buf
     bool     error;
 } RleReader_t;
+
+static RleReader_t s_reader;
 
 // Refills reader buffer from s_bundle_file or 96KB SRAM cache. Returns false on EOF or error.
 static bool reader_refill(RleReader_t* r)
@@ -861,8 +863,8 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                           + s_meta.checkpoints[start_cp];
     uint32_t tile_end   = s_meta.tile_start + s_meta.tile_length;
 
-    RleReader_t reader;
-    if (!reader_seek(&reader, stream_abs, tile_end))
+    RleReader_t* reader = &s_reader;
+    if (!reader_seek(reader, stream_abs, tile_end))
     {
         LV_LOG_WARN("RLE: checkpoint seek failed for '%s'", src);
         return LV_RES_INV;
@@ -898,7 +900,7 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         while (pixel_idx < total_pixels)
         {
             uint8_t run_len = 0, idx = 0;
-            if (!reader_read_pair(&reader, &run_len, &idx))
+            if (!reader_read_pair(reader, &run_len, &idx))
             {
                 LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
                 break;
@@ -943,7 +945,7 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         while (pixel_idx < total_pixels)
         {
             uint8_t run_len = 0, idx = 0;
-            if (!reader_read_pair(&reader, &run_len, &idx))
+            if (!reader_read_pair(reader, &run_len, &idx))
             {
                 LV_LOG_WARN("RLE: truncated run stream in '%s'", src);
                 break;
