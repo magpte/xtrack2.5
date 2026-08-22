@@ -57,6 +57,7 @@
 
 #include "lv_img_rle.h"
 #include "Common/HAL/HAL.h"
+#include "HAL/FastMemcpy.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -762,9 +763,8 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
     // ---- Fast path: pixel cache hit --------------------------------------
-    // 热点1 优化后：palette 已在 pixel_cache_claim 时预转换为 lv_color_t，
-    // 命中时无需 rgb565_to_lv_color，也无需 line_buf 中间缓冲——
-    // 直接对 dest 按像素查表写入，省掉整行 memcpy 和 512B 栈开销。
+    // 热点1 优化：palette 在 pixel_cache_claim 时预转换为 lv_color_t，
+    // 此时免去 rgb565_to_lv_color，使用双像素 32 位合并写入，降低循环开销。
     PixelCacheSlot_t* cached = pixel_cache_find(src);
     if (cached != NULL)
     {
@@ -779,10 +779,19 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 continue;
             }
 
-            // srcRow 直接偏移 x_offset，col 循环从 0 开始，避免 [x_offset+col] 加法
             const uint8_t* srcRow = &cached->pixels[(uint32_t)row * cached->width + x_offset];
             lv_color_t*    dest   = dsc->dest_buf + (row - dsc->src_area->y1) * disp_width;
-            for (lv_coord_t col = 0; col < blit_width; col++)
+            lv_coord_t col = 0;
+
+            // 32-bit 双像素合并快速写入
+            while (col + 1 < blit_width && (((uintptr_t)&dest[col]) & 3) == 0)
+            {
+                uint16_t c0 = *(const uint16_t*)&cached->palette[srcRow[col]];
+                uint16_t c1 = *(const uint16_t*)&cached->palette[srcRow[col + 1]];
+                *(uint32_t*)&dest[col] = (uint32_t)c0 | ((uint32_t)c1 << 16);
+                col += 2;
+            }
+            for (; col < blit_width; col++)
             {
                 dest[col] = cached->palette[srcRow[col]];
             }
@@ -829,8 +838,6 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         slot->width        = s_meta.width;
         slot->height       = s_meta.height;
         slot->paletteCount = s_meta.paletteCount;
-        // 热点1: 一次性将 uint16 RGB565 palette 转换为 lv_color_t 并存入 slot，
-        // 之后 cache 命中路径直接查表，不再逐像素调 rgb565_to_lv_color。
         for (uint16_t pi = 0; pi < s_meta.paletteCount; pi++)
         {
             slot->palette[pi] = rgb565_to_lv_color(s_meta.palette[pi]);
@@ -838,10 +845,6 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     }
 
     // ---- Step 4: pick decode start row -----------------------------------
-    // Populating the cache needs the FULL tile (row 0 through height-1) so
-    // that any future clip region -- not just today's -- is a hit. Without
-    // a slot to populate, keep the original optimization of starting from
-    // the checkpoint nearest the current clip's top edge.
     int start_cp;
     if (slot != NULL)
     {
@@ -871,12 +874,14 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     }
 
     // ---- Step 6: decode ---------------------------------------------------
-    // 热点2 优化：将 slot != NULL 判断提到循环外，形成两条完全独立的热路径：
-    //   路径 A（有 cache slot）：内层循环无条件写 slot->pixels，解码整个 tile。
-    //   路径 B（无 cache slot）：内层循环无 slot 写入，越过 clip_y2 后立即 goto
-    //                           退出，避免继续扫描剩余 tile 数据。
-    // 两条路径的内层 for 循环都消除了原来每像素一次的条件判断。
+    // 强制 4 字节自然对齐行缓冲，确保 32-bit 突发写入与 memcpy 性能最优
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((aligned(4))) lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
+#elif defined(__CC_ARM)
+    __align(4) lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
+#else
     lv_color_t line_buf[RLE_MAX_TILE_WIDTH];
+#endif
 
     uint16_t        width        = s_meta.width;
     uint16_t        height       = s_meta.height;
@@ -895,8 +900,7 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 
     if (slot != NULL)
     {
-        // 路径 A：填充 pixel cache + 输出 clip 行。
-        // 解码从 row=0 到 tile 底部；内层循环无分支，始终写 slot->pixels。
+        // 路径 A：填充 pixel cache + 渲染 clip 视口行
         while (pixel_idx < total_pixels)
         {
             uint8_t run_len = 0, idx = 0;
@@ -911,21 +915,54 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 break;
             }
             lv_color_t c = rgb565_to_lv_color(palette[idx]);
+            uint16_t c_u16 = *(const uint16_t*)&c;
+            uint32_t c2 = ((uint32_t)c_u16 << 16) | c_u16;
+            uint32_t idx4 = (uint32_t)idx * 0x01010101UL;
 
-            for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
+            uint8_t remaining = run_len;
+            while (remaining > 0 && pixel_idx < total_pixels)
             {
-                line_buf[col]            = c;
-                slot->pixels[pixel_idx]  = idx;   // 无条件写，无分支
-                col++;
-                pixel_idx++;
+                int remain_in_row = width - col;
+                int chunk = (remaining < remain_in_row) ? (int)remaining : remain_in_row;
+                if (pixel_idx + chunk > total_pixels)
+                {
+                    chunk = (int)(total_pixels - pixel_idx);
+                }
 
-                if (col == width)
+                int p = 0;
+                // 32-bit 快速批量写入 (4 像素 / 8 字节颜色 + 4 字节索引)
+                while (p + 4 <= chunk && (((uintptr_t)&slot->pixels[pixel_idx + p]) & 3) == 0)
+                {
+                    *(uint32_t*)&slot->pixels[pixel_idx + p] = idx4;
+                    *(uint32_t*)&line_buf[col + p] = c2;
+                    *(uint32_t*)&line_buf[col + p + 2] = c2;
+                    p += 4;
+                }
+                while (p + 2 <= chunk && (((uintptr_t)&line_buf[col + p]) & 3) == 0)
+                {
+                    slot->pixels[pixel_idx + p] = idx;
+                    slot->pixels[pixel_idx + p + 1] = idx;
+                    *(uint32_t*)&line_buf[col + p] = c2;
+                    p += 2;
+                }
+                while (p < chunk)
+                {
+                    slot->pixels[pixel_idx + p] = idx;
+                    line_buf[col + p] = c;
+                    p++;
+                }
+
+                col += chunk;
+                pixel_idx += chunk;
+                remaining -= chunk;
+
+                if (col >= width)
                 {
                     if (row >= clip_y1 && row <= clip_y2)
                     {
                         lv_color_t* dest = dsc->dest_buf + (row - clip_y1) * disp_width;
-                        lv_memcpy(dest, &line_buf[x_offset],
-                                  (uint32_t)blit_width * sizeof(lv_color_t));
+                        arm_fast_memcpy(dest, &line_buf[x_offset],
+                                        (uint32_t)blit_width * sizeof(lv_color_t));
                     }
                     col = 0;
                     row++;
@@ -941,7 +978,6 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     else
     {
         // 路径 B：无 pixel cache，仅解码 clip 区域，越过 clip_y2 立即退出。
-        // 内层循环无 slot 写入，用 goto 从嵌套循环中干净退出。
         while (pixel_idx < total_pixels)
         {
             uint8_t run_len = 0, idx = 0;
@@ -956,24 +992,46 @@ static lv_res_t lv_rle_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 break;
             }
             lv_color_t c = rgb565_to_lv_color(palette[idx]);
+            uint16_t c_u16 = *(const uint16_t*)&c;
+            uint32_t c2 = ((uint32_t)c_u16 << 16) | c_u16;
 
-            for (uint8_t i = 0; i < run_len && pixel_idx < total_pixels; i++)
+            uint8_t remaining = run_len;
+            while (remaining > 0 && pixel_idx < total_pixels)
             {
-                line_buf[col] = c;
-                col++;
-                pixel_idx++;
+                int remain_in_row = width - col;
+                int chunk = (remaining < remain_in_row) ? (int)remaining : remain_in_row;
+                if (pixel_idx + chunk > total_pixels)
+                {
+                    chunk = (int)(total_pixels - pixel_idx);
+                }
 
-                if (col == width)
+                int p = 0;
+                while (p + 2 <= chunk && (((uintptr_t)&line_buf[col + p]) & 3) == 0)
+                {
+                    *(uint32_t*)&line_buf[col + p] = c2;
+                    p += 2;
+                }
+                while (p < chunk)
+                {
+                    line_buf[col + p] = c;
+                    p++;
+                }
+
+                col += chunk;
+                pixel_idx += chunk;
+                remaining -= chunk;
+
+                if (col >= width)
                 {
                     if (row >= clip_y1 && row <= clip_y2)
                     {
                         lv_color_t* dest = dsc->dest_buf + (row - clip_y1) * disp_width;
-                        lv_memcpy(dest, &line_buf[x_offset],
-                                  (uint32_t)blit_width * sizeof(lv_color_t));
+                        arm_fast_memcpy(dest, &line_buf[x_offset],
+                                        (uint32_t)blit_width * sizeof(lv_color_t));
                     }
                     col = 0;
                     row++;
-                    if (row > clip_y2) goto rle_decode_done;  // clip 区已完成，立即退出
+                    if (row > clip_y2) goto rle_decode_done;
                 }
             }
         }

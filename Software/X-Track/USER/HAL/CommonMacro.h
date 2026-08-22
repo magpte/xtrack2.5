@@ -2,25 +2,25 @@
 #define __COMMON_MACRO_H
 
 /*********************************/
-/*          Í¨ÓÃºê¶¨Òå¿â         */
-/*  ÌáÉı´úÂëµÄ¾«¼ò³Ì¶ÈÒÔ¼°¿É¶ÁĞÔ */
+/*          é€šç”¨å®å®šä¹‰åº“         */
+/*  æå‡ä»£ç çš„ç²¾ç®€ç¨‹åº¦ä»¥åŠå¯è¯»æ€§ */
 /*    Designed by _VIFEXTech     */
 /*********************************/
 
-//Finish  2019-03-21 v1.0 Ìí¼Ó×¢ÊÍ
-//Upgrade 2019-03-21 v1.1 Ìí¼Ó__ValueCloseTo
-//Upgrade 2019-05-16 v1.2 Ìí¼Ó__ExecuteFuncWithTimeout
-//Upgrade 2019-05-16 v1.3 Ìí¼Ó__ValueStep
-//Upgrade 2019-09-25 v1.4 Ìí¼Ó__ExecuteOnce
-//Upgrade 2020-01-27 v1.5 Ìí¼Ó__SemaphoreTake
-//Upgrade 2020-03-10 v1.6 Ìí¼Ó__ValuePlus
-//Upgrade 2022-03-14 v1.7 ĞÂÃüÃû; __Sizeof -> __ARRAY_SIZE; È¥³ı__EventMonitor
+//Finish  2019-03-21 v1.0 æ·»åŠ æ³¨é‡Š
+//Upgrade 2019-03-21 v1.1 æ·»åŠ __ValueCloseTo
+//Upgrade 2019-05-16 v1.2 æ·»åŠ __ExecuteFuncWithTimeout
+//Upgrade 2019-05-16 v1.3 æ·»åŠ __ValueStep
+//Upgrade 2019-09-25 v1.4 æ·»åŠ __ExecuteOnce
+//Upgrade 2020-01-27 v1.5 æ·»åŠ __SemaphoreTake
+//Upgrade 2020-03-10 v1.6 æ·»åŠ __ValuePlus
+//Upgrade 2022-03-14 v1.7 æ–°å‘½å; __Sizeof -> __ARRAY_SIZE; å»é™¤__EventMonitor
 
 /**
-  * @brief  ±äÁ¿¼àÊÓÆ÷£¬µ±±äÁ¿¸Ä±äÊ±´¥·¢Ò»¸öÊÂ¼ş
-  * @param  now:±»¼à¿ØµÄ±äÁ¿(ÕûĞÎ)
-  * @param  func:ÊÂ¼ş´¥·¢»Øµ÷º¯Êı(¿ÉÒÔÊÇ¸³ÖµµÈÆäËûÓï¾ä)
-  * @retval ÎŞ
+  * @brief  å˜é‡ç›‘è§†å™¨ï¼Œå½“å˜é‡æ”¹å˜æ—¶è§¦å‘ä¸€ä¸ªäº‹ä»¶
+  * @param  now:è¢«ç›‘æ§çš„å˜é‡(æ•´å½¢)
+  * @param  func:äº‹ä»¶è§¦å‘å›è°ƒå‡½æ•°(å¯ä»¥æ˜¯èµ‹å€¼ç­‰å…¶ä»–è¯­å¥)
+  * @retval æ— 
   */
 #define CM_VALUE_MONITOR(now,func)  \
 do{                                 \
@@ -29,11 +29,11 @@ do{                                 \
 }while(0)
 
 /**
-  * @brief  ÈÃÒ»¸ö±äÁ¿ÒÔÉè¼ÆµÄ²½½ü½Ó½üÖ¸¶¨Öµ
-  * @param  src:±»¿Ø±äÁ¿
-  * @param  dest:±»½Ó½üµÄÖµ
-  * @param  step:²½³¤
-  * @retval ÎŞ
+  * @brief  è®©ä¸€ä¸ªå˜é‡ä»¥è®¾è®¡çš„æ­¥è¿‘æ¥è¿‘æŒ‡å®šå€¼
+  * @param  src:è¢«æ§å˜é‡
+  * @param  dest:è¢«æ¥è¿‘çš„å€¼
+  * @param  step:æ­¥é•¿
+  * @retval æ— 
   */
 #define CM_VALUE_CLOSE_TO(src,dest,step) \
 do{                                      \
@@ -42,21 +42,21 @@ do{                                      \
 }while(0)
 
 /**
-  * @brief  ÈÃÒ»¸ö±äÁ¿Ôö¼Ó»òÕß¼õÈ¥Ò»¸öÖµ£¬ÔÚ´óÓÚµÈÓÚ×î´óÖµºó´Ó0¿ªÊ¼£¬µÍÓÚ0ºó´Ó×î´óÖµ¿ªÊ¼
-  * @param  src:±»¿Ø±äÁ¿
-  * @param  step:Ôö¼Ó»òÕß¼õÉÙµÄÖµ
-  * @param  max:×î´óÖµ
-  * @retval ÎŞ
+  * @brief  è®©ä¸€ä¸ªå˜é‡å¢åŠ æˆ–è€…å‡å»ä¸€ä¸ªå€¼ï¼Œåœ¨å¤§äºç­‰äºæœ€å¤§å€¼åä»0å¼€å§‹ï¼Œä½äº0åä»æœ€å¤§å€¼å¼€å§‹
+  * @param  src:è¢«æ§å˜é‡
+  * @param  step:å¢åŠ æˆ–è€…å‡å°‘çš„å€¼
+  * @param  max:æœ€å¤§å€¼
+  * @retval æ— 
   */
 #define CM_VALUE_STEP(src,step,max) ((src)=(((step)>=0)?(((src)+(step))%(max)):(((src)+(max)+(step))%(max))))
 
 /**
-  * @brief  ÈÃÒ»¸ö±äÁ¿Ôö¼Ó»òÕß¼õÈ¥Ò»¸öÖµ£¬ÔÚ´óÓÚ×î´óÖµºó´Ó×îĞ¡Öµ¿ªÊ¼£¬Ğ¡ÓÚ×îĞ¡Öµºó´Ó×î´óÖµ¿ªÊ¼
-  * @param  src:±»¿Ø±äÁ¿
-  * @param  plus:Ôö¼ÓµÄÖµ
-  * @param  min:×îĞ¡Öµ
-  * @param  max:×î´óÖµ
-  * @retval ÎŞ
+  * @brief  è®©ä¸€ä¸ªå˜é‡å¢åŠ æˆ–è€…å‡å»ä¸€ä¸ªå€¼ï¼Œåœ¨å¤§äºæœ€å¤§å€¼åä»æœ€å°å€¼å¼€å§‹ï¼Œå°äºæœ€å°å€¼åä»æœ€å¤§å€¼å¼€å§‹
+  * @param  src:è¢«æ§å˜é‡
+  * @param  plus:å¢åŠ çš„å€¼
+  * @param  min:æœ€å°å€¼
+  * @param  max:æœ€å¤§å€¼
+  * @retval æ— 
   */
 #define CM_VALUE_PLUS(src,plus,min,max)           \
 do{                                               \
@@ -68,40 +68,48 @@ do{                                               \
 }while(0)
 
 /**
-  * @brief  ·µ»Ø·¶Î§ÄÚµÄÖµ
-  * @param  x:Ô­Ê¼Öµ(ÈÎÒâÀàĞÍ)
-  * @param  min:×îĞ¡Öµ(ÈÎÒâÀàĞÍ)
-  * @param  max:×î´óÖµ(ÈÎÒâÀàĞÍ)
-  * @retval ·¶Î§ÄÚµÄÖµ
+  * @brief  æ•°å€¼é™å¹…
+  * @param  x:è¾“å…¥å˜é‡
+  * @param  low:æœ€å°å€¼
+  * @param  high:æœ€å¤§å€¼
+  * @retval é™å¹…åæ•°å€¼
   */
 #define CM_CONSTRAIN(x,low,high) ((x)<(low)?(low):((x)>(high)?(high):(x)))
 
+#ifdef __cplusplus
+template <typename T>
+static inline T cm_clamp(T val, T low, T high)
+{
+    return (val < low) ? low : ((val > high) ? high : val);
+}
+#endif
+
 /**
-  * @brief  ½«Ò»¸öÖµÏŞÖÆÔÚÒ»¸ö·¶Î§ÄÚ
-  * @param  x:±»ÏŞÖÆµÄÖµ(ÈÎÒâÀàĞÍ)
-  * @param  min:×îĞ¡Öµ(ÈÎÒâÀàĞÍ)
-  * @param  max:×î´óÖµ(ÈÎÒâÀàĞÍ)
-  * @retval ÎŞ
+  * @brief  é™åˆ¶å˜é‡åœ¨ç»™å®šèŒƒå›´å†…
+  * @param  x:ç›®æ ‡å˜é‡
+  * @param  min:æœ€å°å€¼
+  * @param  max:æœ€å¤§å€¼
+  * @retval æ— 
   */
 #define CM_VALUE_LIMIT(x,min,max) ((x)=CM_CONSTRAIN((x),(min),(max)))
 
 /**
-  * @brief  ½«Ò»¸öÖµµÄ±ä»¯Çø¼äÏßĞÔÓ³Éäµ½ÁíÒ»¸öÇø¼ä
-  * @param  x:±»Ó³ÉäµÄÖµ(ÈÎÒâÀàĞÍ)
-  * @param  in_min:±»Ó³ÉäµÄÖµµÄ×îĞ¡Öµ
-  * @param  in_max:±»Ó³ÉäµÄÖµµÄ×î´óÖµ
-  * @param  out_min:±»Ó³ÉäµÄÖµµÄ×îĞ¡Öµ
-  * @param  out_max:±»Ó³ÉäµÄÖµµÄ×î´óÖµ
-  * @retval Ó³ÉäÖµÊä³ö
+  * @brief  å°†ä¸€ä¸ªå€¼çš„å˜åŒ–åŒºé—´çº¿æ€§æ˜ å°„åˆ°å¦ä¸€ä¸ªåŒºé—´
+  * @param  x:è¢«æ˜ å°„çš„å€¼(ä»»æ„ç±»å‹)
+  * @param  in_min:è¢«æ˜ å°„çš„å€¼çš„æœ€å°å€¼
+  * @param  in_max:è¢«æ˜ å°„çš„å€¼çš„æœ€å¤§å€¼
+  * @param  out_min:è¢«æ˜ å°„çš„å€¼çš„æœ€å°å€¼
+  * @param  out_max:è¢«æ˜ å°„çš„å€¼çš„æœ€å¤§å€¼
+  * @retval æ˜ å°„å€¼è¾“å‡º
   */
 #define CM_VALUE_MAP(x,in_min,in_max,out_min,out_max) \
     (((x)-(in_min))*((out_max)-(out_min))/((in_max)-(in_min))+(out_min))
 
 /**
-  * @brief  ·Ç×èÈûÊ½¼ä¸ôÖ¸¶¨Ê±¼äÖ´ĞĞÒ»¸öº¯Êı
-  * @param  func:±»Ö´ĞĞº¯Êı(¿ÉÒÔÊÇ¸³ÖµµÈÆäËûÓï¾ä)
-  * @param  time:Éè¶¨¼ä¸ôÊ±¼ä(ms)
-  * @retval ÎŞ
+  * @brief  éé˜»å¡å¼é—´éš”æŒ‡å®šæ—¶é—´æ‰§è¡Œä¸€ä¸ªå‡½æ•°
+  * @param  func:è¢«æ‰§è¡Œå‡½æ•°(å¯ä»¥æ˜¯èµ‹å€¼ç­‰å…¶ä»–è¯­å¥)
+  * @param  time:è®¾å®šé—´éš”æ—¶é—´(ms)
+  * @retval æ— 
   */
 #define CM_EXECUTE_INTERVAL(func,time)                  \
 do{                                                     \
@@ -110,20 +118,20 @@ do{                                                     \
 }while(0)
 
 /**
-  * @brief  ½«Ò»¸öº¯ÊıÖØ¸´µ÷ÓÃÖ¸¶¨´ÎÊı
-  * @param  func:±»µ÷ÓÃº¯Êı(¿ÉÒÔÊÇ¸³ÖµµÈÆäËûÓï¾ä)
-  * @param  n:ÖØ¸´µ÷ÓÃ´ÎÊı
-  * @retval ÎŞ
+  * @brief  å°†ä¸€ä¸ªå‡½æ•°é‡å¤è°ƒç”¨æŒ‡å®šæ¬¡æ•°
+  * @param  func:è¢«è°ƒç”¨å‡½æ•°(å¯ä»¥æ˜¯èµ‹å€¼ç­‰å…¶ä»–è¯­å¥)
+  * @param  n:é‡å¤è°ƒç”¨æ¬¡æ•°
+  * @retval æ— 
   */
 #define CM_EXECUTE_LOOP(func,n) for(unsigned long i=0;i<(n);i++)func
 
 /**
-  * @brief  Ö´ĞĞÒ»¸öº¯ÊıÔÚ²»³¬Ê±µÄÇé¿öÏÂÖ±µ½º¯ÊıµÄ·µ»ØÖµÎªÖ¸¶¨Öµ
-  * @param  func:±»µ÷ÓÃº¯Êı
-  * @param  n:Ï£Íûº¯ÊıµÄ·µ»ØÖµ
-  * @param  timeout:³¬Ê±Ê±¼ä
-  * @param  flag:Íâ²¿Ìá¹©±äÁ¿£¬ÓÃÓÚ¼ì²éÊÇ·ñ³¬Ê±
-  * @retval ÎŞ
+  * @brief  æ‰§è¡Œä¸€ä¸ªå‡½æ•°åœ¨ä¸è¶…æ—¶çš„æƒ…å†µä¸‹ç›´åˆ°å‡½æ•°çš„è¿”å›å€¼ä¸ºæŒ‡å®šå€¼
+  * @param  func:è¢«è°ƒç”¨å‡½æ•°
+  * @param  n:å¸Œæœ›å‡½æ•°çš„è¿”å›å€¼
+  * @param  timeout:è¶…æ—¶æ—¶é—´
+  * @param  flag:å¤–éƒ¨æä¾›å˜é‡ï¼Œç”¨äºæ£€æŸ¥æ˜¯å¦è¶…æ—¶
+  * @retval æ— 
   */
 #define CM_EXECUTE_FUNC_WITH_TIMEOUT(func,n,timeout,flag) \
 do{                                                       \
@@ -135,9 +143,9 @@ do{                                                       \
 }while(0)
 
 /**
-  * @brief  º¯ÊıÖ»Ö´ĞĞÒ»´Î£¬³£ÓÃÓÚ³õÊ¼»¯
-  * @param  func:±»µ÷ÓÃº¯Êı(Ò²¿ÉÒÔÊÇ¸³ÖµµÈÆäËûÓï¾ä)
-  * @retval ÎŞ
+  * @brief  å‡½æ•°åªæ‰§è¡Œä¸€æ¬¡ï¼Œå¸¸ç”¨äºåˆå§‹åŒ–
+  * @param  func:è¢«è°ƒç”¨å‡½æ•°(ä¹Ÿå¯ä»¥æ˜¯èµ‹å€¼ç­‰å…¶ä»–è¯­å¥)
+  * @retval æ— 
   */
 #define CM_EXECUTE_ONCE(func)\
 do{\
@@ -146,25 +154,25 @@ do{\
 }while(0)
 
 /**
-  * @brief  »ñÈ¡Ò»¸öÊı×éµÄÔªËØ¸öÊı
-  * @param  arr:Êı×éÃû(ÈÎÒâÀàĞÍ)
-  * @retval Õâ¸öÊı×éµÄÔªËØ¸öÊı
+  * @brief  è·å–ä¸€ä¸ªæ•°ç»„çš„å…ƒç´ ä¸ªæ•°
+  * @param  arr:æ•°ç»„å(ä»»æ„ç±»å‹)
+  * @retval è¿™ä¸ªæ•°ç»„çš„å…ƒç´ ä¸ªæ•°
   */
 #define CM_ARRAR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
 
 /**
-  * @brief  ½«Ò»¸öÖµÇ¿ÖÆ°´Ö¸¶¨ÀàĞÍ½âÊÍ£¬³£ÓÃÓÚ½á¹¹Ìå¿½±´
-  * @param  type:ÀàĞÍÃû(ÈÎÒâÀàĞÍ)
-  * @param  data:±»½âÊÍµÄÊı¾İ(ÈÎÒâÀàĞÍ)
-  * @retval ½âÊÍÊä³ö
+  * @brief  å°†ä¸€ä¸ªå€¼å¼ºåˆ¶æŒ‰æŒ‡å®šç±»å‹è§£é‡Šï¼Œå¸¸ç”¨äºç»“æ„ä½“æ‹·è´
+  * @param  type:ç±»å‹å(ä»»æ„ç±»å‹)
+  * @param  data:è¢«è§£é‡Šçš„æ•°æ®(ä»»æ„ç±»å‹)
+  * @retval è§£é‡Šè¾“å‡º
   */
 #define CM_TYPE_EXPLAIN(type,data) (*((type*)(&(data))))
 
 /**
-  * @brief  »ñÈ¡ĞÅºÅÁ¿£¬µ±semÎªtrueÊ±Ö´ĞĞÒ»´Îfunc
-  * @param  sem:ĞÅºÅÁ¿(boolÀàĞÍ)
-  * @param  func:±»µ÷ÓÃº¯Êı(Ò²¿ÉÒÔÊÇ¸³ÖµµÈÆäËûÓï¾ä)
-  * @retval ÎŞ
+  * @brief  è·å–ä¿¡å·é‡ï¼Œå½“semä¸ºtrueæ—¶æ‰§è¡Œä¸€æ¬¡func
+  * @param  sem:ä¿¡å·é‡(boolç±»å‹)
+  * @param  func:è¢«è°ƒç”¨å‡½æ•°(ä¹Ÿå¯ä»¥æ˜¯èµ‹å€¼ç­‰å…¶ä»–è¯­å¥)
+  * @retval æ— 
   */
 #define CM_SEMAPHORE_TAKE(sem,func)\
 do{\

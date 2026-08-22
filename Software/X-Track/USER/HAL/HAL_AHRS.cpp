@@ -6,9 +6,17 @@
 #  include "arm_math.h"
 #endif
 
-#ifndef sqrtf
-#  define sqrtf(x) sqrt((float)(x))
+static inline float ahrs_inv_sqrtf(float x)
+{
+#if defined(__ARM_FEATURE_DSP) || defined(ARM_MATH_CM4) || defined(__ARM_ARCH_7EM__)
+    float root;
+    if (arm_sqrt_f32(x, &root) == ARM_MATH_SUCCESS && root > 0.0f)
+    {
+        return 1.0f / root;
+    }
 #endif
+    return 1.0f / sqrtf(x);
+}
 
 static void MahonyAHRSupdate(
     float gx, float gy, float gz,
@@ -30,7 +38,7 @@ static void MahonyAHRSupdate(
     if (!((ax == 0.0f) && (ay == 0.0f) && (az == 0.0f)))
     {
         // Normalise accelerometer measurement
-        recipNorm = 1.0f / sqrtf(ax * ax + ay * ay + az * az);
+        recipNorm = ahrs_inv_sqrtf(ax * ax + ay * ay + az * az);
         ax *= recipNorm;
         ay *= recipNorm;
         az *= recipNorm;
@@ -38,7 +46,7 @@ static void MahonyAHRSupdate(
         // Normalise magnetometer measurement
         if (!((mx == 0.0f) && (my == 0.0f) && (mz == 0.0f)))
         {
-            recipNorm = 1.0f / sqrtf(mx * mx + my * my + mz * mz);
+            recipNorm = ahrs_inv_sqrtf(mx * mx + my * my + mz * mz);
             mx *= recipNorm;
             my *= recipNorm;
             mz *= recipNorm;
@@ -115,7 +123,7 @@ static void MahonyAHRSupdate(
     q3 += (qa * gz + qb * gy - qc * gx);
 
     // Normalise quaternion
-    recipNorm = 1.0f / sqrtf(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+    recipNorm = ahrs_inv_sqrtf(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
 
     q0 *= recipNorm;
     q1 *= recipNorm;

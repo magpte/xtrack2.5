@@ -4,30 +4,25 @@
 #include <math.h>
 #include <string.h>
 
-#define FAST_SIN(x) sin(x)
-#define FAST_COS(x) cos(x)
+#define FAST_SIN(x) sinf(x)
+#define FAST_COS(x) cosf(x)
 
 using namespace Microsoft_MapPoint;
 
-static const double EarthRadius = 6378137;
-static const double MinLatitude = -85.05112878;
-static const double MaxLatitude = 85.05112878;
-static const double MinLongitude = -180;
-static const double MaxLongitude = 180;
-static const double MATH_PI = 3.1415926535897932384626433832795;
+static const float EarthRadius_f = 6378137.0f;
+static const float MinLatitude_f = -85.05112878f;
+static const float MaxLatitude_f = 85.05112878f;
+static const float MinLongitude_f = -180.0f;
+static const float MaxLongitude_f = 180.0f;
+static const float MATH_PI_f = 3.14159265358979323846f;
 
 /// <summary>  
-/// Clips a number to the specified minimum and maximum values.  
+/// Clips a number to the specified minimum and maximum values (branch-free/inline single-precision).  
 /// </summary>  
-/// <param name="n">The number to clip.</param>  
-/// <param name="minValue">Minimum allowable value.</param>  
-/// <param name="maxValue">Maximum allowable value.</param>  
-/// <returns>The clipped value.</returns>  
-static double Clip(double n, double minValue, double maxValue)
+static inline float Clip_f(float n, float minValue, float maxValue)
 {
-    return std::min(std::max(n, minValue), maxValue);
+    return (n < minValue) ? minValue : ((n > maxValue) ? maxValue : n);
 }
-
 
 uint32_t TileSystem::MapSize(int levelOfDetail)
 {
@@ -36,37 +31,40 @@ uint32_t TileSystem::MapSize(int levelOfDetail)
 
 double TileSystem::GroundResolution(double latitude, int levelOfDetail)
 {
-    latitude = Clip(latitude, MinLatitude, MaxLatitude);
-    return FAST_COS(latitude * MATH_PI / 180) * 2 * MATH_PI * EarthRadius / MapSize(levelOfDetail);
+    float lat = Clip_f((float)latitude, MinLatitude_f, MaxLatitude_f);
+    float res = FAST_COS(lat * (MATH_PI_f / 180.0f)) * 2.0f * MATH_PI_f * EarthRadius_f / (float)MapSize(levelOfDetail);
+    return (double)res;
 }
  
 double TileSystem::MapScale(double latitude, int levelOfDetail, int screenDpi)
 {
-    return GroundResolution(latitude, levelOfDetail) * screenDpi / 0.0254;
+    return GroundResolution(latitude, levelOfDetail) * (double)screenDpi / 0.0254;
 }
 
 void TileSystem::LatLongToPixelXY(double latitude, double longitude, int levelOfDetail, int* pixelX, int* pixelY)
 {
-    latitude = Clip(latitude, MinLatitude, MaxLatitude);
-    longitude = Clip(longitude, MinLongitude, MaxLongitude);
+    float lat = Clip_f((float)latitude, MinLatitude_f, MaxLatitude_f);
+    float lon = Clip_f((float)longitude, MinLongitude_f, MaxLongitude_f);
 
-    double x = (longitude + 180) / 360;
-    double sinLatitude = FAST_SIN(latitude * MATH_PI / 180);
-    double y = 0.5 - log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * MATH_PI);
+    float x = (lon + 180.0f) / 360.0f;
+    float sinLatitude = FAST_SIN(lat * (MATH_PI_f / 180.0f));
+    sinLatitude = Clip_f(sinLatitude, -0.9999f, 0.9999f);
+    float y = 0.5f - logf((1.0f + sinLatitude) / (1.0f - sinLatitude)) / (4.0f * MATH_PI_f);
 
     uint32_t mapSize = MapSize(levelOfDetail);
-    *pixelX = (int)Clip(x * mapSize + 0.5, 0, mapSize - 1);
-    *pixelY = (int)Clip(y * mapSize + 0.5, 0, mapSize - 1);
+    float mapSize_f = (float)mapSize;
+    *pixelX = (int)Clip_f(x * mapSize_f + 0.5f, 0.0f, mapSize_f - 1.0f);
+    *pixelY = (int)Clip_f(y * mapSize_f + 0.5f, 0.0f, mapSize_f - 1.0f);
 }
 
 void TileSystem::PixelXYToLatLong(int pixelX, int pixelY, int levelOfDetail, double* latitude, double* longitude)
 {
-    double mapSize = MapSize(levelOfDetail);
-    double x = (Clip(pixelX, 0, mapSize - 1) / mapSize) - 0.5;
-    double y = 0.5 - (Clip(pixelY, 0, mapSize - 1) / mapSize);
+    float mapSize = (float)MapSize(levelOfDetail);
+    float x = (Clip_f((float)pixelX, 0.0f, mapSize - 1.0f) / mapSize) - 0.5f;
+    float y = 0.5f - (Clip_f((float)pixelY, 0.0f, mapSize - 1.0f) / mapSize);
 
-    *latitude = 90 - 360 * atan(exp(-y * 2 * MATH_PI)) / MATH_PI;
-    *longitude = 360 * x;
+    *latitude = (double)(90.0f - 360.0f * atanf(expf(-y * 2.0f * MATH_PI_f)) / MATH_PI_f);
+    *longitude = (double)(360.0f * x);
 }
 
 void TileSystem::PixelXYToTileXY(int pixelX, int pixelY, int* tileX, int* tileY)

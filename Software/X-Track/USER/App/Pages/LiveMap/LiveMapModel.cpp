@@ -108,14 +108,9 @@ void LiveMapModel::TrackReload(TrackPointFilter::Callback_t callback, void* user
     PointContainer* pointContainer = (PointContainer*)info.pointCont;
 
     pointContainer->PopStart();
-    pointFilter.Reset();
 
-    TrackPointFilter ptFilter;
-
-    ptFilter.SetOffsetThreshold(CONFIG_TRACK_FILTER_OFFSET_THRESHOLD);
-    ptFilter.SetOutputPointCallback(callback);
-    ptFilter.SetSecondFilterModeEnable(true);
-    ptFilter.userData = userData;
+    TrackPointFilter dummyFilter;
+    dummyFilter.userData = userData;
 
     int32_t pointX, pointY;
     while (pointContainer->PopPoint(&pointX, &pointY))
@@ -127,9 +122,12 @@ void LiveMapModel::TrackReload(TrackPointFilter::Callback_t callback, void* user
             info.level
         );
 
-        ptFilter.PushPoint(mapX, mapY);
+        if (callback)
+        {
+            TrackPointFilter::Point_t pt = { (double)mapX, (double)mapY };
+            callback(&dummyFilter, &pt);
+        }
     }
-    ptFilter.PushEnd();
 }
 
 void LiveMapModel::SetStatusBarStyle(DataProc::StatusBar_Style_t style)

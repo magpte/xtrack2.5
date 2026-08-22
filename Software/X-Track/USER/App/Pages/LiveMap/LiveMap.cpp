@@ -375,10 +375,10 @@ void LiveMap::CheckPosition()
 
     MapTileContUpdate(mapX, mapY, gpsInfo.course);
 
-    // 优化3：定位有效且非静止时才向轨迹点过滤器推送点，消除静止与无信号时的假点与漂移
+    // 运动中实时平滑追加轨迹点，与历史重载保持100%一致
     if (priv.isTrackAvtive && gpsInfo.isVaild && !priv.isStationary)
     {
-        Model.pointFilter.PushPoint(mapX, mapY);
+        TrackLineAppendToEnd(mapX, mapY);
     }
 }
 
@@ -491,8 +491,9 @@ bool LiveMap::GetIsMapTileContChanged()
 
 void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
 {
+    // 自适应屏幕线宽抽稀：保证点间距至少 3 像素，消除 5px 粗线在 1px 短线段下的圆头重叠毛刺
     int32_t minDist = 18 - mapLevelCurrent;
-    if (minDist < 0) minDist = 0;
+    if (minDist < 3) minDist = 3;
     Model.lineFilter.SetMinDistance(minDist);
 
     Model.lineFilter.SetClipArea(area);

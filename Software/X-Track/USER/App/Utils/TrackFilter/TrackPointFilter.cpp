@@ -29,10 +29,6 @@
 #  include "arm_math.h"
 #endif
 
-#ifndef sqrtf
-#  define sqrtf(x) sqrt((float)(x))
-#endif
-
 #define SQ(x)    ((x)*(x))
 #define FLOAT_0  0.00001
 
@@ -309,5 +305,12 @@ double TrackPointFilter::QuickSqrt(double num)
     {
         return 0.0;
     }
+#if defined(__ARM_FEATURE_DSP) || defined(ARM_MATH_CM4) || defined(__ARM_ARCH_7EM__)
+    float root;
+    if (arm_sqrt_f32((float)num, &root) == ARM_MATH_SUCCESS && root > 0.0f)
+    {
+        return (double)(1.0f / root);
+    }
+#endif
     return (double)(1.0f / sqrtf((float)num));
 }

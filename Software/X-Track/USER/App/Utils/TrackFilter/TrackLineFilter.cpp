@@ -74,7 +74,7 @@ void TrackLineFilter::PushPoint(const Point_t* point)
         {
             int32_t dx = point->x - priv.lastOutputPoint.x;
             int32_t dy = point->y - priv.lastOutputPoint.y;
-            if (dx * dx + dy * dy < priv.minDistSq)
+            if ((int64_t)dx * dx + (int64_t)dy * dy < (int64_t)priv.minDistSq)
             {
                 shouldOutput = false;
             }

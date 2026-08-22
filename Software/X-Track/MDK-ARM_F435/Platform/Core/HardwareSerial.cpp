@@ -111,21 +111,23 @@ void HardwareSerial::IRQHandler()
 {
     if(_rxDmaChannel != NULL)
     {
-        /* DMA RX 模式：数据搬运完全由 DMA 完成，RDBF 中断从未被使能。
-         * 1. 检查并清除 Overrun / Framing / Noise 硬件错误标志，防止 USART 接收器卡死。
-         *    项 5：在串口错误中断触发时即时清除错误标志并恢复接收。 */
+        /* 1. 检查并清除 Overrun / Framing / Noise / Parity 硬件错误标志，防止 USART 接收器卡死。
+         *    AT32F435 硬件清除序列：读 STS 寄存器 (usart_flag_get) + 读 DT 寄存器 (usart_data_receive)。 */
         if(usart_flag_get(_USARTx, USART_ROERR_FLAG) != RESET ||
            usart_flag_get(_USARTx, USART_FERR_FLAG) != RESET ||
-           usart_flag_get(_USARTx, USART_NERR_FLAG) != RESET)
+           usart_flag_get(_USARTx, USART_NERR_FLAG) != RESET ||
+           usart_flag_get(_USARTx, USART_PERR_FLAG) != RESET)
         {
             (void)usart_data_receive(_USARTx);
             usart_flag_clear(_USARTx, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG);
         }
 
-        /* 2. IDLE (空闲线) 中断处理，通知上层有数据到达 */
+        /* 2. IDLE (空闲线) 中断处理，通知上层有数据到达。
+         *    AT32F435 硬件清除 IDLE 标志序列：读 STS 寄存器 (usart_flag_get) + 读 DT 寄存器 (usart_data_receive)。
+         *    必须读 DT 寄存器以清除硬件 IDLE 标志，否则将导致死循环 ISR 中断风暴卡死系统！ */
         if(usart_flag_get(_USARTx, USART_IDLEF_FLAG) != RESET)
         {
-            (void)usart_data_receive(_USARTx);   // 读 DT 寄存器是硬件规定的清除 IDLE 标志位的方式之一
+            (void)usart_data_receive(_USARTx);
             usart_flag_clear(_USARTx, USART_IDLEF_FLAG);
 
             if(_callbackFunction)
@@ -271,7 +273,13 @@ bool HardwareSerial::enableRxDMA(
     crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
     crm_periph_clock_enable(CRM_DMA2_PERIPH_CLOCK, TRUE);
 
+    dma_channel_enable(dmaChannel, FALSE);
     dma_reset(dmaChannel);
+
+    // 关键加固：重置软件环形缓冲区读写指针与内存
+    _rxBufferHead = 0;
+    _rxBufferTail = 0;
+    memset(_rxBuffer, 0, sizeof(_rxBuffer));
 
     dma_init_type dma_init_struct;
     dma_default_para_init(&dma_init_struct);
@@ -327,10 +335,15 @@ void HardwareSerial::end(void)
     if(_rxDmaChannel != NULL)
     {
         usart_interrupt_enable(_USARTx, USART_IDLE_INT, FALSE);
+        usart_interrupt_enable(_USARTx, USART_ERR_INT, FALSE);
         usart_dma_receiver_enable(_USARTx, FALSE);
         dma_channel_enable(_rxDmaChannel, FALSE);
+        dma_reset(_rxDmaChannel);
         _rxDmaChannel = NULL;
     }
+
+    _rxBufferHead = 0;
+    _rxBufferTail = 0;
 
     usart_enable(_USARTx, FALSE);
 }

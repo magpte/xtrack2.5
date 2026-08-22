@@ -341,10 +341,14 @@ void HAL::GPS_Init()
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
     delay(100);
+#if defined(AT32F435xx)
+    usart_flag_clear(USART2, USART_TDC_FLAG);
+#endif
     GPS_SERIAL.print("$PCAS01,3*1F\r\n");
 
 #if defined(AT32F435xx)
-    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET);
+    uint32_t waitCount = 100000;
+    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET && --waitCount > 0);
 #endif
     delay(50);
 
@@ -372,25 +376,39 @@ void HAL::GPS_Init()
 static void GPS_Recover()
 {
 #if defined(AT32F435xx)
-    // 硬件级清除 USART2 错误与空闲标志
-    (void)usart_data_receive(USART2);
-    usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG | USART_IDLEF_FLAG);
+    // 硬件级清除 DMA 与 USART2 错误与状态标志
+    dma_flag_clear(DMA1_GL4_FLAG | DMA1_FDT4_FLAG | DMA1_HDT4_FLAG | DMA1_DTERR4_FLAG);
+    usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG | USART_IDLEF_FLAG | USART_TDC_FLAG);
+#endif
+
+#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
+    s_nmeaLineLen = 0; // 清除可能残留的半包破损 NMEA 语句
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
-    // 盲发一条 38400 指令（以防模块实际工作在 38400 但处于静默状态）
+    // 1. 先在 38400 波特率下盲发一条切换指令（以防模块仅是流控阻塞但仍工作在 38400）
     GPS_SERIAL.print("$PCAS01,3*1F\r\n");
+#if defined(AT32F435xx)
+    usart_flag_clear(USART2, USART_TDC_FLAG);
+    uint32_t waitCount1 = 100000;
+    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET && --waitCount1 > 0);
+#endif
+    delay(20);
 
-    // 重新通过 9600 波特率向可能复位的 GPS 模块握手并切回 38400
+    // 2. 重新通过 9600 波特率向可能复位的 GPS 模块握手并切回 38400
     GPS_SERIAL.end();
     GPS_SERIAL.begin(9600);
-    delay(20);
+    delay(50);
+#if defined(AT32F435xx)
+    usart_flag_clear(USART2, USART_TDC_FLAG);
+#endif
     GPS_SERIAL.print("$PCAS01,3*1F\r\n");
 
 #if defined(AT32F435xx)
-    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET);
+    uint32_t waitCount2 = 100000;
+    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET && --waitCount2 > 0);
 #endif
-    delay(20);
+    delay(50);
 
     GPS_SERIAL.begin(38400);
 #endif
@@ -405,6 +423,7 @@ static void GPS_Recover()
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
+    delay(20);
     GPS_SendConfigCommands();
 #endif
 }
@@ -433,15 +452,16 @@ void HAL::GPS_Update()
     else if (s_lastRxTick > 0)
     {
         // 阶梯自愈看门狗：
-        // 阶段 1 (> 2500ms)：快速清除 USART 硬件错误标志，防止 DMA 挂起
+        // 阶段 1 (> 2500ms)：快速清除 USART/DMA 硬件错误标志，防止 DMA 挂起
         if (now - s_lastRxTick > 2500)
         {
 #if defined(AT32F435xx)
+            dma_flag_clear(DMA1_DTERR4_FLAG);
             if (usart_flag_get(USART2, USART_ROERR_FLAG) != RESET ||
                 usart_flag_get(USART2, USART_FERR_FLAG) != RESET ||
-                usart_flag_get(USART2, USART_NERR_FLAG) != RESET)
+                usart_flag_get(USART2, USART_NERR_FLAG) != RESET ||
+                usart_flag_get(USART2, USART_PERR_FLAG) != RESET)
             {
-                (void)usart_data_receive(USART2);
                 usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG);
             }
 #endif
@@ -452,6 +472,7 @@ void HAL::GPS_Update()
         {
             s_lastRecoverTick = now;
             GPS_Recover();
+            s_lastRxTick = millis(); // 复位心跳，给自愈重连预留接收窗口
         }
     }
 

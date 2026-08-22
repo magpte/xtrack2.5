@@ -28,5 +28,6 @@
 #include "Arduino.h"
 #include "HAL_Config.h"
 #include "CommonMacro.h"
+#include "FastMemcpy.h"
 
 #endif

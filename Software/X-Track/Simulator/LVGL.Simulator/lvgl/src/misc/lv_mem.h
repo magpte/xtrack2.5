@@ -123,6 +123,21 @@ void lv_mem_buf_free_all(void);
 
 #if LV_MEMCPY_MEMSET_STD
 
+#if (defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)) && __has_include("HAL/FastMemcpy.h")
+#  include "HAL/FastMemcpy.h"
+/**
+ * Cortex-M4 LDMIA/STMIA burst copy wrapper for LVGL
+ */
+static inline void * lv_memcpy(void * dst, const void * src, size_t len)
+{
+    return arm_fast_memcpy(dst, src, len);
+}
+
+static inline void * lv_memcpy_small(void * dst, const void * src, size_t len)
+{
+    return arm_fast_memcpy(dst, src, len);
+}
+#else
 /**
  * Wrapper for the standard memcpy
  * @param dst pointer to the destination buffer
@@ -144,6 +159,7 @@ static inline void * lv_memcpy_small(void * dst, const void * src, size_t len)
 {
     return memcpy(dst, src, len);
 }
+#endif
 
 /**
  * Wrapper for the standard memset
