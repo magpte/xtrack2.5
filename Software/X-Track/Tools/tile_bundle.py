@@ -31,7 +31,7 @@ try:
 except ImportError:
     Image = None
 
-from tile_rle_encode import encode_tile_bytes, load_source_image
+from tile_lz4_encode import encode_tile_bytes, load_source_image
 
 MAGIC = b"TBND"
 ABSENT_OFFSET = 0xFFFFFFFF
@@ -129,7 +129,7 @@ def find_tiles(input_dir, is_tencent=False):
                 yield level, tile_x, tile_y, full_path
                 continue
 
-            # 2. Nested layout check: <level>/<tileX>/<tileY>.<ext>
+            # 2. Nested layout check: <level>/<tileX>/<tileY>.<ext> or <tileX>/<tileY>.<ext> when root is <level>
             m = TILE_RE.match(fname)
             if m:
                 rel_path = os.path.relpath(full_path, input_dir)
@@ -137,6 +137,13 @@ def find_tiles(input_dir, is_tencent=False):
                 if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
                     level = int(parts[0])
                     tile_x = int(parts[1])
+                    tile_y = int(m.group(1))
+                    if is_tencent:
+                        tile_y = (1 << level) - 1 - tile_y
+                    yield level, tile_x, tile_y, full_path
+                elif len(parts) == 2 and parts[0].isdigit() and os.path.basename(input_dir).isdigit():
+                    level = int(os.path.basename(input_dir))
+                    tile_x = int(parts[0])
                     tile_y = int(m.group(1))
                     if is_tencent:
                         tile_y = (1 << level) - 1 - tile_y

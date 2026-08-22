@@ -68,34 +68,15 @@ static inline void* arm_fast_memcpy(void* __restrict dst, const void* __restrict
     const uint32_t* s32 = (const uint32_t*)s;
 
     // 8 寄存器 32 字节 (8 x 32-bit Words) 突发批量复制 (循环展开)
+    // Keil AC5/AC6/GCC 优化器自动将其生成为单条 LDMIA 与 STMIA 硬件流水线指令
     while (n >= 32)
     {
-#if defined(__GNUC__) || defined(__ARMCC_VERSION)
-        // GCC / ARM Clang 8 寄存器 LDMIA/STMIA 汇编流水线
-        uint32_t r0, r1, r2, r3, r4, r5, r6, r7;
-        __asm__ volatile (
-            "ldmia %[src]!, {%[r0], %[r1], %[r2], %[r3], %[r4], %[r5], %[r6], %[r7]}\n\t"
-            "stmia %[dst]!, {%[r0], %[r1], %[r2], %[r3], %[r4], %[r5], %[r6], %[r7]}\n\t"
-            : [dst] "+&r" (d32), [src] "+&r" (s32),
-              [r0] "=&r" (r0), [r1] "=&r" (r1), [r2] "=&r" (r2), [r3] "=&r" (r3),
-              [r4] "=&r" (r4), [r5] "=&r" (r5), [r6] "=&r" (r6), [r7] "=&r" (r7)
-            :
-            : "memory"
-        );
-#elif defined(__CC_ARM)
-        // Keil AC5 编译器寄存器批量加载
         uint32_t a0 = s32[0], a1 = s32[1], a2 = s32[2], a3 = s32[3];
         uint32_t a4 = s32[4], a5 = s32[5], a6 = s32[6], a7 = s32[7];
         d32[0] = a0; d32[1] = a1; d32[2] = a2; d32[3] = a3;
         d32[4] = a4; d32[5] = a5; d32[6] = a6; d32[7] = a7;
         s32 += 8;
         d32 += 8;
-#else
-        d32[0] = s32[0]; d32[1] = s32[1]; d32[2] = s32[2]; d32[3] = s32[3];
-        d32[4] = s32[4]; d32[5] = s32[5]; d32[6] = s32[6]; d32[7] = s32[7];
-        s32 += 8;
-        d32 += 8;
-#endif
         n -= 32;
     }
 

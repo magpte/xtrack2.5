@@ -84,6 +84,10 @@
 
 #define CONFIG_MAP_IMG_RLE_ENABLE             1
 
+#ifndef CONFIG_MAP_CACHE_SIZE_KB
+#define CONFIG_MAP_CACHE_SIZE_KB              64
+#endif
+
 #define CONFIG_ARROW_THEME_DEFAULT            "default"
 
 #define CONFIG_LIVE_MAP_LEVEL_DEFAULT         16

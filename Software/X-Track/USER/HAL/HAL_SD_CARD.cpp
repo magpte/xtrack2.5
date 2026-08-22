@@ -175,6 +175,22 @@ void HAL::NMEA_Log_Close()
     s_nmeaLogNeedSync = false;
 }
 
+void HAL::Map_Log_Write(const char* line)
+{
+    if(!SD_IsReady || line == nullptr)
+    {
+        return;
+    }
+
+    File logFile = SD.open("/MAP_LOG.TXT", FILE_WRITE);
+    if(logFile)
+    {
+        logFile.println(line);
+        logFile.sync();
+        logFile.close();
+    }
+}
+
 bool HAL::SD_Init()
 {
     bool retval = false;

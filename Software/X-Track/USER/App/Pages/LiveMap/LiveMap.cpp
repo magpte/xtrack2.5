@@ -71,6 +71,7 @@ void LiveMap::onViewLoad()
     AttachEvent(View.ui.sportInfo.cont);
 
     lv_slider_set_value(View.ui.zoom.slider, mapLevelCurrent, LV_ANIM_OFF);
+    lv_label_set_text_fmt(View.ui.zoom.labelInfo, "%d/%d", mapLevelCurrent, Model.mapConv.GetLevelMax());
     Model.mapConv.SetLevel(mapLevelCurrent);
     lv_obj_add_flag(View.ui.map.cont, LV_OBJ_FLAG_HIDDEN);
 
@@ -238,14 +239,12 @@ void LiveMap::UpdateDelay(uint32_t ms)
     // 这样彻底去掉了原来为判断"3 秒是否到了"而维持的高频轮询分支。
     lv_obj_clear_state(View.ui.zoom.cont, LV_STATE_USER_1); // 先确保可见
 
+    lv_anim_del(View.ui.zoom.cont, nullptr); // 取消之前未执行完的延迟动画
+
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, View.ui.zoom.cont);
-    // exec_cb 设为 nullptr：这个动画只用来做延迟触发，不需要逐帧改任何属性；
-    // 真正的"隐藏"在 ready_cb 里通过设置 LV_STATE_USER_1 完成（View 里已经
-    // 为这个 state 配置了 x 偏移 + opa 渐出的 CSS transition，见
-    // LiveMapView.cpp ZoomCtrl_Create()）。
-    lv_anim_set_exec_cb(&a, nullptr);
+    lv_anim_set_exec_cb(&a, [](void* var, int32_t v) { LV_UNUSED(var); LV_UNUSED(v); });
     lv_anim_set_values(&a, 0, 0);
     lv_anim_set_time(&a, 0);       // 动画本身时长为 0
     lv_anim_set_delay(&a, 3000);   // 延迟 3 秒后触发 ready_cb

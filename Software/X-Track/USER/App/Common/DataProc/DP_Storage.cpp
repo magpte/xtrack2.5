@@ -101,13 +101,16 @@ static bool onLoad(Account* account)
     MapConv::SetCoordTransformEnable(!sysConfig.mapWGS84);
 
     int16_t levelMin, levelMax;
-    if (MapConvGetRange(sysConfig.mapDirPath, &levelMin, &levelMax))
+    if (MapConvGetRange(sysConfig.mapDirPath, &levelMin, &levelMax) ||
+        MapConvGetRange("/MAPRB", &levelMin, &levelMax) ||
+        MapConvGetRange("/MAP", &levelMin, &levelMax))
     {
         MapConv::SetLevelRange(levelMin, levelMax);
     }
     else
     {
-        LV_LOG_ERROR("Get map level range failed!");
+        LV_LOG_WARN("Get map level range failed, using default range 15..18");
+        MapConv::SetLevelRange(15, 18);
     }
 
     LV_LOG_USER(

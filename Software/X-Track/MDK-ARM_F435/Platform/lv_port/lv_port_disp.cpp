@@ -80,5 +80,6 @@ void lv_port_disp_init()
     disp_drv.flush_cb = disp_flush_cb;
     disp_drv.wait_cb = NULL;
     disp_drv.draw_buf = &disp_buf;
+    disp_drv.full_refresh = 1;
     lv_disp_drv_register(&disp_drv);
 }

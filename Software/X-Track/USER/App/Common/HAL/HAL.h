@@ -165,6 +165,9 @@ bool Audio_PlayMusic(const char* name);
 /* Memory */
 void Memory_DumpInfo();
 
+/* Map Debug Log */
+void Map_Log_Write(const char* line);
+
 }
 
 #endif
