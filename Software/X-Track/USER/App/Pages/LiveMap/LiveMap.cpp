@@ -157,7 +157,16 @@ void LiveMap::onViewDidAppear()
     priv.lastTilePosGroup.clear();
 
     priv.isTrackAvtive = Model.GetTrackFilterActive();
-    if (!priv.isTrackAvtive)
+    if (priv.isTrackAvtive)
+    {
+        Model.pointFilter.SetOutputPointCallback([](TrackPointFilter * filter, const TrackPointFilter::Point_t* point)
+        {
+            LiveMap* instance = (LiveMap*)filter->userData;
+            instance->TrackLineAppendToEnd(point->x, point->y);
+        });
+        Model.pointFilter.userData = this;
+    }
+    else
     {
         Model.pointFilter.SetOutputPointCallback(nullptr);
     }
@@ -374,22 +383,10 @@ void LiveMap::CheckPosition()
 
     MapTileContUpdate(mapX, mapY, gpsInfo.course);
 
-    // 运动中实时平滑追加轨迹点，与历史重载保持100%一致
+    // 运动中通过 Model.pointFilter 实时提取拐点追加轨迹，与存盘记录保持100%一致
     if (priv.isTrackAvtive && gpsInfo.isVaild && !priv.isStationary)
     {
-        int32_t minDist = 18 - mapLevelCurrent;
-        if (minDist < 3) minDist = 3;
-
-        int32_t dx = mapX - priv.lastLiveTrackPoint.x;
-        int32_t dy = mapY - priv.lastLiveTrackPoint.y;
-        int64_t distSq = (int64_t)dx * dx + (int64_t)dy * dy;
-
-        if (priv.lastLiveTrackPoint.x == INT32_MIN || distSq >= (int64_t)(minDist * minDist))
-        {
-            priv.lastLiveTrackPoint.x = mapX;
-            priv.lastLiveTrackPoint.y = mapY;
-            TrackLineAppendToEnd(mapX, mapY);
-        }
+        Model.pointFilter.PushPoint(mapX, mapY);
     }
 }
 
@@ -502,6 +499,7 @@ bool LiveMap::GetIsMapTileContChanged()
 
 void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
 {
+    Model.pointFilter.Reset();
     Model.lineFilter.SetClipArea(area);
     Model.lineFilter.Reset();
     Model.TrackReload([](TrackPointFilter * filter, const TrackPointFilter::Point_t* point)

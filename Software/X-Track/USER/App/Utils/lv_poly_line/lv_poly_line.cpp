@@ -62,6 +62,8 @@ void lv_poly_line::start()
     LV_LOG_INFO("show poly_line[%d]", current_index);
 
     single_line_t* single_line = &poly_line[current_index];
+    single_line->points.clear();
+    single_line->points.reserve(64);
 
     lv_obj_clear_flag(single_line->line, LV_OBJ_FLAG_HIDDEN);
     lv_line_set_points(single_line->line, nullptr, 0);
@@ -75,8 +77,14 @@ void lv_poly_line::append(const lv_point_t* point)
         return;
     }
 
+    std::vector<lv_point_t>& pts = poly_line[current_index].points;
+    if (!pts.empty() && pts.back().x == point->x && pts.back().y == point->y)
+    {
+        return;
+    }
+
     LV_LOG_INFO("poly_line[%d]: (%d, %d)", current_index, point->x, point->y);
-    poly_line[current_index].points.push_back(*point);
+    pts.push_back(*point);
 }
 
 void lv_poly_line::append_to_end(const lv_point_t* point)
@@ -88,12 +96,18 @@ void lv_poly_line::append_to_end(const lv_point_t* point)
         return;
     }
 
-    single_line->points.push_back(*point);
+    std::vector<lv_point_t>& pts = single_line->points;
+    if (!pts.empty() && pts.back().x == point->x && pts.back().y == point->y)
+    {
+        return;
+    }
 
-    LV_LOG_INFO("end_line: (%d, %d), size = %d", point->x, point->y, single_line->points.size());
+    pts.push_back(*point);
+
+    LV_LOG_INFO("end_line: (%d, %d), size = %d", point->x, point->y, pts.size());
 
     const lv_point_t* points = get_points(single_line);
-    lv_line_set_points(single_line->line, points, (uint16_t)single_line->points.size());
+    lv_line_set_points(single_line->line, points, (uint16_t)pts.size());
 }
 
 void lv_poly_line::stop()
