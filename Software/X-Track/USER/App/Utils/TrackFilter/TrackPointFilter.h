@@ -30,8 +30,8 @@ class TrackPointFilter
 public:
     typedef struct
     {
-        double x;
-        double y;
+        int32_t x;
+        int32_t y;
     } Point_t;
 
     typedef void (*Callback_t)(TrackPointFilter* filter, const Point_t* point);
@@ -43,14 +43,23 @@ public:
     TrackPointFilter();
     ~TrackPointFilter();
     void Reset();
-    bool PushPoint(double x, double y)
+    bool PushPoint(int32_t x, int32_t y)
     {
         Point_t point = { x, y };
         return PushPoint(&point);
     }
+    bool PushPoint(double x, double y)
+    {
+        Point_t point = { (int32_t)x, (int32_t)y };
+        return PushPoint(&point);
+    }
     bool PushPoint(const Point_t* point);
     void PushEnd();
-    void SetOffsetThreshold(double offset);
+    void SetOffsetThreshold(int32_t offset);
+    void SetOffsetThreshold(double offset)
+    {
+        SetOffsetThreshold((int32_t)(offset + 0.5));
+    }
     void SetOutputPointCallback(Callback_t callback);
     void SetSecondFilterModeEnable(bool en);
     void GetCounts(uint32_t* sum, uint32_t* output)
@@ -60,37 +69,20 @@ public:
     }
 
 private:
-    typedef struct
-    {
-        double a;
-        double b;
-        double c;
-    } Line_t;
-
-private:
     struct
     {
-        double offsetThreshold;
+        int64_t offsetThresholdSq;
         Callback_t outputCallback;
-        Point_t tailPoint;
-        Point_t prePoint;
-        Line_t refLine;
+        Point_t refPoint;   // 当前基线起点
+        Point_t tailPoint;  // 上上个点 P0
+        Point_t prePoint;   // 上一个点 P1
         uint32_t pointCnt;
         uint32_t pointOutputCnt;
         bool secondFilterMode;
     } priv;
 
 private:
-    bool GetLine(Line_t* line, const Point_t* point0, const Point_t* point1);
-    void GetVerticalLine(Line_t* verLine, const Line_t* oriLine, const Point_t* point);
-    double GetOffset(const Line_t* line, const Point_t* point);
-    bool GetIsOnSameSide(const Line_t* line, const Point_t* point0, const Point_t* point1);
-    bool GetIsPointInLine(const Line_t* line, const Point_t* point);
-
-    void DumpLine(const char* name, const Line_t* line);
-    void DumpPoint(const char* name, const Point_t* point);
     void OutputPoint(const Point_t* point);
-    double QuickSqrt(double num);
 };
 
 #endif

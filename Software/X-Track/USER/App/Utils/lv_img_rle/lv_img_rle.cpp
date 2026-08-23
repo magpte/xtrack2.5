@@ -100,8 +100,8 @@ typedef struct {
 } Lz4TileDesc_t;
 
 static Lz4TileDesc_t  s_descriptors[LZ4_MAX_DESCRIPTORS];
-static uint8_t        s_comp_chunk_buf[LZ4_CHUNK_FETCH_BUF_SIZE]; // 8 KB static compressed chunk buffer
-static uint8_t        s_scratch_buf[LZ4_SCRATCH_BUF_SIZE];        // 8 KB static uncompressed pixel buffer
+static uint8_t        s_comp_chunk_buf[LZ4_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 8 KB static compressed chunk buffer (8-byte aligned)
+static uint8_t        s_scratch_buf[LZ4_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 8 KB static uncompressed pixel buffer (8-byte aligned)
 
 // MRU decompression cache: eliminates redundant SD reads & LZ4 decompression
 static struct {
@@ -718,14 +718,46 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             else // TILE_FMT_RLE2
             {
                 uint32_t sp = 0, dp = 0;
-                uint32_t target_pixels = LZ4_TILE_SIZE * LZ4_CHUNK_ROWS;
+                const uint32_t target_pixels = LZ4_TILE_SIZE * LZ4_CHUNK_ROWS;
                 while (sp + 1 < chunk_comp_len && dp < target_pixels)
                 {
-                    uint8_t run_len = s_comp_chunk_buf[sp++];
-                    uint8_t idx     = s_comp_chunk_buf[sp++];
-                    for (uint8_t r = 0; r < run_len && dp < target_pixels; r++)
+                    uint32_t run_len = s_comp_chunk_buf[sp++];
+                    uint8_t idx      = s_comp_chunk_buf[sp++];
+                    if (dp + run_len > target_pixels)
+                    {
+                        run_len = target_pixels - dp;
+                    }
+
+                    if (run_len >= 8)
+                    {
+                        uint32_t val32 = (uint32_t)idx * 0x01010101u;
+                        while ((dp & 3) && run_len > 0)
+                        {
+                            s_scratch_buf[dp++] = idx;
+                            run_len--;
+                        }
+                        uint32_t* dp32 = (uint32_t*)&s_scratch_buf[dp];
+                        while (run_len >= 16)
+                        {
+                            dp32[0] = val32;
+                            dp32[1] = val32;
+                            dp32[2] = val32;
+                            dp32[3] = val32;
+                            dp32 += 4;
+                            run_len -= 16;
+                        }
+                        while (run_len >= 4)
+                        {
+                            *dp32++ = val32;
+                            run_len -= 4;
+                        }
+                        dp = (uint32_t)((uint8_t*)dp32 - s_scratch_buf);
+                    }
+
+                    while (run_len > 0)
                     {
                         s_scratch_buf[dp++] = idx;
+                        run_len--;
                     }
                 }
             }
@@ -759,8 +791,20 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 x = 1;
             }
 
-            // 32-bit dual-pixel burst writes (2 pixels per single memory store cycle)
+            // 4-pixel parallel lookup and 2x 32-bit burst writes (dual-issue / load-use pipeline optimization)
             uint32_t* dst32 = (uint32_t*)&dest_row[x];
+            for (; x + 3 < blit_w; x += 4)
+            {
+                uint32_t c0 = pal[src_row_indices[x]];
+                uint32_t c1 = pal[src_row_indices[x + 1]];
+                uint32_t c2 = pal[src_row_indices[x + 2]];
+                uint32_t c3 = pal[src_row_indices[x + 3]];
+                dst32[0] = c0 | (c1 << 16);
+                dst32[1] = c2 | (c3 << 16);
+                dst32 += 2;
+            }
+
+            // 2-pixel remainder
             for (; x + 1 < blit_w; x += 2)
             {
                 uint32_t c0 = pal[src_row_indices[x]];

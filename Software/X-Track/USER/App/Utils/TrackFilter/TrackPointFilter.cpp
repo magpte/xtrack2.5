@@ -22,29 +22,11 @@
  */
 #include "TrackPointFilter.h"
 #include <string.h>
-#include <math.h>
-#include <cmath> 
-
-#if defined(__ARM_ARCH) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
-#  include "arm_math.h"
-#endif
-
-#define SQ(x)    ((x)*(x))
-#define FLOAT_0  0.00001
-
-#define TPF_USE_LOG             0
-#define TPF_USE_LINE_CHECKED    0
-
-#if TPF_USE_LOG
-#  include <stdio.h>
-#  define LOG_PRINT(format, ...) printf(format, ##__VA_ARGS__),printf("\n")
-#else
-#  define LOG_PRINT(format, ...)
-#endif
 
 TrackPointFilter::TrackPointFilter()
 {
     memset(&priv, 0, sizeof(priv));
+    priv.offsetThresholdSq = 4; // 默认 2 像素阈值 (2^2 = 4)
 }
 
 TrackPointFilter::~TrackPointFilter()
@@ -58,130 +40,13 @@ void TrackPointFilter::Reset()
     priv.pointOutputCnt = 0;
 }
 
-bool TrackPointFilter::PushPoint(const Point_t* point)
+void TrackPointFilter::SetOffsetThreshold(int32_t offset)
 {
-    bool retval = false;
-    DumpPoint("\n+P", point);
-    if (priv.pointCnt == 0)
+    if (offset <= 0)
     {
-        retval = true;
-        OutputPoint(point);
+        offset = 1;
     }
-    else if (priv.pointCnt == 1)
-    {
-        if (!GetLine(&priv.refLine, &priv.prePoint, point))
-        {
-            return false;
-        }
-        DumpLine("First", &priv.refLine);
-    }
-    else
-    {
-        DumpLine("--", &priv.refLine);
-
-        double offset = GetOffset(&priv.refLine, point);
-        LOG_PRINT("OFS = %lf", offset);
-
-        if (offset > priv.offsetThreshold)
-        {
-            LOG_PRINT("<---> offset detect!");
-
-            retval = true;
-
-            if (priv.secondFilterMode)
-            {
-                OutputPoint(&priv.tailPoint);
-            }
-
-            OutputPoint(&priv.prePoint);
-            if (!GetLine(&priv.refLine, &priv.prePoint, point))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            Line_t line;
-            if (!GetLine(&line, &priv.tailPoint, &priv.prePoint))
-            {
-                return false;
-            }
-
-            DumpLine("L", &line);
-#if TPF_USE_LINE_CHECKED
-            bool inLine1 = GetIsPointInLine(&line, &priv.tailPoint);
-            if (!inLine1)
-            {
-                DumpPoint("tailPoint", &priv.tailPoint);
-                LOG_PRINT("not in L");
-                while (1);
-            }
-
-            bool inLine2 = GetIsPointInLine(&line, &priv.prePoint);
-            if (!inLine2)
-            {
-                DumpPoint("prePoint", &priv.prePoint);
-                LOG_PRINT("not in L");
-                while (1);
-            }
-#endif
-
-            Line_t verLine;
-            GetVerticalLine(&verLine, &line, &priv.prePoint);
-
-            DumpLine("|", &verLine);
-            DumpPoint("in", &priv.prePoint);
-
-#if TPF_USE_LINE_CHECKED
-            bool inLine3 = GetIsPointInLine(&verLine, &priv.prePoint);
-            if (!inLine3)
-            {
-                DumpPoint("prePoint", &priv.prePoint);
-                LOG_PRINT("not in verLine");
-                while (1);
-            }
-#endif
-
-            if (GetIsOnSameSide(&verLine, &priv.tailPoint, point))
-            {
-                LOG_PRINT("~~~ direction change detect!");
-
-                DumpPoint("p0", &priv.tailPoint);
-                DumpPoint("p1", &priv.prePoint);
-                DumpPoint("p2", point);
-
-                retval = true;
-
-                if (priv.secondFilterMode)
-                {
-                    OutputPoint(&priv.tailPoint);
-                }
-
-                OutputPoint(&priv.prePoint);
-                if (!GetLine(&priv.refLine, &priv.prePoint, point))
-                {
-                    return false;
-                }
-            }
-        }
-    }
-
-    priv.tailPoint = priv.prePoint;
-    priv.prePoint = *point;
-    priv.pointCnt++;
-
-    return retval;
-}
-
-void TrackPointFilter::PushEnd()
-{
-    OutputPoint(&priv.prePoint);
-    Reset();
-}
-
-void TrackPointFilter::SetOffsetThreshold(double offset)
-{
-    priv.offsetThreshold = offset;
+    priv.offsetThresholdSq = (int64_t)offset * offset;
 }
 
 void TrackPointFilter::SetOutputPointCallback(Callback_t callback)
@@ -198,119 +63,88 @@ void TrackPointFilter::OutputPoint(const Point_t* point)
 {
     if (priv.outputCallback)
     {
-        DumpPoint(">>> output", point);
-        LOG_PRINT("");
         priv.outputCallback(this, point);
     }
     priv.pointOutputCnt++;
 }
 
-bool TrackPointFilter::GetLine(Line_t* line, const Point_t* point0, const Point_t* point1)
+bool TrackPointFilter::PushPoint(const Point_t* point)
 {
-    bool retval = true;
+    bool retval = false;
 
-    double x0 = point0->x;
-    double x1 = point1->x;
-    double y0 = point0->y;
-    double y1 = point1->y;
-
-    double x_diff_abs = std::abs(x0 - x1);
-    double y_diff_abs = std::abs(y0 - y1);
-
-    double a = 0;
-    double b = 0;
-    double c = 0;
-
-    if (x_diff_abs < FLOAT_0 && y_diff_abs > FLOAT_0)
+    if (priv.pointCnt == 0)
     {
-        a = 1;
-        b = 0;
-        c = -x0;
+        // 第 1 个点：直接作为起点输出
+        retval = true;
+        OutputPoint(point);
+        priv.refPoint = *point;
     }
-    else if (x_diff_abs > FLOAT_0 && y_diff_abs < FLOAT_0)
+    else if (priv.pointCnt == 1)
     {
-        a = 0;
-        b = 1;
-        c = -y0;
-    }
-    else if (x_diff_abs > FLOAT_0 && y_diff_abs > FLOAT_0)
-    {
-        a = (y1 - y0) / (x0 - x1);
-        b = 1.0;
-        c = -a * x0 - y0;
+        // 第 2 个点：与起点形成第一条参考基线
+        // 暂不输出，等待第 3 个点判定
     }
     else
     {
-        retval = false;
+        // 空间几何判定：当前点 P2 (point), 上一点 P1 (priv.prePoint), 上上点 P0 (priv.tailPoint), 基线起点 Pref (priv.refPoint)
+        int64_t dx = (int64_t)priv.prePoint.x - priv.refPoint.x;
+        int64_t dy = (int64_t)priv.prePoint.y - priv.refPoint.y;
+        int64_t baseLenSq = dx * dx + dy * dy;
+
+        // 条件 A：垂直偏距检测 (Cross-Track Distance)
+        // 向量叉积 cross = (P1 - Pref) x (P2 - Pref)
+        int64_t vx = (int64_t)point->x - priv.refPoint.x;
+        int64_t vy = (int64_t)point->y - priv.refPoint.y;
+        int64_t cross = dx * vy - dy * vx;
+        int64_t crossSq = cross * cross;
+
+        if (baseLenSq > 0 && crossSq > priv.offsetThresholdSq * baseLenSq)
+        {
+            // P2 偏离基线 Pref->P1 超过阈值，判定 P1 为转向拐点
+            retval = true;
+            if (priv.secondFilterMode)
+            {
+                OutputPoint(&priv.tailPoint);
+            }
+            OutputPoint(&priv.prePoint);
+            priv.refPoint = priv.prePoint; // 以 P1 为新的基线起点
+        }
+        else
+        {
+            // 条件 B：法线转折判别 (运动向量点积是否反向 / 夹角 > 90 度)
+            // 向量 u = P1 - P0, 向量 w = P2 - P1
+            int64_t ux = (int64_t)priv.prePoint.x - priv.tailPoint.x;
+            int64_t uy = (int64_t)priv.prePoint.y - priv.tailPoint.y;
+            int64_t wx = (int64_t)point->x - priv.prePoint.x;
+            int64_t wy = (int64_t)point->y - priv.prePoint.y;
+            int64_t dot = ux * wx + uy * wy;
+
+            if ((ux != 0 || uy != 0) && (wx != 0 || wy != 0) && dot < 0)
+            {
+                // 运动方向越过垂线发生锐角转折，判定 P1 为特征转折点
+                retval = true;
+                if (priv.secondFilterMode)
+                {
+                    OutputPoint(&priv.tailPoint);
+                }
+                OutputPoint(&priv.prePoint);
+                priv.refPoint = priv.prePoint; // 以 P1 为新的基线起点
+            }
+        }
     }
 
-    line->a = a;
-    line->b = b;
-    line->c = c;
+    priv.tailPoint = priv.prePoint;
+    priv.prePoint = *point;
+    priv.pointCnt++;
 
     return retval;
 }
 
-void TrackPointFilter::DumpLine(const char* name, const Line_t* line)
+void TrackPointFilter::PushEnd()
 {
-    LOG_PRINT(
-        "%s : %lfx + %lfy + %lf = 0 { y = %lfx + %lf }",
-        name, line->a, line->b, line->c,
-        -line->a / line->b, -line->c / line->b
-    );
-}
-
-void TrackPointFilter::DumpPoint(const char* name, const Point_t* point)
-{
-    LOG_PRINT("%s : (%lf, %lf)", name, point->x, point->y);
-}
-
-void TrackPointFilter::GetVerticalLine(Line_t* verLine, const Line_t* oriLine, const Point_t* point)
-{
-    verLine->a = -oriLine->b;
-    verLine->b = oriLine->a;
-    verLine->c = 0 - verLine->a * point->x - verLine->b * point->y;
-}
-
-double TrackPointFilter::GetOffset(const Line_t* line, const Point_t* point)
-{
-    double temp = line->a * point->x + line->b * point->y + line->c;
-    double offset = std::abs(temp) * QuickSqrt(SQ(line->a) + SQ(line->b));
-    return offset;
-}
-
-bool TrackPointFilter::GetIsOnSameSide(const Line_t* line, const Point_t* point0, const Point_t* point1)
-{
-    bool retval = true;
-    double side = (line->a * point0->x + line->b * point0->y + line->c)
-                  * (line->a * point1->x + line->b * point1->y + line->c);
-
-    if (side < FLOAT_0)
+    if (priv.pointCnt > 0)
     {
-        retval = false;
+        OutputPoint(&priv.prePoint);
     }
-
-    return retval;
-}
-
-bool TrackPointFilter::GetIsPointInLine(const Line_t* line, const Point_t* point)
-{
-    double result = line->a * point->x + line->b * point->y + line->c;
-    return std::abs(result) < FLOAT_0;
-}
-
-double TrackPointFilter::QuickSqrt(double num)
-{
-    if (num <= 0.0)
-    {
-        return 0.0;
-    }
-#if defined(__ARM_FEATURE_DSP) || defined(ARM_MATH_CM4) || defined(__ARM_ARCH_7EM__)
-    float root;
-    if (arm_sqrt_f32((float)num, &root) == ARM_MATH_SUCCESS && root > 0.0f)
-    {
-        return (double)(1.0f / root);
-    }
-#endif
-    return (double)(1.0f / sqrtf((float)num));
+    Reset();
 }

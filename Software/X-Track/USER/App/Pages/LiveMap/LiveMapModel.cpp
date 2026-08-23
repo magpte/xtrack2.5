@@ -124,7 +124,7 @@ void LiveMapModel::TrackReload(TrackPointFilter::Callback_t callback, void* user
 
         if (callback)
         {
-            TrackPointFilter::Point_t pt = { (double)mapX, (double)mapY };
+            TrackPointFilter::Point_t pt = { mapX, mapY };
             callback(&dummyFilter, &pt);
         }
     }
