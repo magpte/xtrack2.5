@@ -319,8 +319,8 @@ void HAL::GPS_SendAidingData(double latitude, double longitude, const HAL::Clock
 
     GPS_SERIAL.write(packet, sizeof(packet));
 
-    Serial.printf(
-        "GPS: AID-INI sent (week=%u, tow=%.1f, lat=%.5f, lon=%.5f, tier=%s, posAcc=%.0fm, timeAcc=%.0fs)\r\n",
+    HAL::SysLog_Write(
+        "[GPS_AID] AID-INI sent (week=%u, tow=%.1f, lat=%.5f, lon=%.5f, tier=%s, posAcc=%.0fm, timeAcc=%.0fs)",
         week, tow, latitude, longitude, tier, (double)posAcc, (double)timeAcc
     );
 #endif
@@ -368,13 +368,36 @@ void HAL::GPS_Init()
     GPS_SendConfigCommands();
 #endif
 
+    HAL::SysLog_Write("[GPS_INIT] Booting GPS (38400 baud, Mode7, 2Hz, GSV=4, RxDMA active)");
     Serial.print("GPS: TinyGPS++ library v. ");
     Serial.print(TinyGPSPlus::libraryVersion());
     Serial.println(" by Mikal Hart");
 }
 
-static void GPS_Recover()
+static void GPS_Recover(uint32_t silentMs)
 {
+    uint32_t usartSts = 0;
+#if defined(AT32F435xx)
+    usartSts = USART2->sts;
+    uint16_t dmaRemain = dma_data_number_get(DMA1_CHANNEL4);
+#else
+    uint16_t dmaRemain = 0;
+#endif
+
+    HAL::SysLog_Write("[GPS_RECOVER] Triggered! Silent=%lums, STS=0x%08X (RO=%d FE=%d NE=%d PE=%d IDLE=%d), DMA_Rem=%u, Chars=%lu, PassCS=%lu, FailCS=%lu",
+        silentMs,
+        usartSts,
+        (usartSts & USART_ROERR_FLAG) ? 1 : 0,
+        (usartSts & USART_FERR_FLAG) ? 1 : 0,
+        (usartSts & USART_NERR_FLAG) ? 1 : 0,
+        (usartSts & USART_PERR_FLAG) ? 1 : 0,
+        (usartSts & USART_IDLEF_FLAG) ? 1 : 0,
+        dmaRemain,
+        gps.charsProcessed(),
+        gps.passedChecksum(),
+        gps.failedChecksum()
+    );
+
 #if defined(AT32F435xx)
     // 硬件级清除 DMA 与 USART2 错误与状态标志
     dma_flag_clear(DMA1_GL4_FLAG | DMA1_FDT4_FLAG | DMA1_HDT4_FLAG | DMA1_DTERR4_FLAG);
@@ -426,6 +449,8 @@ static void GPS_Recover()
     delay(20);
     GPS_SendConfigCommands();
 #endif
+
+    HAL::SysLog_Write("[GPS_RECOVER] Recover complete: Mode7 and config sent, DMA active");
 }
 
 void HAL::GPS_Update()
@@ -442,6 +467,11 @@ void HAL::GPS_Update()
 
     static uint32_t s_lastRxTick = 0;
     static uint32_t s_lastRecoverTick = 0;
+    static uint32_t s_lastHeartbeatTick = 0;
+    static bool s_lastFixValid = false;
+    static uint32_t s_lastFailCS = 0;
+    static int s_lastSats = -1;
+
     uint32_t now = millis();
     int available = GPS_SERIAL.available();
 
@@ -456,6 +486,19 @@ void HAL::GPS_Update()
         if (now - s_lastRxTick > 2500)
         {
 #if defined(AT32F435xx)
+            uint32_t sts = USART2->sts;
+            uint16_t dmaRemain = dma_data_number_get(DMA1_CHANNEL4);
+            if (sts & (USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG))
+            {
+                HAL::SysLog_Write("[GPS_WARN] Rx silent %lums! USART errors: STS=0x%08X (RO=%d FE=%d NE=%d PE=%d), DMA_Rem=%u",
+                    now - s_lastRxTick, sts,
+                    (sts & USART_ROERR_FLAG) ? 1 : 0,
+                    (sts & USART_FERR_FLAG) ? 1 : 0,
+                    (sts & USART_NERR_FLAG) ? 1 : 0,
+                    (sts & USART_PERR_FLAG) ? 1 : 0,
+                    dmaRemain
+                );
+            }
             dma_flag_clear(DMA1_DTERR4_FLAG);
             if (usart_flag_get(USART2, USART_ROERR_FLAG) != RESET ||
                 usart_flag_get(USART2, USART_FERR_FLAG) != RESET ||
@@ -471,9 +514,73 @@ void HAL::GPS_Update()
         if (now - s_lastRxTick > 4500 && (now - s_lastRecoverTick > 4000))
         {
             s_lastRecoverTick = now;
-            GPS_Recover();
+            GPS_Recover(now - s_lastRxTick);
             s_lastRxTick = millis(); // 复位心跳，给自愈重连预留接收窗口
         }
+    }
+
+    // 校验和错误监测
+    if (gps.failedChecksum() > s_lastFailCS)
+    {
+        HAL::SysLog_Write("[GPS_WARN] Checksum error! FailCS=%lu (+%lu), PassCS=%lu, Chars=%lu",
+            gps.failedChecksum(),
+            gps.failedChecksum() - s_lastFailCS,
+            gps.passedChecksum(),
+            gps.charsProcessed()
+        );
+        s_lastFailCS = gps.failedChecksum();
+    }
+
+    // 定位状态改变监测（定位获取 / 定位丢失）
+    bool currentFixValid = gps.location.isValid() && (gps.location.age() < 2500);
+    if (currentFixValid != s_lastFixValid)
+    {
+        s_lastFixValid = currentFixValid;
+        if (currentFixValid)
+        {
+            HAL::SysLog_Write("[GPS_STATE] FIX ACQUIRED! Sats=%d, Pos=(%.5f,%.5f), Speed=%.1fkm/h, HDOP=%.1f",
+                gps.satellites.value(), gps.location.lat(), gps.location.lng(), (float)gps.speed.kmph(), (float)gps.hdop.hdop());
+        }
+        else
+        {
+            HAL::SysLog_Write("[GPS_STATE] FIX LOST! LastSats=%d, LocAge=%lu, TimeAge=%lu, SatAge=%lu",
+                gps.satellites.value(), gps.location.age(), gps.time.age(), gps.satellites.age());
+        }
+    }
+
+    // 卫星数量显著变动监测 (如降到 0 或大幅度变化)
+    int currentSats = (gps.satellites.isValid() && gps.satellites.age() < 2500) ? gps.satellites.value() : 0;
+    if (currentSats != s_lastSats)
+    {
+        if (s_lastSats != -1 && (currentSats == 0 || s_lastSats == 0 || abs(currentSats - s_lastSats) >= 3))
+        {
+            HAL::SysLog_Write("[GPS_STATE] Sats changed: %d -> %d (SatAge=%lu, LocAge=%lu, Valid=%d)",
+                s_lastSats, currentSats, gps.satellites.age(), gps.location.age(), gps.satellites.isValid() ? 1 : 0);
+        }
+        s_lastSats = currentSats;
+    }
+
+    // 周期性心跳诊断日志 (每 10 秒)
+    if (now - s_lastHeartbeatTick >= 10000)
+    {
+        s_lastHeartbeatTick = now;
+        uint16_t dmaRemain = 0;
+#if defined(AT32F435xx)
+        dmaRemain = dma_data_number_get(DMA1_CHANNEL4);
+#endif
+        HAL::SysLog_Write("[GPS_HB] Fix=%d, Sats=%d, Spd=%.1f, HDOP=%.1f, Alt=%.1f, Pos=(%.5f,%.5f), LocAge=%lu, DMA_Rem=%u, Avail=%d, Chars=%lu, FailCS=%lu",
+            currentFixValid ? 1 : 0,
+            currentSats,
+            currentFixValid ? (float)gps.speed.kmph() : 0.0f,
+            (float)gps.hdop.hdop(),
+            (float)gps.altitude.meters(),
+            gps.location.lat(), gps.location.lng(),
+            gps.location.age(),
+            dmaRemain,
+            available,
+            gps.charsProcessed(),
+            gps.failedChecksum()
+        );
     }
 
     int bytesProcessed = 0;

@@ -83,7 +83,6 @@ public:
 
     void SetClipArea(const Area_t* area);
     void SetOutputPointCallback(Callback_t callback);
-    void SetMinDistance(int32_t minDist);
 
 private:
     struct
@@ -92,9 +91,6 @@ private:
         Area_t clipArea;
         bool inArea;
         Point_t prePoint;
-        Point_t lastOutputPoint;
-        bool hasLastOutput;
-        int32_t minDistSq;
         uint32_t lineCount;
         uint32_t pointCnt;
         uint32_t pointOutputCnt;

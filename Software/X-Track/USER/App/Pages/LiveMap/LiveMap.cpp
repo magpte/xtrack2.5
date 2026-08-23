@@ -85,7 +85,6 @@ void LiveMap::onViewLoad()
     Model.pointFilter.userData = this;
 
     /* Line filter */
-    Model.lineFilter.SetMinDistance(CONFIG_TRACK_LINE_SIMPLIFY_MIN_DIST);
     Model.lineFilter.SetOutputPointCallback(onTrackLineEvent);
     Model.lineFilter.userData = this;
 }
@@ -153,6 +152,7 @@ void LiveMap::onViewDidAppear()
     priv.lastSpeedKph       = -1;
     priv.lastSingleDistance = -1.0f;
     priv.lastSingleTime     = (uint32_t)-1;
+    priv.lastLiveTrackPoint = { INT32_MIN, INT32_MIN };
 
     priv.lastTilePosGroup.clear();
 
@@ -377,7 +377,19 @@ void LiveMap::CheckPosition()
     // 运动中实时平滑追加轨迹点，与历史重载保持100%一致
     if (priv.isTrackAvtive && gpsInfo.isVaild && !priv.isStationary)
     {
-        TrackLineAppendToEnd(mapX, mapY);
+        int32_t minDist = 18 - mapLevelCurrent;
+        if (minDist < 3) minDist = 3;
+
+        int32_t dx = mapX - priv.lastLiveTrackPoint.x;
+        int32_t dy = mapY - priv.lastLiveTrackPoint.y;
+        int64_t distSq = (int64_t)dx * dx + (int64_t)dy * dy;
+
+        if (priv.lastLiveTrackPoint.x == INT32_MIN || distSq >= (int64_t)(minDist * minDist))
+        {
+            priv.lastLiveTrackPoint.x = mapX;
+            priv.lastLiveTrackPoint.y = mapY;
+            TrackLineAppendToEnd(mapX, mapY);
+        }
     }
 }
 
@@ -490,11 +502,6 @@ bool LiveMap::GetIsMapTileContChanged()
 
 void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
 {
-    // 自适应屏幕线宽抽稀：保证点间距至少 3 像素，消除 5px 粗线在 1px 短线段下的圆头重叠毛刺
-    int32_t minDist = 18 - mapLevelCurrent;
-    if (minDist < 3) minDist = 3;
-    Model.lineFilter.SetMinDistance(minDist);
-
     Model.lineFilter.SetClipArea(area);
     Model.lineFilter.Reset();
     Model.TrackReload([](TrackPointFilter * filter, const TrackPointFilter::Point_t* point)

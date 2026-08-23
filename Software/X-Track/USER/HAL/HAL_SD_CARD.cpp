@@ -2,6 +2,8 @@
 #include "Config/Config.h"
 #include "SdFat.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 namespace DataProc
 {
@@ -59,15 +61,6 @@ static bool SD_CheckDir(const char* path)
 // 平白在 SD 卡上留一个空文件。
 // ---------------------------------------------------------------------
 #define NMEA_LOG_FILE_NAME_FMT      "/" CONFIG_NMEA_LOG_FILE_DIR_NAME "/%02d%02d%02d%02d.LOG"
-// 跟 DP_Recorder.cpp 的 RECORDER_WRITE_BUF_SIZE（1024）看齐，不是凑巧
-// 选一样的数字——SdFat（FatVolume::m_cache）整张卡只有一个 512 字节的
-// 扇区缓存，NMEA 日志和 GPX 轨迹这两个文件共用它。缓冲区越小，我们
-// 触发 SdFat 底层 write() 的次数就越多，两个文件的 write() 在时间上
-// 撞在一起的概率也越高——每撞一次，共享缓存就要多付一次"写回旧扇区+
-// 读入新扇区"的额外 SD 物理 I/O。调大到跟 GPX 一致，两边触发底层
-// write() 的频率更接近、次数也更少，降低撞车概率。注意这是应用层
-// 缓冲区，跟 SdFat 内部那个写死 512 字节（SD 卡物理扇区大小）的
-// FatCache 是两回事，后者没法调大。
 #define NMEA_LOG_WRITE_BUF_SIZE     24576 // 24KB (48 * 512B sectors)
 #define NMEA_LOG_SYNC_INTERVAL_MS   30000 // 30s
 #define SD_SECTOR_SIZE              512
@@ -151,7 +144,7 @@ void HAL::NMEA_Log_Write(const char* line, uint32_t len)
         return;
     }
 
-    // 纯内存写入：追加到 22KB 内存缓冲区中（耗时 < 2 us），绝不在高频 GPS 任务中同步创建文件或执行 SPI 写操作
+    // 纯内存写入：追加到 24KB 内存缓冲区中（耗时 < 2 us），绝不在高频 GPS 任务中同步创建文件或执行 SPI 写操作
     if(s_nmeaLogWriteBufLen + len <= NMEA_LOG_WRITE_BUF_SIZE)
     {
         memcpy(s_nmeaLogWriteBuf + s_nmeaLogWriteBufLen, line, len);
@@ -175,20 +168,124 @@ void HAL::NMEA_Log_Close()
     s_nmeaLogNeedSync = false;
 }
 
-void HAL::Map_Log_Write(const char* line)
+// ---------------------------------------------------------------------
+// 系统诊断日志（/system.log）
+// ---------------------------------------------------------------------
+#define SYS_LOG_FILE_NAME           "/system.log"
+#define SYS_LOG_WRITE_BUF_SIZE      8192 // 8KB
+#define SYS_LOG_SYNC_INTERVAL_MS    10000 // 10s
+
+static File     s_sysLogFile;
+static bool     s_sysLogFileOpen = false;
+static bool     s_sysLogOpenFailed = false;
+static bool     s_sysLogNeedSync = false;
+static char     s_sysLogWriteBuf[SYS_LOG_WRITE_BUF_SIZE] ALIGN_WORD4;
+static uint32_t s_sysLogWriteBufLen = 0;
+static uint32_t s_sysLogLastSyncTick = 0;
+
+static void SysLog_FlushBuffer(bool forceAll = false)
 {
-    if(!SD_IsReady || line == nullptr)
+    if(s_sysLogWriteBufLen == 0)
     {
         return;
     }
 
-    File logFile = SD.open("/MAP_LOG.TXT", FILE_WRITE);
-    if(logFile)
+    uint32_t flushLen = s_sysLogWriteBufLen;
+    if (!forceAll)
     {
-        logFile.println(line);
-        logFile.sync();
-        logFile.close();
+        flushLen = (s_sysLogWriteBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
     }
+
+    if (flushLen == 0)
+    {
+        return;
+    }
+
+    s_sysLogFile.write((const uint8_t*)s_sysLogWriteBuf, flushLen);
+    s_sysLogNeedSync = true;
+
+    s_sysLogWriteBufLen -= flushLen;
+    if (s_sysLogWriteBufLen > 0)
+    {
+        memmove(s_sysLogWriteBuf, s_sysLogWriteBuf + flushLen, s_sysLogWriteBufLen);
+    }
+}
+
+static bool SysLog_Open()
+{
+    s_sysLogFile = SD.open(SYS_LOG_FILE_NAME, FILE_WRITE);
+    if(!s_sysLogFile)
+    {
+        Serial.printf("SYS_LOG: open \"%s\" failed\r\n", SYS_LOG_FILE_NAME);
+        return false;
+    }
+
+    Serial.printf("SYS_LOG: logging to \"%s\"\r\n", SYS_LOG_FILE_NAME);
+    s_sysLogNeedSync = false;
+    s_sysLogLastSyncTick = millis();
+    return true;
+}
+
+void HAL::SysLog_Write(const char* fmt, ...)
+{
+    char msg[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    char timeStr[48];
+    HAL::Clock_Info_t clock;
+    HAL::Clock_GetInfo(&clock);
+    uint32_t tick = millis();
+    snprintf(timeStr, sizeof(timeStr), "[%02d-%02d %02d:%02d:%02d.%03d][T:%lu] ",
+             clock.month, clock.day, clock.hour, clock.minute, clock.second, clock.millisecond, tick);
+
+    Serial.print(timeStr);
+    Serial.println(msg);
+
+#if CONFIG_GPS_NMEA_LOG_ENABLE
+    char nmeaComment[300];
+    int nLen = snprintf(nmeaComment, sizeof(nmeaComment), "# %s%s\r\n", timeStr, msg);
+    if(nLen > 0)
+    {
+        HAL::NMEA_Log_Write(nmeaComment, (uint32_t)nLen);
+    }
+#endif
+
+    if(!SD_IsReady || s_sysLogOpenFailed)
+    {
+        return;
+    }
+
+    uint32_t tlen = (uint32_t)strlen(timeStr);
+    uint32_t mlen = (uint32_t)strlen(msg);
+    uint32_t totalLen = tlen + mlen + 2;
+
+    if(s_sysLogWriteBufLen + totalLen <= SYS_LOG_WRITE_BUF_SIZE)
+    {
+        memcpy(s_sysLogWriteBuf + s_sysLogWriteBufLen, timeStr, tlen);
+        s_sysLogWriteBufLen += tlen;
+        memcpy(s_sysLogWriteBuf + s_sysLogWriteBufLen, msg, mlen);
+        s_sysLogWriteBufLen += mlen;
+        s_sysLogWriteBuf[s_sysLogWriteBufLen++] = '\r';
+        s_sysLogWriteBuf[s_sysLogWriteBufLen++] = '\n';
+    }
+}
+
+void HAL::SysLog_Close()
+{
+    if(!s_sysLogFileOpen)
+    {
+        return;
+    }
+
+    SysLog_FlushBuffer(true);
+    s_sysLogFile.sync();
+    s_sysLogFile.close();
+    s_sysLogFileOpen = false;
+    s_sysLogOpenFailed = false;
+    s_sysLogNeedSync = false;
 }
 
 bool HAL::SD_Init()
@@ -230,6 +327,7 @@ bool HAL::SD_Init()
             SD_GetTypeName(),
             SD_GetCardSizeMB() / 1024.0f
         );
+        HAL::SysLog_Write("[SYS_BOOT] SD Card mounted: Type=%s, Size=%.2f GB", SD_GetTypeName(), SD_GetCardSizeMB() / 1024.0f);
     }
     else
     {
@@ -303,6 +401,7 @@ static void SD_Check(bool isInsert)
 
         if(ret)
         {
+            HAL::SysLog_Write("[SD_HOTPLUG] SD Card inserted: Type=%s, Size=%.2f GB", HAL::SD_GetTypeName(), HAL::SD_GetCardSizeMB() / 1024.0f);
             HAL::Audio_PlayMusic("DeviceInsert");
         }
         else
@@ -317,12 +416,15 @@ static void SD_Check(bool isInsert)
             return; // 本来就未就绪，不重复执行拔卡清理
         }
 
+        HAL::SysLog_Write("[SD_HOTPLUG] SD Card removed");
+
         // 卡被拔出之前先把 NMEA 和串口日志缓冲区落盘、关文件——如果等
         // SD_IsReady 已经置 false 之后再关，数据写入会直接跳过，
         // 缓冲区里剩的数据就再也没机会写进去了，所以顺序上必须放在这一行前面。
 #if CONFIG_GPS_NMEA_LOG_ENABLE
         HAL::NMEA_Log_Close();
 #endif
+        HAL::SysLog_Close();
 
         SD_IsReady = false;
         SD_CardSize = 0;
@@ -367,7 +469,6 @@ void HAL::SD_Update()
         {
             s_lastPhysicalState = rawInsert;
             s_debounceCount = 0;
-
             if (rawInsert)
             {
                 // 只有未就绪且脱离失败冷却期（10s）时才尝试挂载
@@ -403,7 +504,7 @@ void HAL::SD_Update()
     // 在 SD_Update() 后台周期（500ms）中集中平滑处理文件打开、刷新 NMEA 缓冲区与执行 sync()
     if (SD_IsReady)
     {
-        // 开机动画阶段（前 3.0 秒）不执行 SD 卡文件创建，将 NMEA 数据暂存在 22KB 内存缓冲区中，
+        // 开机动画阶段（前 3.0 秒）不执行 SD 卡文件创建，将 NMEA 数据暂存在 24KB 内存缓冲区中，
         // 确保开机动画及页面切换 100% 满帧无任何 SPI I/O 阻塞。
         if (!s_nmeaLogFileOpen && !s_nmeaLogOpenFailed && s_nmeaLogWriteBufLen > 0 && millis() > 3000)
         {
@@ -438,6 +539,42 @@ void HAL::SD_Update()
         }
     }
 #endif
+
+    // 处理系统诊断日志 /system.log
+    if (SD_IsReady)
+    {
+        if (!s_sysLogFileOpen && !s_sysLogOpenFailed && s_sysLogWriteBufLen > 0 && millis() > 3000)
+        {
+            if (!SysLog_Open())
+            {
+                s_sysLogOpenFailed = true;
+            }
+            else
+            {
+                s_sysLogFileOpen = true;
+            }
+        }
+
+        if (s_sysLogFileOpen)
+        {
+            if (s_sysLogWriteBufLen >= SD_SECTOR_SIZE)
+            {
+                SysLog_FlushBuffer(false);
+            }
+
+            uint32_t now = millis();
+            if (now - s_sysLogLastSyncTick >= SYS_LOG_SYNC_INTERVAL_MS)
+            {
+                if (s_sysLogNeedSync || s_sysLogWriteBufLen > 0)
+                {
+                    SysLog_FlushBuffer(true);
+                    s_sysLogFile.sync();
+                    s_sysLogNeedSync = false;
+                }
+                s_sysLogLastSyncTick = now;
+            }
+        }
+    }
 
     if (SD_IsReady)
     {

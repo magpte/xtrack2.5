@@ -57,6 +57,9 @@ private:
         // 增量瓦片缓存：记录每个 tile 索引上次对应的 Tile 坐标 (pos.x, pos.y)
         // 仅在坐标发生变化时调用 ConvertMapPath 和 SetMapTileSrc
         std::vector<TileConv::Point_t> lastTilePosGroup;
+
+        // 实时平滑轨迹点基准
+        TileConv::Point_t lastLiveTrackPoint;
     } priv;
 
 

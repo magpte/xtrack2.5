@@ -190,6 +190,7 @@ void HAL::Power_EventMonitor()
 #if CONFIG_GPS_NMEA_LOG_ENABLE
         HAL::NMEA_Log_Close();
 #endif
+        HAL::SysLog_Close();
 
         Backlight_SetGradual(0, 500);
         digitalWrite(CONFIG_POWER_EN_PIN, LOW);

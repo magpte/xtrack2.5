@@ -93,6 +93,11 @@ void NMEA_Log_Write(const char* line, uint32_t len);
 // 文件时调用这个函数是安全的空操作。
 void NMEA_Log_Close();
 
+/* System / Diagnostic Event Log */
+// 系统诊断日志落盘（输出到 SD 卡 /system.log 及 USB 串口，同时以 # 注释写入 NMEA 原始日志中）
+void SysLog_Write(const char* fmt, ...);
+void SysLog_Close();
+
 
 /* Power */
 void Power_Init();
@@ -164,9 +169,6 @@ bool Audio_PlayMusic(const char* name);
 
 /* Memory */
 void Memory_DumpInfo();
-
-/* Map Debug Log */
-void Map_Log_Write(const char* line);
 
 }
 

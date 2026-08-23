@@ -41,6 +41,16 @@ static void onTimer(Account* account)
             "Connect"
         };
 
+        const char* statusStr[] =
+        {
+            "DISCONNECT",
+            "UNSTABLE",
+            "CONNECT"
+        };
+
+        HAL::SysLog_Write("[DP_GPS] Status changed: %s -> %s (Sats: %d, Valid: %d)",
+            statusStr[lastStatus], statusStr[nowStatus], satellites, gpsInfo.isVaild ? 1 : 0);
+
         DataProc::MusicPlayer_Info_t info;
         DATA_PROC_INIT_STRUCT(info);
         info.music = music[nowStatus];

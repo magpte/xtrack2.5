@@ -56,20 +56,9 @@ enum TileFormat_t {
 };
 
 // =========================================================================
-// Diagnostic Logging (SD card /MAP_LOG.TXT + Serial)
+// Diagnostic Logging (Zero-overhead release macro)
 // =========================================================================
-static void map_log(const char* fmt, ...)
-{
-    char buf[256];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-
-    LV_LOG_USER("[MAP] %s", buf);
-
-    HAL::Map_Log_Write(buf);
-}
+#define map_log(...) ((void)0)
 
 // =========================================================================
 // Shared bundle file handle
