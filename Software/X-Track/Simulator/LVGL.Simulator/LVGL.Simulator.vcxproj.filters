@@ -2835,6 +2835,24 @@
     <Filter Include="lv_drivers\win32drv">
       <UniqueIdentifier>{de587906-6ff7-4047-a78b-01fb2e9f959a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="lvgl\src\extra\others\fragment">
+      <UniqueIdentifier>{b3e023ad-968e-4bea-a061-dc6f6c72946a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="lvgl\src\extra\others\gridnav">
+      <UniqueIdentifier>{34281ba1-4b6c-4526-9b14-aaf5217f936f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="lvgl\src\extra\others\ime">
+      <UniqueIdentifier>{d5d98fff-26a7-4df3-8992-6c4f9f39bb2d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="lvgl\src\extra\others\imgfont">
+      <UniqueIdentifier>{48fb3aeb-8c9d-4e48-9694-b674a9679ecb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="lvgl\src\extra\others\msg">
+      <UniqueIdentifier>{8a34cb2b-c15b-4d94-8bf5-d44b075e2c1b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="lvgl\src\extra\widgets\animimg">
+      <UniqueIdentifier>{82faaddd-6580-4fef-8616-c2c1fef850c1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lv_drivers\gtkdrv\gtkdrv.h">
@@ -2921,9 +2939,78 @@
   <ItemGroup>
     <ClInclude Include="Mile.Project.Properties.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="lvgl\src\misc\lv_lru.h">
+      <Filter>lvgl\src\misc</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\draw\sw\lv_draw_sw_gradient.h">
+      <Filter>lvgl\src\draw\sw</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\widgets\animimg\lv_animimg.h">
+      <Filter>lvgl\src\extra\widgets\animimg</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\others\ime\lv_ime_pinyin.h">
+      <Filter>lvgl\src\extra\others\ime</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\others\msg\lv_msg.h">
+      <Filter>lvgl\src\extra\others\msg</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\draw\sw\lv_draw_sw_blend.h">
+      <Filter>lvgl\src\draw\sw</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\draw\sw\lv_draw_sw_dither.h">
+      <Filter>lvgl\src\draw\sw</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\others\fragment\lv_fragment.h">
+      <Filter>lvgl\src\extra\others\fragment</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\draw\lv_draw_layer.h">
+      <Filter>lvgl\src\draw</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\others\gridnav\lv_gridnav.h">
+      <Filter>lvgl\src\extra\others\gridnav</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\extra\others\imgfont\lv_imgfont.h">
+      <Filter>lvgl\src\extra\others\imgfont</Filter>
+    </ClInclude>
+    <ClInclude Include="lvgl\src\draw\lv_draw_transform.h">
+      <Filter>lvgl\src\draw</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="LVGL.Simulator.cpp" />
+    <ClCompile Include="lvgl\src\extra\others\ime\lv_ime_pinyin.c">
+      <Filter>lvgl\src\extra\others\ime</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\others\gridnav\lv_gridnav.c">
+      <Filter>lvgl\src\extra\others\gridnav</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\draw\sw\lv_draw_sw_dither.c">
+      <Filter>lvgl\src\draw\sw</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\misc\lv_lru.c">
+      <Filter>lvgl\src\misc</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\others\msg\lv_msg.c">
+      <Filter>lvgl\src\extra\others\msg</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\draw\sw\lv_draw_sw_layer.c">
+      <Filter>lvgl\src\draw\sw</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\draw\lv_draw_layer.c">
+      <Filter>lvgl\src\draw</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\widgets\animimg\lv_animimg.c">
+      <Filter>lvgl\src\extra\widgets\animimg</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\others\fragment\lv_fragment_manager.c">
+      <Filter>lvgl\src\extra\others\fragment</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\others\imgfont\lv_imgfont.c">
+      <Filter>lvgl\src\extra\others\imgfont</Filter>
+    </ClCompile>
+    <ClCompile Include="lvgl\src\extra\others\fragment\lv_fragment.c">
+      <Filter>lvgl\src\extra\others\fragment</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="LVGL.Simulator.rc" />

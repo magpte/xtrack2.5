@@ -239,7 +239,7 @@ void HAL::SysLog_Write(const char* fmt, ...)
     HAL::Clock_GetInfo(&clock);
     uint32_t tick = millis();
     snprintf(timeStr, sizeof(timeStr), "[%02d-%02d %02d:%02d:%02d.%03d][T:%lu] ",
-             clock.month, clock.day, clock.hour, clock.minute, clock.second, clock.millisecond, tick);
+             clock.month, clock.day, clock.hour, clock.minute, clock.second, clock.millisecond, (unsigned long)tick);
 
     Serial.print(timeStr);
     Serial.println(msg);

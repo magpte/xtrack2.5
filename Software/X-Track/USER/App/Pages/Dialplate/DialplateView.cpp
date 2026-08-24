@@ -217,9 +217,11 @@ void DialplateView::onCompassDraw(lv_event_t* event)
 {
     DialplateView* view = (DialplateView*)lv_event_get_user_data(event);
     lv_draw_ctx_t* draw_ctx = lv_event_get_draw_ctx(event);
+    lv_obj_t* dial = lv_event_get_target(event);
+    if (!view || !draw_ctx || !dial) return;
 
     lv_area_t plotArea;
-    lv_obj_get_coords(view->ui.compass.dialBg, &plotArea);
+    lv_obj_get_coords(dial, &plotArea);
 
     lv_coord_t cx = plotArea.x1 + 50;
     lv_coord_t cy = plotArea.y1 + 50;

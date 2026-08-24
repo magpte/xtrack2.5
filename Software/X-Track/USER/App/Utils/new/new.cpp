@@ -24,6 +24,7 @@
 #if defined(ARDUINO) || defined(NDEBUG)
 
 #include "lvgl/lvgl.h"
+#include <new>
 
 typedef void* (*alloc_func_t)(size_t);
 
@@ -39,7 +40,7 @@ static void* first_alloc(size_t size)
     }
 
     alloc_func = lv_mem_alloc;
-    return lv_mem_alloc(size);;
+    return lv_mem_alloc(size);
 }
 
 void *operator new(size_t size)
@@ -52,14 +53,44 @@ void *operator new[](size_t size)
     return alloc_func(size);
 }
 
-void operator delete(void* ptr)
+void *operator new(size_t size, const std::nothrow_t&) noexcept
 {
-    lv_mem_free(ptr);
+    return alloc_func(size);
 }
 
-void operator delete[](void* ptr)
+void *operator new[](size_t size, const std::nothrow_t&) noexcept
 {
-    lv_mem_free(ptr);
+    return alloc_func(size);
+}
+
+void operator delete(void* ptr) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void operator delete[](void* ptr) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void operator delete(void* ptr, size_t) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void operator delete[](void* ptr, size_t) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void operator delete(void* ptr, const std::nothrow_t&) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void operator delete[](void* ptr, const std::nothrow_t&) noexcept
+{
+    if(ptr) lv_mem_free(ptr);
 }
 
 #endif

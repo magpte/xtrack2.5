@@ -24,7 +24,7 @@ void cmb_printf(const char *__restrict __format, ...)
       
     va_list args;  
     va_start(args, __format);  
-    int ret_status = vsnprintf(printf_buff, sizeof(printf_buff), __format, args);  
+    vsnprintf(printf_buff, sizeof(printf_buff), __format, args);  
     va_end(args);  
       
     Serial.print(printf_buff);
@@ -52,6 +52,7 @@ extern "C"
         NVIC_SystemReset();  
     }
     
+#if defined(__CC_ARM)
     __asm void HardFault_Handler()
     {
         extern vApplicationHardFaultHook
@@ -64,4 +65,17 @@ extern "C"
 fault_loop
         b fault_loop
     }
+#elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+    __attribute__((naked)) void HardFault_Handler(void)
+    {
+        __asm volatile(
+            "mov r0, lr\n"
+            "mov r1, sp\n"
+            "bl cm_backtrace_fault\n"
+            "bl vApplicationHardFaultHook\n"
+            "fault_loop:\n"
+            "b fault_loop\n"
+        );
+    }
+#endif
 }

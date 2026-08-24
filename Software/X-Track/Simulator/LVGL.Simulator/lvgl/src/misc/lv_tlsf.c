@@ -358,7 +358,6 @@ static const size_t block_size_min =
     sizeof(block_header_t) - sizeof(block_header_t *);
 static const size_t block_size_max = tlsf_cast(size_t, 1) << FL_INDEX_MAX;
 
-
 /* The TLSF control structure. */
 typedef struct control_t {
     /* Empty lists point at this block to indicate they are free. */
@@ -1208,6 +1207,10 @@ void * lv_tlsf_realloc(lv_tlsf_t tlsf, void * ptr, size_t size)
         const size_t cursize = block_size(block);
         const size_t combined = cursize + block_size(next) + block_header_overhead;
         const size_t adjust = adjust_request_size(size, ALIGN_SIZE);
+        if(size > cursize && adjust == 0) {
+            /* The request is probably too large, fail */
+            return NULL;
+        }
 
         tlsf_assert(!block_is_free(block) && "block already marked as free");
 

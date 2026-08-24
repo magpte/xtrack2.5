@@ -39,6 +39,7 @@ typedef struct
     uint8_t hour;
     uint8_t min;
     uint8_t sec;
+    uint16_t millisecond;
 } RTC_Calendar_TypeDef;
 
 void RTC_Init(void);

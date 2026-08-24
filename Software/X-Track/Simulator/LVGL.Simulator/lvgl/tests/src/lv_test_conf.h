@@ -20,6 +20,15 @@ extern "C" {
  *      DEFINES
  *********************/
 
+#define LV_USE_TINY_TTF 1
+#define LV_FONT_MONTSERRAT_8 1
+#define LV_FONT_MONTSERRAT_16 1
+#define LV_FONT_MONTSERRAT_24 1
+#define LV_FONT_MONTSERRAT_36 1
+
+void lv_test_assert_fail(void);
+#define LV_ASSERT_HANDLER lv_test_assert_fail();
+
 /**********************
  *      TYPEDEFS
  **********************/

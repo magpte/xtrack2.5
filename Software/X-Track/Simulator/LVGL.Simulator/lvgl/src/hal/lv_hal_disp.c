@@ -23,6 +23,10 @@
 #include "../draw/stm32_dma2d/lv_gpu_stm32_dma2d.h"
 #include "../draw/swm341_dma2d/lv_gpu_swm341_dma2d.h"
 #include "../draw/arm2d/lv_gpu_arm2d.h"
+#include "../draw/nxp/vglite/lv_draw_vglite.h"
+#include "../draw/nxp/pxp/lv_draw_pxp.h"
+#include "../draw/renesas/lv_gpu_d2_ra6m3.h"
+#include "../draw/nema_gfx/lv_draw_nema_gfx.h"
 
 #if LV_USE_THEME_DEFAULT
     #include "../extra/themes/default/lv_theme_default.h"
@@ -93,8 +97,11 @@ void lv_disp_drv_init(lv_disp_drv_t * driver)
     driver->dpi              = LV_DPI_DEF;
     driver->color_chroma_key = LV_COLOR_CHROMA_KEY;
 
-
-#if LV_USE_GPU_STM32_DMA2D
+#if LV_USE_GPU_RA6M3_G2D
+    driver->draw_ctx_init = lv_draw_ra6m3_2d_ctx_init;
+    driver->draw_ctx_deinit = lv_draw_ra6m3_2d_ctx_init;
+    driver->draw_ctx_size = sizeof(lv_draw_ra6m3_dma2d_ctx_t);
+#elif LV_USE_GPU_STM32_DMA2D
     driver->draw_ctx_init = lv_draw_stm32_dma2d_ctx_init;
     driver->draw_ctx_deinit = lv_draw_stm32_dma2d_ctx_init;
     driver->draw_ctx_size = sizeof(lv_draw_stm32_dma2d_ctx_t);
@@ -102,14 +109,14 @@ void lv_disp_drv_init(lv_disp_drv_t * driver)
     driver->draw_ctx_init = lv_draw_swm341_dma2d_ctx_init;
     driver->draw_ctx_deinit = lv_draw_swm341_dma2d_ctx_init;
     driver->draw_ctx_size = sizeof(lv_draw_swm341_dma2d_ctx_t);
-#elif LV_USE_GPU_NXP_PXP
-    driver->draw_ctx_init = lv_draw_nxp_pxp_init;
-    driver->draw_ctx_deinit = lv_draw_nxp_pxp_init;
-    driver->draw_ctx_size = sizeof(lv_draw_nxp_pxp_t);
 #elif LV_USE_GPU_NXP_VG_LITE
-    driver->draw_ctx_init = lv_draw_nxp_vglite_init;
-    driver->draw_ctx_deinit = lv_draw_nxp_vglite_init;
-    driver->draw_ctx_size = sizeof(lv_draw_nxp_vglite_t);
+    driver->draw_ctx_init = lv_draw_vglite_ctx_init;
+    driver->draw_ctx_deinit = lv_draw_vglite_ctx_deinit;
+    driver->draw_ctx_size = sizeof(lv_draw_vglite_ctx_t);
+#elif LV_USE_GPU_NXP_PXP
+    driver->draw_ctx_init = lv_draw_pxp_ctx_init;
+    driver->draw_ctx_deinit = lv_draw_pxp_ctx_deinit;
+    driver->draw_ctx_size = sizeof(lv_draw_pxp_ctx_t);
 #elif LV_USE_GPU_SDL
     driver->draw_ctx_init = lv_draw_sdl_init_ctx;
     driver->draw_ctx_deinit = lv_draw_sdl_deinit_ctx;
@@ -118,6 +125,10 @@ void lv_disp_drv_init(lv_disp_drv_t * driver)
     driver->draw_ctx_init = lv_draw_arm2d_ctx_init;
     driver->draw_ctx_deinit = lv_draw_arm2d_ctx_init;
     driver->draw_ctx_size = sizeof(lv_draw_arm2d_ctx_t);
+#elif LV_USE_NEMA_GFX
+    driver->draw_ctx_init = lv_draw_nema_gfx_ctx_init;
+    driver->draw_ctx_deinit = lv_draw_nema_gfx_ctx_deinit;
+    driver->draw_ctx_size = sizeof(lv_draw_nema_gfx_ctx_t);
 #else
     driver->draw_ctx_init = lv_draw_sw_init_ctx;
     driver->draw_ctx_deinit = lv_draw_sw_init_ctx;
@@ -177,6 +188,10 @@ lv_disp_t * lv_disp_drv_register(lv_disp_drv_t * driver)
     lv_memset_00(disp, sizeof(lv_disp_t));
 
     disp->driver = driver;
+
+    disp->inv_en_cnt = 1;
+
+    _lv_ll_init(&disp->sync_areas, sizeof(lv_area_t));
 
     lv_disp_t * disp_def_tmp = disp_def;
     disp_def                 = disp; /*Temporarily change the default screen to create the default screens on the
@@ -308,6 +323,7 @@ void lv_disp_remove(lv_disp_t * disp)
     }
 
     _lv_ll_remove(&LV_GC_ROOT(_lv_disp_ll), disp);
+    _lv_ll_clear(&disp->sync_areas);
     if(disp->refr_timer) lv_timer_del(disp->refr_timer);
     lv_mem_free(disp);
 
@@ -505,7 +521,7 @@ lv_coord_t lv_disp_get_dpi(const lv_disp_t * disp)
  * Call in the display driver's `flush_cb` function when the flushing is finished
  * @param disp_drv pointer to display driver in `flush_cb` where this function is called
  */
-LV_ATTRIBUTE_FLUSH_READY void lv_disp_flush_ready(lv_disp_drv_t * disp_drv)
+void LV_ATTRIBUTE_FLUSH_READY lv_disp_flush_ready(lv_disp_drv_t * disp_drv)
 {
     disp_drv->draw_buf->flushing = 0;
     disp_drv->draw_buf->flushing_last = 0;
@@ -517,7 +533,7 @@ LV_ATTRIBUTE_FLUSH_READY void lv_disp_flush_ready(lv_disp_drv_t * disp_drv)
  * @param disp_drv pointer to display driver
  * @return true: it's the last area to flush; false: there are other areas too which will be refreshed soon
  */
-LV_ATTRIBUTE_FLUSH_READY bool lv_disp_flush_is_last(lv_disp_drv_t * disp_drv)
+bool LV_ATTRIBUTE_FLUSH_READY lv_disp_flush_is_last(lv_disp_drv_t * disp_drv)
 {
     return disp_drv->draw_buf->flushing_last;
 }

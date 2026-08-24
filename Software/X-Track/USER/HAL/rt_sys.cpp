@@ -6,7 +6,11 @@
 
 typedef SdFile file_t;
 
+#if defined(__CC_ARM)
 #pragma import(__use_no_semihosting)
+#elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+__asm(".global __use_no_semihosting\n\t");
+#endif
 
 enum
 {
@@ -206,10 +210,16 @@ long _sys_flen(FILEHANDLE fh)
  * name. Returns 0 on failure. maxlen is the maximum name length
  * allowed.
  */
+#if defined(__CC_ARM)
 int _sys_tmpnam(char* name, int sig, unsigned maxlen)
 {
     return 0;
 }
+#else
+void _sys_tmpnam(char* name, int sig, unsigned maxlen)
+{
+}
+#endif
 
 /*
  * Terminate the program, passing a return code back to the user.

@@ -230,6 +230,12 @@ set(LVGL_TEST_OPTIONS_TEST_COMMON
     -DLV_USE_BIDI=1
     -DLV_USE_ARABIC_PERSIAN_CHARS=1
     -DLV_LABEL_TEXT_SELECTION=1
+    -DLV_USE_FS_STDIO=1
+    -DLV_FS_STDIO_LETTER='A'
+    -DLV_FS_STDIO_CACHE_SIZE=100
+    -DLV_USE_FS_POSIX=1
+    -DLV_FS_POSIX_LETTER='B'
+    -DLV_FS_POSIX_CACHE_SIZE=0
     ${LVGL_TEST_COMMON_EXAMPLE_OPTIONS}
     -DLV_FONT_DEFAULT=&lv_font_montserrat_14
     -Wno-unused-but-set-variable # unused variables are common in the dual-heap arrangement
@@ -328,6 +334,7 @@ add_library(test_common
         src/test_fonts/font_1.c
         src/test_fonts/font_2.c
         src/test_fonts/font_3.c
+        src/test_fonts/ubuntu_font.c
         unity/unity_support.c
         unity/unity.c
 )
@@ -357,7 +364,7 @@ foreach( test_case_fname ${TEST_CASE_FILES} )
         ${test_case_fname}
         ${test_runner_fname}
     )
-    target_link_libraries(${test_name} test_common lvgl_examples lvgl_demos lvgl png ${TEST_LIBS})
+    target_link_libraries(${test_name} test_common lvgl_examples lvgl_demos lvgl png m ${TEST_LIBS})
     target_include_directories(${test_name} PUBLIC ${TEST_INCLUDE_DIRS})
     target_compile_options(${test_name} PUBLIC ${LVGL_TESTFILE_COMPILE_OPTIONS})
 

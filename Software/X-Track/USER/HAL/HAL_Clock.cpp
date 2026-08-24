@@ -30,7 +30,7 @@ void HAL::Clock_GetInfo(Clock_Info_t* info)
     info->hour = calendar.hour;
     info->minute = calendar.min;
     info->second = calendar.sec;
-    info->millisecond = 0;
+    info->millisecond = calendar.millisecond;
 }
 
 void HAL::Clock_SetInfo(const Clock_Info_t* info)

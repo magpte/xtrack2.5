@@ -148,10 +148,10 @@ const uint8_t * lv_font_get_bitmap_fmt_txt(const lv_font_t * font, uint32_t unic
 bool lv_font_get_glyph_dsc_fmt_txt(const lv_font_t * font, lv_font_glyph_dsc_t * dsc_out, uint32_t unicode_letter,
                                    uint32_t unicode_letter_next)
 {
-    bool is_tab = false;
-    if(unicode_letter == '\t') {
+    /*It fixes a strange compiler optimization issue: https://github.com/lvgl/lvgl/issues/4370*/
+    bool is_tab = unicode_letter == '\t';
+    if(is_tab) {
         unicode_letter = ' ';
-        is_tab = true;
     }
     lv_font_fmt_txt_dsc_t * fdsc = (lv_font_fmt_txt_dsc_t *)font->dsc;
     uint32_t gid = get_glyph_dsc_id(font, unicode_letter);
@@ -220,13 +220,17 @@ static uint32_t get_glyph_dsc_id(const lv_font_t * font, uint32_t letter)
 
         /*Relative code point*/
         uint32_t rcp = letter - fdsc->cmaps[i].range_start;
-        if(rcp > fdsc->cmaps[i].range_length) continue;
+        if(rcp >= fdsc->cmaps[i].range_length) continue;
         uint32_t glyph_id = 0;
         if(fdsc->cmaps[i].type == LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY) {
             glyph_id = fdsc->cmaps[i].glyph_id_start + rcp;
         }
         else if(fdsc->cmaps[i].type == LV_FONT_FMT_TXT_CMAP_FORMAT0_FULL) {
             const uint8_t * gid_ofs_8 = fdsc->cmaps[i].glyph_id_ofs_list;
+            /* The first character is always valid and should have offset = 0
+             * However if a character is missing it also has offset=0.
+             * So if there is a 0 not on the first position then it's a missing character */
+            if(gid_ofs_8[rcp] == 0 && letter != fdsc->cmaps[i].range_start) continue;
             glyph_id = fdsc->cmaps[i].glyph_id_start + gid_ofs_8[rcp];
         }
         else if(fdsc->cmaps[i].type == LV_FONT_FMT_TXT_CMAP_SPARSE_TINY) {

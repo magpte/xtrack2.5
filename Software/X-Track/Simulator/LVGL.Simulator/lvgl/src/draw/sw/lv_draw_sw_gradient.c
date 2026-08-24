@@ -21,6 +21,7 @@
     #define GRAD_CONV(t, x) t = x
 #endif
 
+#undef ALIGN
 #if defined(LV_ARCH_64)
     #define ALIGN(X)    (((X) + 7) & ~7)
 #else
@@ -44,8 +45,7 @@ static lv_res_t find_oldest_item_life(lv_grad_t * c, void * ctx);
 static lv_res_t kill_oldest_item(lv_grad_t * c, void * ctx);
 static lv_res_t find_item(lv_grad_t * c, void * ctx);
 static void free_item(lv_grad_t * c);
-static  uint32_t compute_key(const lv_grad_dsc_t * g, lv_coord_t w, lv_coord_t h);
-
+static uint32_t compute_key(const lv_grad_dsc_t * g, lv_coord_t size, lv_coord_t w);
 
 /**********************
  *   STATIC VARIABLE
@@ -56,16 +56,22 @@ static uint8_t * grad_cache_end = 0;
 /**********************
  *   STATIC FUNCTIONS
  **********************/
-union void_cast {
-    const void * ptr;
-    const uint32_t value;
-};
 
 static uint32_t compute_key(const lv_grad_dsc_t * g, lv_coord_t size, lv_coord_t w)
 {
-    union void_cast v;
-    v.ptr = g;
-    return (v.value ^ size ^ (w >> 1)); /*Yes, this is correct, it's like a hash that changes if the width changes*/
+    uint32_t key =
+        ((uint32_t) g->stops_count) |
+        (((uint32_t) g->dir) << 8) |
+        (((uint32_t) g->dither) << 16);
+    uint32_t frac_product = 1;
+    for(uint8_t i = 0; i < g->stops_count; i++) {
+        key ^= (uint32_t) g->stops[i].color.full;
+        frac_product *= ((uint32_t) g->stops[i].frac) + 1;
+    }
+    key ^= frac_product;
+    key ^= (uint32_t) size;
+    key ^= ((uint32_t) w) >> 1; /*Yes, this is correct, it's like a hash that changes if the width changes*/
+    return key;
 }
 
 static size_t get_cache_item_size(lv_grad_t * c)
@@ -227,7 +233,6 @@ static lv_grad_t * allocate_item(const lv_grad_dsc_t * g, lv_coord_t w, lv_coord
     return item;
 }
 
-
 /**********************
  *     FUNCTIONS
  **********************/
@@ -292,7 +297,7 @@ lv_grad_t * lv_gradient_get(const lv_grad_dsc_t * g, lv_coord_t w, lv_coord_t h)
     return item;
 }
 
-LV_ATTRIBUTE_FAST_MEM lv_grad_color_t lv_gradient_calculate(const lv_grad_dsc_t * dsc, lv_coord_t range,
+lv_grad_color_t LV_ATTRIBUTE_FAST_MEM lv_gradient_calculate(const lv_grad_dsc_t * dsc, lv_coord_t range,
                                                             lv_coord_t frac)
 {
     lv_grad_color_t tmp;

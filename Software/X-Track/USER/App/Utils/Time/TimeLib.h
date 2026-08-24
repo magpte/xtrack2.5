@@ -17,7 +17,8 @@
 #endif
 
 
-#if !defined(__time_t_defined) && defined(ARDUINO) // avoid conflict with newlib or other posix libc
+#include <time.h>
+#if !defined(__time_t_defined) && !defined(__ARMCC_VERSION) && defined(ARDUINO) // avoid conflict with newlib or other posix libc
 typedef unsigned long time_t;
 #endif
 

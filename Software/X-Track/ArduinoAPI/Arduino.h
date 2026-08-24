@@ -51,11 +51,13 @@ extern "C" {
 #define LOW                     0x0
 #define HIGH                    0x1
 
+#ifndef __cplusplus
 #define min(a,b)                ((a)<(b)?(a):(b))
 #define max(a,b)                ((a)>(b)?(a):(b))
+#define round(x)                ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
+#endif
 #define ABS(x)                  (((x)>0)?(x):-(x)) //abs(x) is define in stdlib.h
 #define constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
-#define round(x)                ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
 #define radians(deg)            ((deg)*DEG_TO_RAD)
 #define degrees(rad)            ((rad)*RAD_TO_DEG)
 #define sq(x)                   ((x)*(x))

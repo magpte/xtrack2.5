@@ -9,7 +9,6 @@ Dialplate::Dialplate()
     , isAdjustingBrightness(false)
     , brightnessValue(0)
     , isLocked(false)
-    , savedBrightness(0)
 {
 }
 

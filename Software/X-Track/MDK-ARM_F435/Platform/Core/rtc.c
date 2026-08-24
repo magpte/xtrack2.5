@@ -66,17 +66,29 @@ static void ertc_config(void)
     /* enable the lext osc */
     crm_clock_source_enable(CRM_CLOCK_SOURCE_LEXT, TRUE);
 
-    /* wait till lext is ready */
-    while(crm_flag_get(CRM_LEXT_STABLE_FLAG) == RESET)
+    /* wait till lext is ready with timeout fallback to lick */
+    uint32_t wait_timeout = 0x200000;
+    while((crm_flag_get(CRM_LEXT_STABLE_FLAG) == RESET) && wait_timeout)
     {
+        wait_timeout--;
     }
 
-    /* select the ertc clock source */
-    crm_ertc_clock_select(CRM_ERTC_CLOCK_LEXT);
-
-    /* ertc second(1hz) = ertc_clk / (ertc_clk_div_a + 1) * (ertc_clk_div_b + 1) */
-    ertc_clk_div_b = 255;
-    ertc_clk_div_a = 127;
+    if (wait_timeout > 0)
+    {
+        /* select the ertc clock source */
+        crm_ertc_clock_select(CRM_ERTC_CLOCK_LEXT);
+        ertc_clk_div_b = 255;
+        ertc_clk_div_a = 127;
+    }
+    else
+    {
+        /* fallback to internal LICK if LEXT crystal is absent or fails to start */
+        crm_clock_source_enable(CRM_CLOCK_SOURCE_LICK, TRUE);
+        while(crm_flag_get(CRM_LICK_STABLE_FLAG) == RESET);
+        crm_ertc_clock_select(CRM_ERTC_CLOCK_LICK);
+        ertc_clk_div_b = 255;
+        ertc_clk_div_a = 127;
+    }
 #endif
 
     /* enable the ertc clock */
@@ -94,24 +106,11 @@ static void ertc_config(void)
     /* configure the ertc hour mode */
     ertc_hour_mode_set(ERTC_HOUR_MODE_24);
 
-    /* set date: 2020-01-01 */
+    /* set date: 2020-01-01 (Wednesday = 3 in ERTC) */
     ertc_date_set(20, 1, 1, 3);
 
     /* set time: 12:00:00 */
     ertc_time_set(12, 0, 0, ERTC_AM);
-
-//    /* set the alarm 12:00:10 */
-//    ertc_alarm_mask_set(ERTC_ALA, ERTC_ALARM_MASK_DATE_WEEK);
-//    ertc_alarm_week_date_select(ERTC_ALA, ERTC_SLECT_DATE);
-//    ertc_alarm_set(ERTC_ALA, 1, 12, 0, 10, ERTC_AM);
-
-//    /* enable ertc alarm a interrupt */
-//    ertc_interrupt_enable(ERTC_ALA_INT, TRUE);
-
-//    /* enable the alarm */
-//    ertc_alarm_enable(ERTC_ALA, TRUE);
-
-//    ertc_flag_clear(ERTC_ALAF_FLAG);
 
     /* indicator for the ertc configuration */
     ertc_bpr_data_write(ERTC_DT1, 0x1234);
@@ -139,25 +138,21 @@ void RTC_Init(void)
     {
         /* wait for ertc registers update */
         ertc_wait_update();
-
-//        /* clear the ertc alarm flag */
-//        ertc_flag_clear(ERTC_ALAF_FLAG);
-
-//        /* clear the exint line 17 pending bit */
-//        exint_flag_clear(EXINT_LINE_17);
     }
 }
 
 bool RTC_SetTime(uint16_t year, uint8_t mon, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec)
 {
-    ertc_date_set(year - 2000, mon, day, RTC_GetWeek(year, mon, day));
+    uint8_t w = RTC_GetWeek(year, mon, day);
+    uint8_t ertc_week = (w == 0) ? 7 : w; // In ERTC: 1=Mon, 2=Tue ... 7=Sun
+    ertc_date_set(year >= 2000 ? year - 2000 : year, mon, day, ertc_week);
     ertc_time_set(hour, min, sec, ERTC_AM);
     return true;
 }
 
-
 bool RTC_SetAlarm(uint16_t year, uint8_t mon, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec)
 {
+    (void)year; (void)mon; (void)day; (void)hour; (void)min; (void)sec;
     return false;
 }
 
@@ -165,15 +160,19 @@ void RTC_GetCalendar(RTC_Calendar_TypeDef* calendar)
 {
     ertc_time_type ertc_time;
 
-    /* get the current time */
+    /* get the current time directly from hardware ERTC BCD registers */
     ertc_calendar_get(&ertc_time);
     calendar->year = ertc_time.year + 2000;
     calendar->month = ertc_time.month;
     calendar->day = ertc_time.day;
-    calendar->week = ertc_time.week;
+    calendar->week = (ertc_time.week == 7) ? 0 : ertc_time.week; // Convert to 0=Sun, 1=Mon ... 6=Sat
     calendar->hour = ertc_time.hour;
     calendar->min = ertc_time.min;
     calendar->sec = ertc_time.sec;
+
+    /* Calculate sub-second milliseconds from ERTC synchronous divider */
+    uint32_t ss = ertc_sub_second_get();
+    calendar->millisecond = (uint16_t)(((255 - ss) * 1000) / 256);
 }
 
 uint8_t RTC_GetWeek(uint16_t year, uint8_t month, uint8_t day)
