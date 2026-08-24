@@ -1,14 +1,17 @@
 #include "HAL.h"
-#include "TinyGPSPlus/src/TinyGPS++.h"
+#include "lwgps/lwgps.h"
 #include "App/Utils/Time/TimeLib.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define GPS_SERIAL             CONFIG_GPS_SERIAL
 #define DEBUG_SERIAL           CONFIG_DEBUG_SERIAL
 #define GPS_USE_TRANSPARENT    CONFIG_GPS_USE_TRANSPARENT
 
-static TinyGPSPlus gps;
+static lwgps_t gps;
+static uint32_t s_lastFixTick = 0;
+static uint32_t s_lastRxTick = 0;
 
 #if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
 // ---------------------------------------------------------------------
@@ -338,10 +341,9 @@ void HAL::GPS_Init()
     GPS_SendConfigCommands();
 #endif
 
-    HAL::SysLog_Write("[GPS_INIT] Booting GPS (38400 baud, Mode7, 2Hz, GSV=4, RxDMA active)");
-    Serial.print("GPS: TinyGPS++ library v. ");
-    Serial.print(TinyGPSPlus::libraryVersion());
-    Serial.println(" by Mikal Hart");
+    HAL::SysLog_Write("[GPS_INIT] Booting GPS with LwGPS parser (38400 baud, Mode7, 2Hz, GSV=4, RxDMA active)");
+    lwgps_init(&gps);
+    Serial.println("GPS: LwGPS parser v2.4.0 initialized");
 }
 
 static void GPS_Recover(uint32_t silentMs)
@@ -354,7 +356,7 @@ static void GPS_Recover(uint32_t silentMs)
     uint16_t dmaRemain = 0;
 #endif
 
-    HAL::SysLog_Write("[GPS_RECOVER] Triggered! Silent=%lums, STS=0x%08X (RO=%d FE=%d NE=%d PE=%d IDLE=%d), DMA_Rem=%u, Chars=%lu, PassCS=%lu, FailCS=%lu",
+    HAL::SysLog_Write("[GPS_RECOVER] Triggered! Silent=%lums, STS=0x%08X (RO=%d FE=%d NE=%d PE=%d IDLE=%d), DMA_Rem=%u, Fix=%d, SatsInUse=%u, SatsInView=%u",
         silentMs,
         usartSts,
         (usartSts & USART_ROERR_FLAG) ? 1 : 0,
@@ -363,9 +365,9 @@ static void GPS_Recover(uint32_t silentMs)
         (usartSts & USART_PERR_FLAG) ? 1 : 0,
         (usartSts & USART_IDLEF_FLAG) ? 1 : 0,
         dmaRemain,
-        gps.charsProcessed(),
-        gps.passedChecksum(),
-        gps.failedChecksum()
+        gps.fix,
+        gps.sats_in_use,
+        gps.sats_in_view
     );
 
 #if defined(AT32F435xx)
@@ -435,11 +437,9 @@ void HAL::GPS_Update()
     DEBUG_SERIAL.println();
 #endif
 
-    static uint32_t s_lastRxTick = 0;
     static uint32_t s_lastRecoverTick = 0;
     static uint32_t s_lastHeartbeatTick = 0;
     static bool s_lastFixValid = false;
-    static uint32_t s_lastFailCS = 0;
     static int s_lastSats = -1;
 
     uint32_t now = millis();
@@ -489,43 +489,31 @@ void HAL::GPS_Update()
         }
     }
 
-    // 校验和错误监测
-    if (gps.failedChecksum() > s_lastFailCS)
-    {
-        HAL::SysLog_Write("[GPS_WARN] Checksum error! FailCS=%lu (+%lu), PassCS=%lu, Chars=%lu",
-            gps.failedChecksum(),
-            gps.failedChecksum() - s_lastFailCS,
-            gps.passedChecksum(),
-            gps.charsProcessed()
-        );
-        s_lastFailCS = gps.failedChecksum();
-    }
-
     // 定位状态改变监测（定位获取 / 定位丢失）
-    bool currentFixValid = gps.location.isValid() && (gps.location.age() < 2500);
+    bool currentFixValid = gps.is_valid && (gps.fix > 0) && (now - s_lastFixTick < 2500);
     if (currentFixValid != s_lastFixValid)
     {
         s_lastFixValid = currentFixValid;
         if (currentFixValid)
         {
             HAL::SysLog_Write("[GPS_STATE] FIX ACQUIRED! Sats=%d, Pos=(%.5f,%.5f), Speed=%.1fkm/h, HDOP=%.1f",
-                gps.satellites.value(), gps.location.lat(), gps.location.lng(), (float)gps.speed.kmph(), (float)gps.hdop.hdop());
+                gps.sats_in_use, (double)gps.latitude, (double)gps.longitude, (float)(gps.speed * 1.852f), (float)gps.dop_h);
         }
         else
         {
-            HAL::SysLog_Write("[GPS_STATE] FIX LOST! LastSats=%d, LocAge=%lu, TimeAge=%lu, SatAge=%lu",
-                gps.satellites.value(), gps.location.age(), gps.time.age(), gps.satellites.age());
+            HAL::SysLog_Write("[GPS_STATE] FIX LOST! LastSats=%d, FixMode=%d",
+                gps.sats_in_use, gps.fix_mode);
         }
     }
 
     // 卫星数量显著变动监测 (如降到 0 或大幅度变化)
-    int currentSats = (gps.satellites.isValid() && gps.satellites.age() < 2500) ? gps.satellites.value() : 0;
+    int currentSats = (gps.fix > 0 && now - s_lastFixTick < 2500) ? gps.sats_in_use : 0;
     if (currentSats != s_lastSats)
     {
         if (s_lastSats != -1 && (currentSats == 0 || s_lastSats == 0 || abs(currentSats - s_lastSats) >= 3))
         {
-            HAL::SysLog_Write("[GPS_STATE] Sats changed: %d -> %d (SatAge=%lu, LocAge=%lu, Valid=%d)",
-                s_lastSats, currentSats, gps.satellites.age(), gps.location.age(), gps.satellites.isValid() ? 1 : 0);
+            HAL::SysLog_Write("[GPS_STATE] Sats changed: %d -> %d (InUse=%u, InView=%u, Valid=%d)",
+                s_lastSats, currentSats, gps.sats_in_use, gps.sats_in_view, gps.is_valid ? 1 : 0);
         }
         s_lastSats = currentSats;
     }
@@ -538,18 +526,16 @@ void HAL::GPS_Update()
 #if defined(AT32F435xx)
         dmaRemain = dma_data_number_get(DMA1_CHANNEL4);
 #endif
-        HAL::SysLog_Write("[GPS_HB] Fix=%d, Sats=%d, Spd=%.1f, HDOP=%.1f, Alt=%.1f, Pos=(%.5f,%.5f), LocAge=%lu, DMA_Rem=%u, Avail=%d, Chars=%lu, FailCS=%lu",
+        HAL::SysLog_Write("[GPS_HB] Fix=%d, Sats=%d(view:%d), Spd=%.1f, HDOP=%.1f, Alt=%.1f, Pos=(%.5f,%.5f), DMA_Rem=%u, Avail=%d",
             currentFixValid ? 1 : 0,
             currentSats,
-            currentFixValid ? (float)gps.speed.kmph() : 0.0f,
-            (float)gps.hdop.hdop(),
-            (float)gps.altitude.meters(),
-            gps.location.lat(), gps.location.lng(),
-            gps.location.age(),
+            gps.sats_in_view,
+            currentFixValid ? (float)(gps.speed * 1.852f) : 0.0f,
+            (float)gps.dop_h,
+            (float)gps.altitude,
+            (double)gps.latitude, (double)gps.longitude,
             dmaRemain,
-            available,
-            gps.charsProcessed(),
-            gps.failedChecksum()
+            available
         );
     }
 
@@ -615,10 +601,11 @@ void HAL::GPS_Update()
                 }
 #endif
 
-                // 批量喂入 TinyGPSPlus 状态机
-                for (uint16_t i = 0; i < lineLen; i++)
+                // 批量喂入 LwGPS 状态机（极速块解析）
+                lwgps_process(&gps, start, lineLen);
+                if (gps.is_valid && gps.fix > 0)
                 {
-                    gps.encode(start[i]);
+                    s_lastFixTick = millis();
                 }
 
                 consumed += lineLen;
@@ -645,9 +632,10 @@ void HAL::GPS_Update()
                 }
 #endif
 
-                for (uint16_t i = 0; i < remain; i++)
+                lwgps_process(&gps, start, remain);
+                if (gps.is_valid && gps.fix > 0)
                 {
-                    gps.encode(start[i]);
+                    s_lastFixTick = millis();
                 }
 
                 consumed += remain;
@@ -671,38 +659,42 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
 {
     memset(info, 0, sizeof(GPS_Info_t));
 
-    // 时效性校验：超过 2.5 秒未收到新数据即判定为定位丢失，防止假点写入与时钟冻结
-    bool isLocationValid = gps.location.isValid() && (gps.location.age() < 2500);
-    bool isTimeValid     = gps.time.isValid() && (gps.time.age() < 2500);
-    bool isDateValid     = gps.date.isValid() && (gps.date.age() < 2500);
+    uint32_t now = millis();
+    // 时效性校验：超过 2.5 秒未收到新定位数据即判定为定位丢失，防止假点写入与时钟冻结
+    bool isLocationValid = gps.is_valid && (gps.fix > 0) && (now - s_lastFixTick < 2500);
+    bool isTimeValid     = (gps.date > 0 || gps.hours > 0 || gps.minutes > 0 || gps.seconds > 0) && (now - s_lastRxTick < 2500);
 
     info->isVaild = isLocationValid;
-    info->longitude = gps.location.lng();
-    info->latitude = gps.location.lat();
-    info->altitude = gps.altitude.meters();
-    info->speed = isLocationValid ? (float)gps.speed.kmph() : 0.0f;
-    info->course = isLocationValid ? (float)gps.course.deg() : 0.0f;
+    info->longitude = (double)gps.longitude;
+    info->latitude = (double)gps.latitude;
+    info->altitude = (float)gps.altitude;
+    info->speed = isLocationValid ? (float)(gps.speed * 1.852f) : 0.0f; // 节(knots)转公里/小时(km/h)
+    info->course = isLocationValid ? (float)gps.course : 0.0f;
 
     if (isTimeValid)
     {
-        if (isDateValid)
+        if (gps.year > 0)
         {
-            info->clock.year = gps.date.year();
-            info->clock.month = gps.date.month();
-            info->clock.day = gps.date.day();
+            info->clock.year = (uint16_t)(2000 + gps.year);
+            info->clock.month = gps.month;
+            info->clock.day = gps.date;
         }
-        info->clock.hour = gps.time.hour();
-        info->clock.minute = gps.time.minute();
-        info->clock.second = gps.time.second();
-        info->clock.millisecond = gps.time.centisecond() * 10;
+        info->clock.hour = gps.hours;
+        info->clock.minute = gps.minutes;
+        info->clock.second = gps.seconds;
+        info->clock.millisecond = 0;
     }
 
-    info->satellites = (gps.satellites.isValid() && gps.satellites.age() < 2500) ? gps.satellites.value() : 0;
+    info->satellites = (gps.fix > 0 && now - s_lastFixTick < 2500) ? gps.sats_in_use : 0;
 
     info->pdop = s_pdopCurrent;
-    if (info->pdop == 0.0f && gps.hdop.isValid() && gps.hdop.age() < 2500)
+    if (info->pdop == 0.0f && gps.dop_p > 0.0f)
     {
-        info->pdop = (float)gps.hdop.hdop();
+        info->pdop = (float)gps.dop_p;
+    }
+    else if (info->pdop == 0.0f && gps.dop_h > 0.0f)
+    {
+        info->pdop = (float)gps.dop_h;
     }
 
     return info->isVaild;
@@ -710,12 +702,22 @@ bool HAL::GPS_GetInfo(GPS_Info_t* info)
 
 bool HAL::GPS_LocationIsValid()
 {
-    return gps.location.isValid() && (gps.location.age() < 2500);
+    return gps.is_valid && (gps.fix > 0) && (millis() - s_lastFixTick < 2500);
 }
 
 double HAL::GPS_GetDistanceOffset(GPS_Info_t* info,  double preLong, double preLat)
 {
-    return gps.distanceBetween(info->latitude, info->longitude, preLat, preLong);
+    if (!info || (info->latitude == 0.0 && info->longitude == 0.0) || (preLat == 0.0 && preLong == 0.0))
+    {
+        return 0.0;
+    }
+    // 针对近距离点（周期 500ms，点距 < 500米），等矩平面投影具有毫米级精度且计算极快
+    float dLat = (float)(info->latitude - preLat) * (3.1415926535897932f / 180.0f);
+    float dLon = (float)(info->longitude - preLong) * (3.1415926535897932f / 180.0f);
+    float meanLat = (float)((info->latitude + preLat) * 0.5) * (3.1415926535897932f / 180.0f);
+    float x = dLon * cosf(meanLat) * 6371000.0f;
+    float y = dLat * 6371000.0f;
+    return (double)sqrtf(x * x + y * y);
 }
 
 void HAL::GPS_GetSkyInfo(Sky_Info_t* info)

@@ -98,7 +98,6 @@ static bool onLoad(Account* account)
 
     MapConv::SetDirPath(sysConfig.mapDirPath);
     MapConv::SetExtName(sysConfig.mapExtName);
-    MapConv::SetCoordTransformEnable(!sysConfig.mapWGS84);
 
     int16_t levelMin, levelMax;
     if (MapConvGetRange(sysConfig.mapDirPath, &levelMin, &levelMax) ||

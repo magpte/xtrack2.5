@@ -65,11 +65,6 @@ public:
         extName[sizeof(extName) - 1] = '\0';
     }
 
-    static void SetCoordTransformEnable(bool en)
-    {
-        coordTransformEnable = en;
-    }
-
     static void SetLevelRange(int16_t min, int16_t max)
     {
         levelMin = min;
@@ -112,7 +107,6 @@ protected:
     static char extName[MAP_CONV_EXT_NAME_MAX];
     static int16_t levelMin;
     static int16_t levelMax;
-    static bool coordTransformEnable;
 };
 
 #endif

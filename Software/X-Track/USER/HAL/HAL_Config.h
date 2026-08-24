@@ -65,9 +65,8 @@
 // GSA 系统ID 里出现了 1/2/4，卫星总数从双星座 7 颗涨到三星座 12 颗。
 // 这个开关同时控制两条指令（都在 GPS_Init() 里）：
 //   1) $PCAS04,7*1E   打开三星座联合定位
-//   2) $PCAS03,...    只保留 GGA+RMC，关掉 TinyGPS++ 根本不解析、纯粹
-//      浪费带宽的 GSA/GSV/GLL/VTG/ZDA，把 9600 波特率下的带宽占用从
-//      83% 压到 15%，见 HAL_GPS.cpp 里的详细说明。
+//   2) $PCAS03,...    配置 NMEA 语句输出（GGA、RMC、GSV、GSA），配合 LwGPS
+//      高效状态机进行多星座卫星与经纬度解析，见 HAL_GPS.cpp 里的详细说明。
 // AT6558R 是 ROM 版，不支持 $PCAS00 保存配置，所以这两条指令必须每次
 // 开机都重新发送，不能只发一次——已经实现为开机时在 GPS_Init() 里发送。
 // 如果想退回出厂默认的 GPS+BDS 双星座、且不限制语句类型，把这个改回 0
@@ -80,7 +79,7 @@
 // 区域会没有卫星点可画，但不会报错/崩溃。
 #define CONFIG_GPS_SKY_ENABLE        1
 
-// 把 GPS 模块吐出来的原始 NMEA 语句（未经 TinyGPS++ 解析、字节原样）
+// 把 GPS 模块吐出来的原始 NMEA 语句（未经 LwGPS 解析、字节原样）
 // 落盘到 SD 卡 CONFIG_NMEA_LOG_FILE_DIR_NAME 目录下，文件名按本次开机
 // 时刻命名，一次开机一个文件，供之后拖进 u-center 回放/分析用。
 // 具体收录哪些语句、按什么频率收录，见 HAL_GPS.cpp 里 NMEA_Log_Feed()

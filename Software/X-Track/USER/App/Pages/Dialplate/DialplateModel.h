@@ -2,7 +2,6 @@
 #define __DIALPLATE_MODEL_H
 
 #include "Common/DataProc/DataProc.h"
-#include "TinyGPSPlus/src/TinyGPS++.h"
 
 namespace Page
 {
@@ -51,9 +50,14 @@ public:
     const char* GetCourseDirection()  
     {  
         float course = GetCourse();  
-        while (course < 0) course += 360.0f;
+        while (course < 0.0f) course += 360.0f;
         while (course >= 360.0f) course -= 360.0f;
-        return TinyGPSPlus::cardinal(course);  
+        static const char* const directions[] = {
+            "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"
+        };
+        int index = (int)((course + 11.25f) / 22.5f);
+        return directions[index % 16];  
     }
 
     void RecorderCommand(RecCmd_t cmd);

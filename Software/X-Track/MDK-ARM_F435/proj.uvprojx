@@ -340,7 +340,7 @@
               <MiscControls>-Wno-invalid-source-encoding -Wno-nested-anon-types -Wno-unused-parameter -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-delete-non-abstract-non-virtual-dtor -Wno-address-of-packed-member -Wno-deprecated-register -Wno-format -Wno-cast-function-type-mismatch -Wno-sign-compare -Wno-delete-incomplete -Wno-nonportable-include-path -Wno-unused-variable -Wno-unused-private-field</MiscControls>
               <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_LVGL_MEM_SIZE_KB=96</Define>
               <Undefine></Undefine>
-              <IncludePath>..\ArduinoAPI;.\Platform\Core;.\Platform;..\Libraries;..\Libraries\SdFat\src;..\USER\App;..\USER;..\Simulator\LVGL.Simulator</IncludePath>
+              <IncludePath>..\ArduinoAPI;.\Platform\Core;.\Platform;..\Libraries;..\Libraries\lwgps\src;..\Libraries\SdFat\src;..\USER\App;..\USER;..\Simulator\LVGL.Simulator</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -2124,16 +2124,6 @@
               <FileName>MapConv.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\USER\App\Utils\MapConv\MapConv.cpp</FilePath>
-            </File>
-            <File>
-              <FileName>GPS_Transform.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\USER\App\Utils\MapConv\GPS_Transform\GPS_Transform.h</FilePath>
-            </File>
-            <File>
-              <FileName>GPS_Transform.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\USER\App\Utils\MapConv\GPS_Transform\GPS_Transform.c</FilePath>
             </File>
             <File>
               <FileName>TileSystem.h</FileName>
@@ -3926,9 +3916,9 @@
               <FilePath>..\Libraries\MillisTaskManager\MillisTaskManager.cpp</FilePath>
             </File>
             <File>
-              <FileName>TinyGPS++.cpp</FileName>
-              <FileType>8</FileType>
-              <FilePath>..\Libraries\TinyGPSPlus\src\TinyGPS++.cpp</FilePath>
+              <FileName>lwgps.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Libraries\lwgps\src\lwgps\lwgps.c</FilePath>
             </File>
             <File>
               <FileName>StackInfo.c</FileName>

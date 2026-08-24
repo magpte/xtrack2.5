@@ -22,7 +22,6 @@
  */
 #include "MapConv.h"
 #include <stdio.h>
-#include "GPS_Transform/GPS_Transform.h"
 
 using namespace::Microsoft_MapPoint;
 
@@ -34,7 +33,6 @@ char MapConv::dirPath[] = "/MAP";
 char MapConv::extName[] = "bin";
 int16_t MapConv::levelMin = 0;
 int16_t MapConv::levelMax = 18;
-bool MapConv::coordTransformEnable = false;
 
 MapConv::MapConv()
 {
@@ -60,11 +58,6 @@ void MapConv::ConvertMapCoordinate(
 )
 {
     int pixelX, pixelY;
-
-    if (coordTransformEnable)
-    {
-        GPS_Transform(latitude, longitude, &latitude, &longitude);
-    }
 
     TileSystem::LatLongToPixelXY(
         latitude,
