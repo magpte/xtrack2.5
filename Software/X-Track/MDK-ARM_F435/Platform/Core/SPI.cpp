@@ -466,8 +466,14 @@ uint8_t SPIClass::recv(void)
  * 与显示屏的 EDMA_STREAM1、GPS 的 DMA1 Channel4、ADC 的 DMA1 Channel1
  * 都不冲突。
  */
-static uint8_t SPI_DMA_TxDummy = 0xFF;
-static uint8_t SPI_DMA_RxTrash;
+#if defined(__GNUC__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#  define ALIGN_WORD4 __attribute__((aligned(4)))
+#else
+#  define ALIGN_WORD4
+#endif
+
+static uint8_t SPI_DMA_TxDummy ALIGN_WORD4 = 0xFF;
+static uint8_t SPI_DMA_RxTrash ALIGN_WORD4;
 
 bool SPIClass::_initDMA()
 {

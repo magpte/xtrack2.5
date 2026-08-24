@@ -30,6 +30,7 @@
  */
 
 #include "GPX.h"
+#include <stdio.h>
 
 #define _GPX_HEAD "<gpx version=\"1.1\" creator=\"Arduino GPX Lib\"\n xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n xmlns=\"http://www.topografix.com/GPX/1/1\"\n xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\"\n>\n"
 #define _GPX_TAIL               "</gpx>\n"
@@ -169,6 +170,60 @@ String GPX::getPt(String typ, String lon, String lat)
 String GPX::getPt(String typ, String lon, String lat, String ele)
 {
     return getPt(typ, lon, lat);
+}
+
+int GPX::formatTrkPt(
+    char* buf,
+    size_t maxLen,
+    double lat,
+    double lon,
+    float ele,
+    bool hasEle,
+    const char* timeStr,
+    const char* typ
+)
+{
+    if (buf == nullptr || maxLen == 0)
+    {
+        return -1;
+    }
+
+    if (hasEle && timeStr && timeStr[0] != '\0')
+    {
+        return snprintf(
+            buf,
+            maxLen,
+            "<%s lat=\"%.6f\" lon=\"%.6f\"><ele>%.2f</ele>\n<time>%s</time>\n</%s>\n",
+            typ, lat, lon, ele, timeStr, typ
+        );
+    }
+    else if (timeStr && timeStr[0] != '\0')
+    {
+        return snprintf(
+            buf,
+            maxLen,
+            "<%s lat=\"%.6f\" lon=\"%.6f\"><time>%s</time>\n</%s>\n",
+            typ, lat, lon, timeStr, typ
+        );
+    }
+    else if (hasEle)
+    {
+        return snprintf(
+            buf,
+            maxLen,
+            "<%s lat=\"%.6f\" lon=\"%.6f\"><ele>%.2f</ele>\n</%s>\n",
+            typ, lat, lon, ele, typ
+        );
+    }
+    else
+    {
+        return snprintf(
+            buf,
+            maxLen,
+            "<%s lat=\"%.6f\" lon=\"%.6f\"></%s>\n",
+            typ, lat, lon, typ
+        );
+    }
 }
 
 //Set Methods

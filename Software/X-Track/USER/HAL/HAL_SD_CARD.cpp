@@ -61,9 +61,10 @@ static bool SD_CheckDir(const char* path)
 // 平白在 SD 卡上留一个空文件。
 // ---------------------------------------------------------------------
 #define NMEA_LOG_FILE_NAME_FMT      "/" CONFIG_NMEA_LOG_FILE_DIR_NAME "/%02d%02d%02d%02d.LOG"
-#define NMEA_LOG_WRITE_BUF_SIZE     24576 // 24KB (48 * 512B sectors)
+#define NMEA_LOG_WRITE_BUF_SIZE     24576 // 24KB (6 * 4KB clusters / 48 * 512B sectors)
 #define NMEA_LOG_SYNC_INTERVAL_MS   30000 // 30s
 #define SD_SECTOR_SIZE              512
+#define SD_CLUSTER_SIZE             4096  // 4KB 物理簇对齐大小
 
 static File     s_nmeaLogFile;
 static bool     s_nmeaLogFileOpen = false;
@@ -89,8 +90,8 @@ static void NMEA_Log_FlushBuffer(bool forceAll = false)
     uint32_t flushLen = s_nmeaLogWriteBufLen;
     if (!forceAll)
     {
-        // 512 字节物理扇区对齐：只写入整扇区部分，尾部零头留在缓冲区中，消除 Read-Modify-Write 额外 Flash I/O
-        flushLen = (s_nmeaLogWriteBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
+        // 4KB 物理簇对齐：只写入整簇部分（4096 字节倍数），尾部零头留在缓冲区中，消除 Read-Modify-Write 额外 Flash I/O
+        flushLen = (s_nmeaLogWriteBufLen / SD_CLUSTER_SIZE) * SD_CLUSTER_SIZE;
     }
 
     if (flushLen == 0)
@@ -193,7 +194,8 @@ static void SysLog_FlushBuffer(bool forceAll = false)
     uint32_t flushLen = s_sysLogWriteBufLen;
     if (!forceAll)
     {
-        flushLen = (s_sysLogWriteBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
+        // 4KB 物理簇对齐：只写入整簇部分（4096 字节倍数），消除 Read-Modify-Write
+        flushLen = (s_sysLogWriteBufLen / SD_CLUSTER_SIZE) * SD_CLUSTER_SIZE;
     }
 
     if (flushLen == 0)
@@ -520,7 +522,7 @@ void HAL::SD_Update()
 
         if (s_nmeaLogFileOpen)
         {
-            if (s_nmeaLogWriteBufLen >= SD_SECTOR_SIZE)
+            if (s_nmeaLogWriteBufLen >= SD_CLUSTER_SIZE)
             {
                 NMEA_Log_FlushBuffer(false);
             }
@@ -557,7 +559,7 @@ void HAL::SD_Update()
 
         if (s_sysLogFileOpen)
         {
-            if (s_sysLogWriteBufLen >= SD_SECTOR_SIZE)
+            if (s_sysLogWriteBufLen >= SD_CLUSTER_SIZE)
             {
                 SysLog_FlushBuffer(false);
             }

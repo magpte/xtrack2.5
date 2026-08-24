@@ -338,7 +338,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls>-Wno-invalid-source-encoding -Wno-nested-anon-types -Wno-unused-parameter -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-delete-non-abstract-non-virtual-dtor -Wno-address-of-packed-member -Wno-deprecated-register -Wno-format -Wno-cast-function-type-mismatch -Wno-sign-compare -Wno-delete-incomplete -Wno-nonportable-include-path -Wno-unused-variable -Wno-unused-private-field</MiscControls>
-              <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_LVGL_MEM_SIZE_KB=72</Define>
+              <Define>LIBRARY_VERSION,ARDUINO=111,CONFIG_LVGL_MEM_SIZE_KB=96</Define>
               <Undefine></Undefine>
               <IncludePath>..\ArduinoAPI;.\Platform\Core;.\Platform;..\Libraries;..\Libraries\SdFat\src;..\USER\App;..\USER;..\Simulator\LVGL.Simulator</IncludePath>
             </VariousControls>

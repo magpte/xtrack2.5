@@ -143,6 +143,13 @@ public:
         uint8_t subPriority = SERIAL_SUBPRIORITY_DEFAULT
     );
 
+    /*
+     * 零拷贝切片读取接口：直接返回环形缓冲区中可读的连续内存指针与长度，
+     * 避免上层协议解析器进行逐字节 read() 与中间内存拷贝。
+     */
+    const uint8_t* getReadPtr(uint16_t* contiguousLen);
+    void advanceTail(uint16_t bytesRead);
+
     void IRQHandler();
 
 private:
@@ -152,7 +159,7 @@ private:
     CallbackFunction_t _callbackFunction;
     volatile uint16_t _rxBufferHead;
     volatile uint16_t _rxBufferTail;
-    uint8_t _rxBuffer[SERIAL_RX_BUFFER_SIZE];
+    uint8_t _rxBuffer[SERIAL_RX_BUFFER_SIZE] __attribute__((aligned(4)));
 
     dma_channel_type* _rxDmaChannel;
 };

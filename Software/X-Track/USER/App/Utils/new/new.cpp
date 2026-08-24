@@ -25,6 +25,8 @@
 
 #include "lvgl/lvgl.h"
 #include <new>
+#include <stdlib.h>
+#include <string.h>
 
 typedef void* (*alloc_func_t)(size_t);
 
@@ -93,4 +95,43 @@ void operator delete[](void* ptr, const std::nothrow_t&) noexcept
     if(ptr) lv_mem_free(ptr);
 }
 
+extern "C" {
+void* malloc(size_t size)
+{
+    return alloc_func(size);
+}
+
+void free(void* ptr)
+{
+    if(ptr) lv_mem_free(ptr);
+}
+
+void* realloc(void* ptr, size_t size)
+{
+    if(!ptr) return alloc_func(size);
+    if(!size)
+    {
+        lv_mem_free(ptr);
+        return nullptr;
+    }
+    if(!lv_is_initialized())
+    {
+        lv_init();
+    }
+    return lv_mem_realloc(ptr, size);
+}
+
+void* calloc(size_t num, size_t size)
+{
+    size_t total = num * size;
+    void* ptr = alloc_func(total);
+    if(ptr)
+    {
+        memset(ptr, 0, total);
+    }
+    return ptr;
+}
+}
+
 #endif
+

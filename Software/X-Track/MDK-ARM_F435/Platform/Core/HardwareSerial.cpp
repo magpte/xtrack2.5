@@ -426,6 +426,53 @@ int HardwareSerial::peek(void)
 }
 
 /**
+  * @brief  获取当前环形缓冲区中可连续读取的数据指针与长度（零拷贝）
+  * @param  contiguousLen: 输出参数，当前连续可读字节数
+  * @retval 连续数据的起始指针（若无可读数据则返回 NULL 且 contiguousLen=0）
+  */
+const uint8_t* HardwareSerial::getReadPtr(uint16_t* contiguousLen)
+{
+    if(_rxDmaChannel != NULL)
+    {
+        _syncHeadFromDMA();
+    }
+
+    uint16_t head = _rxBufferHead;
+    uint16_t tail = _rxBufferTail;
+
+    if(head == tail)
+    {
+        if(contiguousLen) *contiguousLen = 0;
+        return NULL;
+    }
+
+    if(head > tail)
+    {
+        if(contiguousLen) *contiguousLen = head - tail;
+    }
+    else
+    {
+        // 环形缓冲区绕回：本次先返回从 tail 到缓冲区末尾的连续段
+        if(contiguousLen) *contiguousLen = SERIAL_RX_BUFFER_SIZE - tail;
+    }
+
+    return &_rxBuffer[tail];
+}
+
+/**
+  * @brief  推进环形缓冲区读指针（在零拷贝切片读取处理完成后调用）
+  * @param  bytesRead: 已处理并消耗的字节数
+  * @retval 无
+  */
+void HardwareSerial::advanceTail(uint16_t bytesRead)
+{
+    if(bytesRead > 0)
+    {
+        _rxBufferTail = (uint16_t)(_rxBufferTail + bytesRead) % SERIAL_RX_BUFFER_SIZE;
+    }
+}
+
+/**
   * @brief  清空串口缓存
   * @param  无
   * @retval 无

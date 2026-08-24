@@ -31,7 +31,7 @@ using namespace DataProc;
 // 配合这次一起做的另一项改动：把喂狗从协作式任务调度器挪到硬件定时器
 // 中断里（见 HAL.cpp），两者是互补关系，不是互相替代。
 // ---------------------------------------------------------------------
-#define RECORDER_WRITE_BUF_SIZE     6144  // 6KB (12 * 512B sectors)
+#define RECORDER_WRITE_BUF_SIZE     8192  // 8KB (2 * 4KB clusters / 16 * 512B sectors)
 #define RECORDER_SYNC_INTERVAL_MS   30000 // 30s
 
 typedef struct
@@ -54,10 +54,11 @@ typedef struct
 } Recorder_t;
 
 #define SD_SECTOR_SIZE              512
+#define SD_CLUSTER_SIZE             4096 // 4KB 物理簇对齐大小
 
 // 把缓冲区里已经攒的内容写进文件。
-// forceAll = false 时按照 512 字节物理扇区对齐，仅将整扇区数据落盘，尾部零头留在缓冲区中，消除 Flash Read-Modify-Write。
-// forceAll = true 时（如停止录制、文件同步或超出容量）将缓冲区全部内容落盘。
+// forceAll = false 时按照 4KB 物理簇对齐，仅将整簇数据（4096 字节倍数）落盘，尾部零头留在缓冲区中，彻底消除 Flash Read-Modify-Write。
+// forceAll = true 时（如停止录制、文件定时同步 30s 或即将超出容量）将缓冲区全部内容落盘。
 static lv_fs_res_t Recorder_FlushBuffer(Recorder_t* recorder, bool forceAll = false)
 {
     if (recorder->writeBufLen == 0)
@@ -68,7 +69,7 @@ static lv_fs_res_t Recorder_FlushBuffer(Recorder_t* recorder, bool forceAll = fa
     uint32_t flushLen = recorder->writeBufLen;
     if (!forceAll)
     {
-        flushLen = (recorder->writeBufLen / SD_SECTOR_SIZE) * SD_SECTOR_SIZE;
+        flushLen = (recorder->writeBufLen / SD_CLUSTER_SIZE) * SD_CLUSTER_SIZE;
     }
 
     if (flushLen == 0)
@@ -92,7 +93,7 @@ static lv_fs_res_t Recorder_FlushBuffer(Recorder_t* recorder, bool forceAll = fa
     return res;
 }
 
-// 把一段字符串追加进缓冲区；如果加进去会超出缓冲区容量，先把缓冲区里的整扇区数据落盘腾地方。
+// 把一段字符串追加进缓冲区；如果加进去会超出缓冲区容量，先把缓冲区里的整簇数据落盘腾地方。
 static lv_fs_res_t Recorder_BufferedWrite(Recorder_t* recorder, const char* str)
 {
     uint32_t len = (uint32_t)strlen(str);
@@ -109,6 +110,16 @@ static lv_fs_res_t Recorder_BufferedWrite(Recorder_t* recorder, const char* str)
         if (res != LV_FS_RES_OK)
         {
             return res;
+        }
+
+        // 若经整簇刷新后仍然容纳不下，则执行强制全刷新
+        if (recorder->writeBufLen + len > RECORDER_WRITE_BUF_SIZE)
+        {
+            res = Recorder_FlushBuffer(recorder, true);
+            if (res != LV_FS_RES_OK)
+            {
+                return res;
+            }
         }
     }
 
@@ -169,17 +180,23 @@ static void Recorder_RecPoint(Recorder_t* recorder, HAL::GPS_Info_t* gpsInfo)
         return;
     }
 
-    recorder->gpx.setEle(String(gpsInfo->altitude, 2));
-    recorder->gpx.setTime(timeBuf);
+    char ptBuf[160];
+    int len = GPX::formatTrkPt(
+        ptBuf,
+        sizeof(ptBuf),
+        gpsInfo->latitude,
+        gpsInfo->longitude,
+        gpsInfo->altitude,
+        true,
+        timeBuf,
+        GPX_TRKPT
+    );
 
-    String gpxStr = recorder->gpx.getPt(
-                        GPX_TRKPT,
-                        String(gpsInfo->longitude, 6),
-                        String(gpsInfo->latitude, 6)
-                    );
-
-    Recorder_BufferedWrite(recorder, gpxStr.c_str());
-    // 纯内存写入：追加到 6KB 缓冲区（< 2us），落盘与 sync 已由 Recorder_PeriodicTask 后台统一处理
+    if (len > 0)
+    {
+        Recorder_BufferedWrite(recorder, ptBuf);
+    }
+    // 纯内存零堆分配写入：格式化至局部栈缓冲区并追加到 8KB 缓冲区（< 2us），落盘与 sync 已由 Recorder_PeriodicTask 后台统一处理
 }
 
 static void Recorder_RecStop(Recorder_t* recorder);
@@ -354,8 +371,8 @@ void DataProc::Recorder_PeriodicTask()
         return;
     }
 
-    // 后台平滑按 512 字节整扇区对齐刷新缓冲区
-    if (s_pRecorderInstance->writeBufLen >= SD_SECTOR_SIZE)
+    // 后台平滑按 4KB 物理簇对齐刷新缓冲区
+    if (s_pRecorderInstance->writeBufLen >= SD_CLUSTER_SIZE)
     {
         Recorder_FlushBuffer(s_pRecorderInstance, false);
     }

@@ -56,6 +56,16 @@ public:
     String getInfo();
     String getPt(String typ, String lon, String lat);
     String getPt(String typ, String lon, String lat, String ele);
+    static int formatTrkPt(
+        char* buf,
+        size_t maxLen,
+        double lat,
+        double lon,
+        float ele,
+        bool hasEle = true,
+        const char* timeStr = nullptr,
+        const char* typ = GPX_TRKPT
+    );
     void setMetaName(String name);
     void setMetaDesc(String desc);
     void setName(String name);

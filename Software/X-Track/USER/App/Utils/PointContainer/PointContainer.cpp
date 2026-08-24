@@ -30,11 +30,14 @@
 PointContainer::PointContainer()
 {
     memset(&priv, 0, sizeof(priv));
+    vecPoints.reserve(1024);
+    vecChunks.reserve(32);
 }
 
 PointContainer::~PointContainer()
 {
-
+    std::vector<DiffPoint_t>().swap(vecPoints);
+    std::vector<Chunk_t>().swap(vecChunks);
 }
 
 bool PointContainer::IsFlag(const DiffPoint_t* point)

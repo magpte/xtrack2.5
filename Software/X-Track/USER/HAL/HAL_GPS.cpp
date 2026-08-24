@@ -12,7 +12,7 @@ static TinyGPSPlus gps;
 
 #if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
 // ---------------------------------------------------------------------
-// 统一 NMEA 行缓冲，供 Sky_ParseLine() 和 NMEA_Log_ProcessLine() 使用
+// 统一 NMEA 行缓冲（仅用于处理极少数跨环形缓冲区边界的半包语句）
 // ---------------------------------------------------------------------
 #define NMEA_LINE_MAX     192
 static char    s_nmeaLineBuf[NMEA_LINE_MAX];
@@ -23,22 +23,23 @@ static uint8_t s_nmeaLineLen = 0;
 static HAL::Sky_Info_t s_skyBuilding;
 static HAL::Sky_Info_t s_skyCurrent;
 
-static int NMEA_ParseIntField(const char* s, int fieldIndex)
+static int NMEA_ParseIntField(const char* s, int fieldIndex, size_t maxLen = 256)
 {
     int cur = 0;
     const char* p = s;
-    while (*p && cur < fieldIndex)
+    const char* end = s + maxLen;
+    while (p < end && *p && cur < fieldIndex)
     {
         if (*p == ',') cur++;
         p++;
     }
-    if (cur != fieldIndex || !*p || *p == ',' || *p == '*') return -1;
+    if (cur != fieldIndex || p >= end || !*p || *p == ',' || *p == '*' || *p == '\r' || *p == '\n') return -1;
     return atoi(p);
 }
 
-static void Sky_ParseLine(const char* line)
+static void Sky_ParseLine(const char* line, size_t len)
 {
-    if (line[0] != '$') return;
+    if (len < 6 || line[0] != '$') return;
     if (line[3] != 'G' || line[4] != 'S' || line[5] != 'V') return;
 
     HAL::Sky_Constellation_t sys = HAL::SKY_CONSTELLATION_UNKNOWN;
@@ -47,8 +48,8 @@ static void Sky_ParseLine(const char* line)
     else if (line[1] == 'G' && line[2] == 'L') sys = HAL::SKY_CONSTELLATION_GLONASS;
     else return;
 
-    int totalMsgs = NMEA_ParseIntField(line, 1);
-    int msgNum    = NMEA_ParseIntField(line, 2);
+    int totalMsgs = NMEA_ParseIntField(line, 1, len);
+    int msgNum    = NMEA_ParseIntField(line, 2, len);
     if (totalMsgs <= 0 || msgNum <= 0 || msgNum > totalMsgs) return;
 
     static uint32_t s_lastGsvTick = 0;
@@ -63,12 +64,12 @@ static void Sky_ParseLine(const char* line)
     int field = 4;
     while (s_skyBuilding.count < SKY_MAX_SATELLITES)
     {
-        int prn = NMEA_ParseIntField(line, field);
+        int prn = NMEA_ParseIntField(line, field, len);
         if (prn <= 0) break;
 
-        int elev = NMEA_ParseIntField(line, field + 1);
-        int azim = NMEA_ParseIntField(line, field + 2);
-        int snr  = NMEA_ParseIntField(line, field + 3);
+        int elev = NMEA_ParseIntField(line, field + 1, len);
+        int azim = NMEA_ParseIntField(line, field + 2, len);
+        int snr  = NMEA_ParseIntField(line, field + 3, len);
 
         HAL::Sky_Satellite_t* sat = &s_skyBuilding.satellites[s_skyBuilding.count];
         sat->prn           = (uint8_t)prn;
@@ -89,19 +90,20 @@ static void Sky_ParseLine(const char* line)
 #endif
 
 static float s_pdopCurrent = 0.0f;
-static void GSA_ParseLine(const char* line)
+static void GSA_ParseLine(const char* line, size_t len)
 {
-    if (line[0] != '$') return;
+    if (len < 6 || line[0] != '$') return;
     if (line[3] != 'G' || line[4] != 'S' || line[5] != 'A') return;
 
     int commaCount = 0;
     const char* p = line;
-    while (*p && commaCount < 15)
+    const char* end = line + len;
+    while (p < end && *p && commaCount < 15)
     {
         if (*p == ',') commaCount++;
         p++;
     }
-    if (commaCount == 15 && *p && *p != ',' && *p != '*')
+    if (commaCount == 15 && p < end && *p && *p != ',' && *p != '*' && *p != '\r' && *p != '\n')
     {
         float val = (float)atof(p);
         if (val > 0.0f && val < 99.0f)
@@ -135,49 +137,17 @@ static void NMEA_Log_ProcessLine(const char* line, uint8_t len)
 }
 #endif
 
-#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
-static void NMEA_FeedLine(char c)
+static void GPS_ProcessLine(const char* line, size_t len)
 {
-    static bool s_nmeaLineDiscard = false;
-
-    if (s_nmeaLineDiscard)
-    {
-        if (c == '\n')
-        {
-            s_nmeaLineDiscard = false;
-            s_nmeaLineLen = 0;
-        }
-        return;
-    }
-
-    if (s_nmeaLineLen < NMEA_LINE_MAX - 1)
-    {
-        s_nmeaLineBuf[s_nmeaLineLen++] = c;
-    }
-    else
-    {
-        s_nmeaLineDiscard = true;
-        s_nmeaLineLen = 0;
-        return;
-    }
-
-    if (c == '\n')
-    {
-        s_nmeaLineBuf[s_nmeaLineLen] = '\0';
-
 #if CONFIG_GPS_NMEA_LOG_ENABLE
-        NMEA_Log_ProcessLine(s_nmeaLineBuf, s_nmeaLineLen);
+    NMEA_Log_ProcessLine(line, (uint8_t)len);
 #endif
 
 #if CONFIG_GPS_SKY_ENABLE
-        Sky_ParseLine(s_nmeaLineBuf);
+    Sky_ParseLine(line, len);
 #endif
-        GSA_ParseLine(s_nmeaLineBuf);
-
-        s_nmeaLineLen = 0;
-    }
+    GSA_ParseLine(line, len);
 }
-#endif
 
 // ---------------------------------------------------------------------
 // AID-INI 开机辅助定位（CASIC 二进制协议 Class 0x0B, ID 0x01）
@@ -583,27 +553,110 @@ void HAL::GPS_Update()
         );
     }
 
-    int bytesProcessed = 0;
-    int maxBytes = 128;
-    if (available > 256)
-    {
-        maxBytes = 256;
-    }
+    int maxBytes = (available > 512) ? 1024 : 512;
+    int totalProcessed = 0;
 
-    while (GPS_SERIAL.available() > 0 && bytesProcessed < maxBytes)
+    while (totalProcessed < maxBytes)
     {
-        char c = GPS_SERIAL.read();
-        s_lastRxTick = millis(); // 成功读出字节，实时更新心跳
+        uint16_t contLen = 0;
+        const uint8_t* p = GPS_SERIAL.getReadPtr(&contLen);
+        if (!p || contLen == 0)
+        {
+            break;
+        }
+
+        uint16_t toProcess = contLen;
+        if (totalProcessed + toProcess > maxBytes)
+        {
+            toProcess = maxBytes - totalProcessed;
+        }
+
+        // 零拷贝扫描：在当前连续内存切片中搜索完整行 ('\n')
+        uint16_t consumed = 0;
+        while (consumed < toProcess)
+        {
+            const uint8_t* start = p + consumed;
+            uint16_t remain = toProcess - consumed;
+            const uint8_t* nl = (const uint8_t*)memchr(start, '\n', remain);
+
+            if (nl)
+            {
+                uint16_t lineLen = (uint16_t)(nl - start + 1);
+
 #if GPS_USE_TRANSPARENT
-        DEBUG_SERIAL.write(c);
+                for (uint16_t k = 0; k < lineLen; k++)
+                {
+                    DEBUG_SERIAL.write(start[k]);
+                }
 #endif
 
 #if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
-        NMEA_FeedLine(c);
+                // 如果之前有跨环形缓冲区未完成的残片，拼接到暂存区中处理
+                if (s_nmeaLineLen > 0)
+                {
+                    uint16_t copyLen = lineLen;
+                    if (s_nmeaLineLen + copyLen > NMEA_LINE_MAX - 1)
+                    {
+                        copyLen = (NMEA_LINE_MAX - 1 > s_nmeaLineLen) ? (NMEA_LINE_MAX - 1 - s_nmeaLineLen) : 0;
+                    }
+                    if (copyLen > 0)
+                    {
+                        memcpy(s_nmeaLineBuf + s_nmeaLineLen, start, copyLen);
+                        s_nmeaLineLen += copyLen;
+                        s_nmeaLineBuf[s_nmeaLineLen] = '\0';
+                        GPS_ProcessLine(s_nmeaLineBuf, s_nmeaLineLen);
+                    }
+                    s_nmeaLineLen = 0;
+                }
+                else
+                {
+                    // 纯零拷贝路径（覆盖 99% 以上场景）：直接以指针切片解析
+                    GPS_ProcessLine((const char*)start, lineLen);
+                }
 #endif
 
-        gps.encode(c);
-        bytesProcessed++;
+                // 批量喂入 TinyGPSPlus 状态机
+                for (uint16_t i = 0; i < lineLen; i++)
+                {
+                    gps.encode(start[i]);
+                }
+
+                consumed += lineLen;
+            }
+            else
+            {
+                // 本段切片末尾没有找到换行符，属于跨边界分片或半包：
+#if GPS_USE_TRANSPARENT
+                for (uint16_t k = 0; k < remain; k++)
+                {
+                    DEBUG_SERIAL.write(start[k]);
+                }
+#endif
+
+#if CONFIG_GPS_SKY_ENABLE || CONFIG_GPS_NMEA_LOG_ENABLE
+                if (s_nmeaLineLen + remain < NMEA_LINE_MAX - 1)
+                {
+                    memcpy(s_nmeaLineBuf + s_nmeaLineLen, start, remain);
+                    s_nmeaLineLen += remain;
+                }
+                else
+                {
+                    s_nmeaLineLen = 0; // 溢出丢弃
+                }
+#endif
+
+                for (uint16_t i = 0; i < remain; i++)
+                {
+                    gps.encode(start[i]);
+                }
+
+                consumed += remain;
+            }
+        }
+
+        GPS_SERIAL.advanceTail(consumed);
+        totalProcessed += consumed;
+        s_lastRxTick = millis(); // 实时刷新通信心跳
     }
 
 #if GPS_USE_TRANSPARENT
