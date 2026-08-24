@@ -514,10 +514,12 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
 // =========================================================================
 
 typedef struct {
-    lv_color_t* disp_buf;
-    lv_coord_t  disp_width;
-    lv_coord_t  screen_x1;
-    lv_coord_t  screen_y1;
+    lv_color_t* dest_buf;       // Pointer to draw_ctx->buf
+    lv_coord_t  buf_width;      // lv_area_get_width(draw_ctx->buf_area)
+    lv_coord_t  buf_x1;         // draw_ctx->buf_area->x1
+    lv_coord_t  buf_y1;         // draw_ctx->buf_area->y1
+    lv_coord_t  screen_x1;      // clip_area.x1
+    lv_coord_t  screen_y1;      // clip_area.y1
     lv_coord_t  local_x1;
     lv_coord_t  local_y1;
     lv_coord_t  local_x2;
@@ -563,6 +565,7 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
         if (img->src == NULL) return;
 
         const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);
+        if (!draw_ctx || !draw_ctx->buf || !draw_ctx->buf_area || !draw_ctx->clip_area) return;
 
         // 1. Precise boundary intersection: only redraw if this tile overlaps dirty area
         lv_area_t clip_area;
@@ -571,16 +574,7 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
             return;
         }
 
-        // 2. Get frame buffer
-        lv_disp_t* disp = _lv_refr_get_disp_refreshing();
-        lv_disp_draw_buf_t* draw_buf = lv_disp_get_draw_buf(disp);
-        lv_color_t* disp_buf = (lv_color_t*)draw_buf->buf_act;
-
-        lv_area_t disp_area;
-        lv_area_set(&disp_area, 0, 0, LV_HOR_RES - 1, LV_VER_RES - 1);
-        lv_coord_t disp_width = lv_area_get_width(&disp_area);
-
-        // 3. Tile-local coordinates strictly in range [0..255]
+        // 2. Tile-local coordinates strictly in range [0..255]
         lv_coord_t local_x1 = clip_area.x1 - obj->coords.x1;
         lv_coord_t local_y1 = clip_area.y1 - obj->coords.y1;
         lv_coord_t local_x2 = clip_area.x2 - obj->coords.x1;
@@ -593,8 +587,10 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
         if (local_x1 > local_x2 || local_y1 > local_y2) return;
 
         lv_img_rle_draw_dsc_t dsc;
-        dsc.disp_buf   = disp_buf;
-        dsc.disp_width = disp_width;
+        dsc.dest_buf   = (lv_color_t*)draw_ctx->buf;
+        dsc.buf_width  = lv_area_get_width(draw_ctx->buf_area);
+        dsc.buf_x1     = draw_ctx->buf_area->x1;
+        dsc.buf_y1     = draw_ctx->buf_area->y1;
         dsc.screen_x1  = clip_area.x1;
         dsc.screen_y1  = clip_area.y1;
         dsc.local_x1   = local_x1;
@@ -778,9 +774,9 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             int row_in_chunk = y - chunk_row_start;
             const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1];
             
-            // Screen Y = screen_y1 + (y - local_y1)
+            // Screen Y = screen_y1 + (y - local_y1), buffer offset relative to draw_ctx->buf_area
             int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
-            lv_color_t* dest_row = dsc->disp_buf + screen_y * dsc->disp_width + dsc->screen_x1;
+            lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
             int x = 0;
 

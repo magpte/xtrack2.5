@@ -140,13 +140,16 @@ extern "C" void EDMA_Stream1_IRQHandler(void)
     if(edma_flag_get(DISP_EDMA_FDT_FLAG) != RESET)
     {
         edma_flag_clear(DISP_EDMA_FDT_FLAG);
-        if(Disp_DMA_CurrentPoint < Disp_DMA_TragetPoint)
+        if(Disp_DMA_CurrentPoint != NULL && Disp_DMA_CurrentPoint < Disp_DMA_TragetPoint)
         {
             Display_SPI_DMA_Send(Disp_DMA_CurrentPoint, Disp_DMA_TragetPoint - Disp_DMA_CurrentPoint);
         }
         else
         {
-            /* 项 1：等待 SPI1 物理总线移位完成后再拉高 CS 脚，消除边缘截断 */
+            Disp_DMA_CurrentPoint = NULL;
+            Disp_DMA_TragetPoint = NULL;
+
+            /* 等待 SPI1 物理总线移位完成后再拉高 CS 脚，消除边缘截断 */
             while(spi_i2s_flag_get(SPI1, SPI_I2S_BF_FLAG) != RESET);
             digitalWrite_HIGH(CONFIG_SCREEN_CS_PIN);
 

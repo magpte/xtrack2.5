@@ -33,7 +33,7 @@ void cmb_printf(const char *__restrict __format, ...)
 
 extern "C"
 {
-    void vApplicationHardFaultHook()  
+    __attribute__((used)) void vApplicationHardFaultHook()  
     {  
         HAL::Task_DumpDiagnostics();
 
@@ -66,7 +66,7 @@ fault_loop
         b fault_loop
     }
 #elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
-    __attribute__((naked)) void HardFault_Handler(void)
+    __attribute__((used, naked)) void HardFault_Handler(void)
     {
         __asm volatile(
             "mov r0, lr\n"

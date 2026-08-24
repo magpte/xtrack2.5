@@ -166,24 +166,25 @@ static void lv_img_png_event(const lv_obj_class_t* class_p, lv_event_t* e)
         }
 
         const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);
+        if (!draw_ctx || !draw_ctx->buf || !draw_ctx->buf_area || !draw_ctx->clip_area) return;
 
-        lv_disp_t* disp = _lv_refr_get_disp_refreshing();
-        lv_disp_draw_buf_t* draw_buf = lv_disp_get_draw_buf(disp);
-        lv_color_t* disp_buf = (lv_color_t*)draw_buf->buf_act;
+        lv_area_t clip_area;
+        if (!_lv_area_intersect(&clip_area, &obj->coords, draw_ctx->clip_area))
+        {
+            return;
+        }
 
-        lv_area_t disp_area;
-        lv_area_set(&disp_area, 0, 0, LV_HOR_RES - 1, LV_VER_RES - 1);
-        lv_coord_t disp_width = lv_area_get_width(&disp_area);
+        lv_coord_t buf_width = lv_area_get_width(draw_ctx->buf_area);
+        lv_color_t* dest_buf = (lv_color_t*)draw_ctx->buf + (clip_area.y1 - draw_ctx->buf_area->y1) * buf_width + (clip_area.x1 - draw_ctx->buf_area->x1);
 
-        lv_area_t src_area;
-        src_area = *draw_ctx->clip_area;
+        lv_area_t src_area = clip_area;
         lv_area_move(&src_area, -obj->coords.x1, -obj->coords.y1);
 
         lv_img_png_draw_dsc_t dsc;
-        dsc.dest_buf = disp_buf + draw_ctx->clip_area->y1 * disp_width + draw_ctx->clip_area->x1;
-        dsc.dest_area = draw_ctx->clip_area;
+        dsc.dest_buf = dest_buf;
+        dsc.dest_area = &clip_area;
         dsc.src_area = &src_area;
-        dsc.disp_area = &disp_area;
+        dsc.disp_area = draw_ctx->buf_area;
 
         lv_png_draw(img->src, &dsc);
     }

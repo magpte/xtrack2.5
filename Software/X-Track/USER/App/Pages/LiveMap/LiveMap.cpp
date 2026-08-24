@@ -108,6 +108,7 @@ void LiveMap::onViewWillAppear()
     Model.SetStatusBarStyle(DataProc::STATUS_BAR_STYLE_BLACK);
     SportInfoUpdate();
     lv_obj_clear_flag(View.ui.labelInfo, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_state(View.ui.zoom.cont, LV_STATE_USER_1);
 }
 
 void LiveMap::onViewDidAppear()
@@ -177,12 +178,17 @@ void LiveMap::onViewDidAppear()
 
     // 立即执行首帧位置计算与瓦片载入，彻底消除 500ms 的 Timer 启动盲等延迟！
     Update();
+
+    // 载入完成后保持显示 3 秒，若无操作再自动向右滑出隐藏
+    UpdateDelay(0);
 }
 
 void LiveMap::onViewWillDisappear()
 {
     lv_timer_del(priv.timer);
     priv.timer = NULL;
+
+    lv_anim_del(View.ui.zoom.cont, nullptr);
 
     /* Clear the callback so the filter can't fire into a half-torn-down
      * View after the timer is gone (defensive: the timer deletion above

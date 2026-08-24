@@ -178,7 +178,7 @@ void LiveMapView::ZoomCtrl_Create(lv_obj_t* par)
     lv_obj_add_style(cont, &ui.styleCont, 0);
     lv_obj_set_style_opa(cont, LV_OPA_COVER, 0);
     lv_obj_set_size(cont, 50, 30);
-    lv_obj_set_pos(cont, LV_HOR_RES - 50 + 5, 40);
+    lv_obj_set_pos(cont, LV_HOR_RES - 50 - 5, 40);
     ui.zoom.cont = cont;
 
     static const lv_style_prop_t prop[] =
@@ -191,7 +191,6 @@ void LiveMapView::ZoomCtrl_Create(lv_obj_t* par)
     lv_obj_set_style_x(cont, LV_HOR_RES + 20, LV_STATE_USER_1);
     lv_obj_set_style_transition(cont, &tran, LV_STATE_USER_1);
     lv_obj_set_style_transition(cont, &tran, LV_STATE_DEFAULT);
-    lv_obj_add_state(cont, LV_STATE_USER_1);
 
     lv_obj_t* label = lv_label_create(cont);
     lv_obj_add_style(label, &ui.styleLabel, 0);

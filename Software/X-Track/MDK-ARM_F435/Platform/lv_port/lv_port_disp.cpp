@@ -2,12 +2,13 @@
 #include "lvgl/lvgl.h"
 #include "HAL/HAL.h"
 
-/* 全屏单缓冲：320 行（240x320）占 150KB RAM。
- * 相比原 160 行双缓冲（2 x 75KB = 150KB），RAM 总占用完全一致（150KB），
- * 但彻底消除了全屏重绘/地图移动及载入时 LVGL 拆分为上下半屏两次刷新的割裂感与画面撕裂现象。
+/* 80 行双缓冲局部刷新架构：
+ * 240 x 80 x 2 = 38,400 字节 / Buffer（单个 Buffer < 65535，单次 DMA 直接拉满，无分块中断开销）。
+ * 双缓冲总计 76.8KB RAM（相比原 153.6KB 节约 76.8KB SRAM）。
+ * 关闭 full_refresh 开启 LVGL 智能脏矩形局部重绘，实现 CPU 渲染与 EDMA 硬件发送完全重叠并行。
  */
-#define SCREEN_BUFFER_LINES CONFIG_SCREEN_VER_RES
-#define SCREEN_BUFFER_SIZE (CONFIG_SCREEN_HOR_RES * SCREEN_BUFFER_LINES)
+#define SCREEN_BUFFER_LINES (CONFIG_SCREEN_VER_RES / 4) // 80 行
+#define SCREEN_BUFFER_SIZE  (CONFIG_SCREEN_HOR_RES * SCREEN_BUFFER_LINES)
 
 static lv_disp_drv_t* disp_drv_p = NULL;
 
@@ -68,9 +69,10 @@ void lv_port_disp_init()
     HAL::Display_SetSendFinishCallback(disp_send_finish_callback);
 
     static lv_color_t lv_disp_buf1[SCREEN_BUFFER_SIZE];
+    static lv_color_t lv_disp_buf2[SCREEN_BUFFER_SIZE];
 
     static lv_disp_draw_buf_t disp_buf;
-    lv_disp_draw_buf_init(&disp_buf, lv_disp_buf1, NULL, SCREEN_BUFFER_SIZE);
+    lv_disp_draw_buf_init(&disp_buf, lv_disp_buf1, lv_disp_buf2, SCREEN_BUFFER_SIZE);
 
     /*Initialize the display*/
     static lv_disp_drv_t disp_drv;
@@ -80,6 +82,6 @@ void lv_port_disp_init()
     disp_drv.flush_cb = disp_flush_cb;
     disp_drv.wait_cb = NULL;
     disp_drv.draw_buf = &disp_buf;
-    disp_drv.full_refresh = 1;
+    disp_drv.full_refresh = 0;
     lv_disp_drv_register(&disp_drv);
 }
