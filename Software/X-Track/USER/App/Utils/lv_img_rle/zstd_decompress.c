@@ -11,7 +11,6 @@
 #ifndef ZSTD_STATIC_LINKING_ONLY
 #define ZSTD_STATIC_LINKING_ONLY
 #endif
-#define ZSTD_NO_INTRINSICS 1
 #define ZSTD_DECODER_INTERNAL_BUFFER 64
 
 #include "zstd/zstd.h"

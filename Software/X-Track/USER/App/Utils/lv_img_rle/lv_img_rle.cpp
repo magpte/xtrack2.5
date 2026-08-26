@@ -94,15 +94,20 @@ typedef struct {
 
 static TileDesc_t s_descriptors[TILE_MAX_DESCRIPTORS];
 static uint8_t    s_comp_chunk_buf[TILE_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 16.5 KB static buffer
-static uint8_t    s_scratch_buf[TILE_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 16 KB static uncompressed pixel buffer
 
-// MRU decompression cache: eliminates redundant SD reads & decompression
-static struct {
+// Dual-Slot (Ping-Pong) MRU decompression cache: eliminates viewport boundary & sub-pixel thrashing
+#define TILE_MRU_SLOTS 2
+
+typedef struct {
     const TileDesc_t* desc;
     int               chunk_idx;
     uint8_t           chunk_tier;                         // Tier mode (1=4bit, 2=8bit, 3=16bit G-dec)
+    uint32_t          last_access_tick;
     lv_color_t        micro_palette[TILE_MAX_PALETTE];    // Pre-baked micro-palette for active chunk
-} s_mru_chunk = { NULL, -1, 0 };
+} MruSlot_t;
+
+static MruSlot_t  s_mru_slots[TILE_MRU_SLOTS];
+static uint8_t    s_scratch_buf[TILE_MRU_SLOTS][TILE_SCRATCH_BUF_SIZE] __attribute__((aligned(8))); // 2x 16KB static uncompressed pixel buffers
 
 // =========================================================================
 // Cache Management API
@@ -111,18 +116,26 @@ static struct {
 void lv_img_rle_cache_init()
 {
     memset(s_descriptors, 0, sizeof(s_descriptors));
-    s_mru_chunk.desc = NULL;
-    s_mru_chunk.chunk_idx = -1;
-    s_mru_chunk.chunk_tier = 0;
+    for (int s = 0; s < TILE_MRU_SLOTS; s++)
+    {
+        s_mru_slots[s].desc = NULL;
+        s_mru_slots[s].chunk_idx = -1;
+        s_mru_slots[s].chunk_tier = 0;
+        s_mru_slots[s].last_access_tick = 0;
+    }
     zstd_decompress_init();
-    map_log("Cache init: Micro-chunk Streaming (ZST2 Engine, 16 Descs, 16KB Scratch, MRU Opt)");
+    map_log("Cache init: Micro-chunk Streaming (ZST2 Engine, 16 Descs, 2x16KB MRU Slots, M4 CLZ/SIMD Opt)");
 }
 
 void lv_img_rle_cache_deinit()
 {
-    s_mru_chunk.desc = NULL;
-    s_mru_chunk.chunk_idx = -1;
-    s_mru_chunk.chunk_tier = 0;
+    for (int s = 0; s < TILE_MRU_SLOTS; s++)
+    {
+        s_mru_slots[s].desc = NULL;
+        s_mru_slots[s].chunk_idx = -1;
+        s_mru_slots[s].chunk_tier = 0;
+        s_mru_slots[s].last_access_tick = 0;
+    }
 
     for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
@@ -200,10 +213,13 @@ static TileDesc_t* get_or_allocate_desc(const char* path)
         }
     }
 
-    if (s_mru_chunk.desc == &s_descriptors[evict_idx])
+    for (int s = 0; s < TILE_MRU_SLOTS; s++)
     {
-        s_mru_chunk.desc = NULL;
-        s_mru_chunk.chunk_idx = -1;
+        if (s_mru_slots[s].desc == &s_descriptors[evict_idx])
+        {
+            s_mru_slots[s].desc = NULL;
+            s_mru_slots[s].chunk_idx = -1;
+        }
     }
 
     memset(&s_descriptors[evict_idx], 0, sizeof(TileDesc_t));
@@ -685,9 +701,25 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     // Step 4: Stream and decompress only the overlapping chunks
     for (int ci = chunk_start; ci <= chunk_end; ci++)
     {
-        // Optimization 1: MRU Decompression Cache (skip SD read & decompress if chunk is already cached)
-        if (s_mru_chunk.desc != desc || s_mru_chunk.chunk_idx != ci)
+        uint32_t now = lv_tick_get();
+        int slot_idx = -1;
+
+        // Optimization 1: Probe Dual-Slot (Ping-Pong) MRU Cache
+        for (int s = 0; s < TILE_MRU_SLOTS; s++)
         {
+            if (s_mru_slots[s].desc == desc && s_mru_slots[s].chunk_idx == ci)
+            {
+                slot_idx = s;
+                s_mru_slots[s].last_access_tick = now;
+                break;
+            }
+        }
+
+        // Cache Miss: Select LRU slot and decompress
+        if (slot_idx < 0)
+        {
+            slot_idx = (s_mru_slots[0].last_access_tick <= s_mru_slots[1].last_access_tick) ? 0 : 1;
+
             uint32_t chunk_comp_offset = desc->chunk_offsets[ci];
             uint32_t chunk_abs_pos = desc->payload_start + chunk_comp_offset;
             uint32_t chunk_comp_len = (ci + 1 < desc->chunk_count)
@@ -707,7 +739,8 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             }
 
             uint8_t mode = s_comp_chunk_buf[0];
-            s_mru_chunk.chunk_tier = mode;
+            s_mru_slots[slot_idx].chunk_tier = mode;
+            uint8_t* cur_scratch = s_scratch_buf[slot_idx];
 
             if (mode == 0x01)
             {
@@ -716,22 +749,22 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 for (uint8_t pi = 0; pi < pal_cnt; pi++)
                 {
                     uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                    s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                    s_mru_slots[slot_idx].micro_palette[pi] = rgb565_to_lv_color(c565);
                 }
 
                 size_t hdr_len = 2 + (size_t)pal_cnt * 2;
-                // Decompress 4096 bytes of 4-bit indices into upper half of s_scratch_buf
-                int dec_bytes = zstd_decompress_chunk(s_scratch_buf + 8192, 4096,
+                // Decompress 4096 bytes of 4-bit indices into upper half of scratch buffer
+                int dec_bytes = zstd_decompress_chunk(cur_scratch + 8192, 4096,
                                                       s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
                 if (dec_bytes > 0)
                 {
-                    // Unpack 4-bit indices into s_scratch_buf[0..8191]
-                    const uint8_t* p4 = &s_scratch_buf[8192];
+                    // Unpack 4-bit indices into cur_scratch[0..8191]
+                    const uint8_t* p4 = &cur_scratch[8192];
                     for (int i = 0; i < 4096; i++)
                     {
                         uint8_t b = p4[i];
-                        s_scratch_buf[i * 2]     = b >> 4;
-                        s_scratch_buf[i * 2 + 1] = b & 0x0F;
+                        cur_scratch[i * 2]     = b >> 4;
+                        cur_scratch[i * 2 + 1] = b & 0x0F;
                     }
                 }
                 else
@@ -747,11 +780,11 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 for (uint16_t pi = 0; pi < pal_cnt; pi++)
                 {
                     uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                    s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                    s_mru_slots[slot_idx].micro_palette[pi] = rgb565_to_lv_color(c565);
                 }
 
                 size_t hdr_len = 2 + (size_t)pal_cnt * 2;
-                int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 8192,
+                int dec_bytes = zstd_decompress_chunk(cur_scratch, 8192,
                                                       s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
                 if (dec_bytes <= 0)
                 {
@@ -763,27 +796,39 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             {
                 // Tier 3: 16-bit G-decorrelated raw pixels (>256 colors)
                 size_t hdr_len = 2;
-                int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 16384,
+                int dec_bytes = zstd_decompress_chunk(cur_scratch, 16384,
                                                       s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
                 if (dec_bytes > 0)
                 {
-                    // In-place Green-Decorrelation Inverse Transform
-                    uint16_t* px16 = (uint16_t*)s_scratch_buf;
-                    for (int i = 0; i < TILE_SIZE * TILE_CHUNK_ROWS; i++)
+                    // Optimization 2: 2-Pixel Parallel SIMD G-Decorrelation Inverse Transform
+                    uint32_t* px32 = (uint32_t*)cur_scratch;
+                    for (int i = 0; i < (TILE_SIZE * TILE_CHUNK_ROWS) / 2; i++)
                     {
-                        uint32_t val = px16[i];
-                        uint32_t dr5 = (val >> 11) & 0x1F;
-                        uint32_t g6  = (val >> 5) & 0x3F;
-                        uint32_t db5 = val & 0x1F;
-                        uint32_t half_g = g6 >> 1;
-                        uint32_t r5 = (dr5 + half_g) & 0x1F;
-                        uint32_t b5 = (db5 + half_g) & 0x1F;
-                        uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+                        uint32_t pair = px32[i];
+                        uint32_t val0 = pair & 0xFFFF;
+                        uint32_t val1 = pair >> 16;
+
+                        uint32_t dr0 = (val0 >> 11) & 0x1F;
+                        uint32_t g0  = (val0 >> 5) & 0x3F;
+                        uint32_t db0 = val0 & 0x1F;
+                        uint32_t hg0 = g0 >> 1;
+                        uint32_t r0  = (dr0 + hg0) & 0x1F;
+                        uint32_t b0  = (db0 + hg0) & 0x1F;
+                        uint32_t c0  = (r0 << 11) | (g0 << 5) | b0;
+
+                        uint32_t dr1 = (val1 >> 11) & 0x1F;
+                        uint32_t g1  = (val1 >> 5) & 0x3F;
+                        uint32_t db1 = val1 & 0x1F;
+                        uint32_t hg1 = g1 >> 1;
+                        uint32_t r1  = (dr1 + hg1) & 0x1F;
+                        uint32_t b1  = (db1 + hg1) & 0x1F;
+                        uint32_t c1  = (r1 << 11) | (g1 << 5) | b1;
+
 #if LV_COLOR_16_SWAP == 1
-                        px16[i] = (uint16_t)((c565 << 8) | (c565 >> 8));
-#else
-                        px16[i] = c565;
+                        c0 = ((c0 << 8) & 0xFF00) | ((c0 >> 8) & 0x00FF);
+                        c1 = ((c1 << 8) & 0xFF00) | ((c1 >> 8) & 0x00FF);
 #endif
+                        px32[i] = c0 | (c1 << 16);
                     }
                 }
                 else
@@ -793,8 +838,9 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 }
             }
 
-            s_mru_chunk.desc = desc;
-            s_mru_chunk.chunk_idx = ci;
+            s_mru_slots[slot_idx].desc = desc;
+            s_mru_slots[slot_idx].chunk_idx = ci;
+            s_mru_slots[slot_idx].last_access_tick = now;
         }
 
         // Render overlapping rows within this chunk
@@ -802,14 +848,15 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         int row_min = (dsc->local_y1 > chunk_row_start) ? dsc->local_y1 : chunk_row_start;
         int row_max = (dsc->local_y2 < chunk_row_start + TILE_CHUNK_ROWS - 1) ? dsc->local_y2 : (chunk_row_start + TILE_CHUNK_ROWS - 1);
         int blit_w = dsc->blit_w;
+        uint8_t* active_scratch = s_scratch_buf[slot_idx];
 
         // Path A: Tier 3 Direct 16-bit RGB565 memory copy
-        if (s_mru_chunk.chunk_tier == 0x03)
+        if (s_mru_slots[slot_idx].chunk_tier == 0x03)
         {
             for (int y = row_min; y <= row_max; y++)
             {
                 int row_in_chunk = y - chunk_row_start;
-                const lv_color_t* src_row_pixels = (const lv_color_t*)&s_scratch_buf[(row_in_chunk * TILE_SIZE + dsc->local_x1) * 2];
+                const lv_color_t* src_row_pixels = (const lv_color_t*)&active_scratch[(row_in_chunk * TILE_SIZE + dsc->local_x1) * 2];
                 int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
                 lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
@@ -819,19 +866,19 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         else
         {
             // Path B: Micro-Palette lookup (Tier 1 & Tier 2)
-            const uint16_t* pal = (const uint16_t*)s_mru_chunk.micro_palette;
+            const uint16_t* pal = (const uint16_t*)s_mru_slots[slot_idx].micro_palette;
 
             for (int y = row_min; y <= row_max; y++)
             {
                 int row_in_chunk = y - chunk_row_start;
-                const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * TILE_SIZE + dsc->local_x1];
+                const uint8_t* src_row_indices = &active_scratch[row_in_chunk * TILE_SIZE + dsc->local_x1];
 
                 int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
                 lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
                 int x = 0;
 
-                // Optimization 2: Handle first unaligned pixel to guarantee 32-bit word alignment
+                // Handle first unaligned pixel to guarantee 32-bit word alignment
                 if (((uintptr_t)&dest_row[0] & 2) && blit_w > 0)
                 {
                     dest_row[0] = *(lv_color_t*)&pal[src_row_indices[0]];

@@ -65,20 +65,13 @@ CHUNK_INTERVAL = 32  # rows per chunk (8 chunks for 256x256)
 LV_IMG_CF_TRUE_COLOR = 4
 LV_COLOR_16_SWAP = True
 
-# MCU-optimized Zstandard compressor (14-bit window = 16KB WindowLog)
-zstd_mcu_params = zstd.ZstdCompressionParameters(
-    window_log=14,
-    chain_log=14,
-    hash_log=14,
-    search_log=1,
-    min_match=4,
-    target_length=0,
-    strategy=zstd.STRATEGY_FAST,
-    write_content_size=True,
+# MCU-optimized Zstandard compressor (Level 3 optimal balance of density and speed)
+_compressor = zstd.ZstdCompressor(
+    level=3,
     write_checksum=False,
+    write_content_size=False,
     write_dict_id=False
 )
-_compressor = zstd.ZstdCompressor(compression_params=zstd_mcu_params)
 
 
 def rgb888_to_rgb565(r, g, b):
