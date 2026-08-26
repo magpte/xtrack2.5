@@ -57,16 +57,50 @@ extern "C" {
 #define map_log(fmt, ...) HAL::SysLog_Write("[MAP] " fmt, ##__VA_ARGS__)
 
 // =========================================================================
-// Shared bundle file handle
+// Shared bundle file handle & Seek cache (Optimization A)
 // =========================================================================
 static lv_fs_file_t s_bundle_file;
 static char         s_bundle_path[96] = "";
 static bool         s_bundle_valid    = false;
+static uint32_t     s_bundle_cur_pos  = 0xFFFFFFFFu; // Current file seek pointer (Optimization A)
+
+// 1-slot cached bundle metadata (Optimization B)
+static struct {
+    char     prefix[32];
+    uint32_t level;
+    uint32_t block_x;
+    uint32_t block_y;
+    uint16_t blk_size;
+    bool     valid;
+} s_cached_bundle = { "", 0, 0, 0, 0, false };
 
 static bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t* br)
 {
-    return (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) == LV_FS_RES_OK &&
-            lv_fs_read(&s_bundle_file, buf, len, br) == LV_FS_RES_OK);
+    if (!s_bundle_valid) return false;
+
+    // Optimization A: Skip redundant seek if file pointer is already aligned at abs_pos
+    if (abs_pos != s_bundle_cur_pos)
+    {
+        if (lv_fs_seek(&s_bundle_file, abs_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK)
+        {
+            s_bundle_cur_pos = 0xFFFFFFFFu;
+            return false;
+        }
+        s_bundle_cur_pos = abs_pos;
+    }
+
+    uint32_t bytes_read = 0;
+    lv_fs_res_t res = lv_fs_read(&s_bundle_file, buf, len, &bytes_read);
+    if (br) *br = bytes_read;
+
+    if (res != LV_FS_RES_OK)
+    {
+        s_bundle_cur_pos = 0xFFFFFFFFu;
+        return false;
+    }
+
+    s_bundle_cur_pos += bytes_read;
+    return true;
 }
 
 // =========================================================================
@@ -123,8 +157,10 @@ void lv_img_rle_cache_init()
         s_mru_slots[s].chunk_tier = 0;
         s_mru_slots[s].last_access_tick = 0;
     }
+    s_bundle_cur_pos = 0xFFFFFFFFu;
+    s_cached_bundle.valid = false;
     zstd_decompress_init();
-    map_log("Cache init: Micro-chunk Streaming (ZST2 Engine, 16 Descs, 2x16KB MRU Slots, M4 CLZ/SIMD Opt)");
+    map_log("Cache init: Micro-chunk Streaming (ZST2 Engine, 16 Descs, 2x16KB MRU, Seek/Bundle Opt)");
 }
 
 void lv_img_rle_cache_deinit()
@@ -148,6 +184,8 @@ void lv_img_rle_cache_deinit()
         lv_fs_close(&s_bundle_file);
         s_bundle_valid = false;
         s_bundle_path[0] = '\0';
+        s_bundle_cur_pos = 0xFFFFFFFFu;
+        s_cached_bundle.valid = false;
     }
 }
 
@@ -158,6 +196,29 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
     return *(lv_color_t*)&swapped;
 #else
     return *(lv_color_t*)&c;
+#endif
+}
+
+// Optimization C: 32-bit fast parallel palette batch loading
+static inline void load_micro_palette_fast(lv_color_t* dst_pal, const uint8_t* src_raw, uint16_t pal_cnt)
+{
+#if LV_COLOR_16_SWAP == 1
+    const uint32_t* src32 = (const uint32_t*)src_raw;
+    uint32_t* dst32 = (uint32_t*)dst_pal;
+    uint16_t pi = 0;
+    for (; pi + 1 < pal_cnt; pi += 2)
+    {
+        uint32_t pair = *src32++;
+        uint32_t swapped = ((pair & 0x00FF00FF) << 8) | ((pair & 0xFF00FF00) >> 8);
+        *dst32++ = swapped;
+    }
+    if (pi < pal_cnt)
+    {
+        uint16_t c565 = *(const uint16_t*)src32;
+        dst_pal[pi] = rgb565_to_lv_color(c565);
+    }
+#else
+    memcpy(dst_pal, src_raw, pal_cnt * sizeof(uint16_t));
 #endif
 }
 
@@ -339,6 +400,45 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
     uint32_t local_x = tile_x % BUNDLE_BLOCK_SIZE;
     uint32_t local_y = tile_y % BUNDLE_BLOCK_SIZE;
 
+    // Optimization B: Fast-Path 0 snprintf, 0 open, 0 header read if same bundle is already open
+    if (s_bundle_valid && s_cached_bundle.valid &&
+        s_cached_bundle.level == level &&
+        s_cached_bundle.block_x == block_x &&
+        s_cached_bundle.block_y == block_y &&
+        strcmp(s_cached_bundle.prefix, prefix) == 0)
+    {
+        uint16_t blk_size = s_cached_bundle.blk_size;
+        uint32_t tile_idx = local_y * (uint32_t)blk_size + local_x;
+        uint32_t idx_pos = BUNDLE_HEADER_SIZE + tile_idx * 8u;
+
+        uint8_t entry[8];
+        uint32_t br = 0;
+        if (!tile_read_bytes(idx_pos, entry, 8, &br) || br != 8)
+        {
+            return false;
+        }
+
+        uint32_t rel_offset = (uint32_t)entry[0]
+                            | ((uint32_t)entry[1] << 8)
+                            | ((uint32_t)entry[2] << 16)
+                            | ((uint32_t)entry[3] << 24);
+
+        uint32_t length     = (uint32_t)entry[4]
+                            | ((uint32_t)entry[5] << 8)
+                            | ((uint32_t)entry[6] << 16)
+                            | ((uint32_t)entry[7] << 24);
+
+        if (rel_offset == ABSENT_OFFSET || length == 0)
+        {
+            return false;
+        }
+
+        uint32_t data_section_start = BUNDLE_HEADER_SIZE + (uint32_t)blk_size * (uint32_t)blk_size * 8u;
+        *tile_start_out  = data_section_start + rel_offset;
+        *tile_length_out = length;
+        return true;
+    }
+
     // Candidate bundle paths to probe on SD card
     char candidate[8][96];
     int cand_count = 0;
@@ -410,6 +510,14 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
         map_log("open_tile: Bundle blk_size=%u != %u in '%s'", blk_size, BUNDLE_BLOCK_SIZE, s_bundle_path);
         return false;
     }
+
+    // Cache bundle metadata for subsequent fast-path lookups
+    strncpy(s_cached_bundle.prefix, prefix, sizeof(s_cached_bundle.prefix) - 1);
+    s_cached_bundle.level    = level;
+    s_cached_bundle.block_x  = block_x;
+    s_cached_bundle.block_y  = block_y;
+    s_cached_bundle.blk_size = blk_size;
+    s_cached_bundle.valid    = true;
 
     // Read 8-byte (offset, length) from bundle index table
     uint32_t tile_idx = local_y * (uint32_t)blk_size + local_x;
@@ -746,11 +854,7 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             {
                 // Tier 1: 4-bit packed micro-palette (≤16 colors)
                 uint8_t pal_cnt = s_comp_chunk_buf[1];
-                for (uint8_t pi = 0; pi < pal_cnt; pi++)
-                {
-                    uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                    s_mru_slots[slot_idx].micro_palette[pi] = rgb565_to_lv_color(c565);
-                }
+                load_micro_palette_fast(s_mru_slots[slot_idx].micro_palette, s_comp_chunk_buf + 2, pal_cnt);
 
                 size_t hdr_len = 2 + (size_t)pal_cnt * 2;
                 // Decompress 4096 bytes of 4-bit indices into upper half of scratch buffer
@@ -777,11 +881,7 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             {
                 // Tier 2: 8-bit micro-palette (17..256 colors)
                 uint16_t pal_cnt = (uint16_t)s_comp_chunk_buf[1] + 1;
-                for (uint16_t pi = 0; pi < pal_cnt; pi++)
-                {
-                    uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                    s_mru_slots[slot_idx].micro_palette[pi] = rgb565_to_lv_color(c565);
-                }
+                load_micro_palette_fast(s_mru_slots[slot_idx].micro_palette, s_comp_chunk_buf + 2, pal_cnt);
 
                 size_t hdr_len = 2 + (size_t)pal_cnt * 2;
                 int dec_bytes = zstd_decompress_chunk(cur_scratch, 8192,
