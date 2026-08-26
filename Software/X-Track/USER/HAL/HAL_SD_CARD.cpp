@@ -170,11 +170,11 @@ void HAL::NMEA_Log_Close()
 }
 
 // ---------------------------------------------------------------------
-// 系统诊断日志（/system.log）
+// 系统诊断与全量日志（/system.log）
 // ---------------------------------------------------------------------
 #define SYS_LOG_FILE_NAME           "/system.log"
-#define SYS_LOG_WRITE_BUF_SIZE      8192 // 8KB
-#define SYS_LOG_SYNC_INTERVAL_MS    10000 // 10s
+#define SYS_LOG_WRITE_BUF_SIZE      16384 // 16KB 环形/线性缓冲
+#define SYS_LOG_SYNC_INTERVAL_MS    1000  // 1s 快速落盘
 
 static File     s_sysLogFile;
 static bool     s_sysLogFileOpen = false;
@@ -186,7 +186,7 @@ static uint32_t s_sysLogLastSyncTick = 0;
 
 static void SysLog_FlushBuffer(bool forceAll = false)
 {
-    if(s_sysLogWriteBufLen == 0)
+    if (!s_sysLogFileOpen || s_sysLogWriteBufLen == 0)
     {
         return;
     }
@@ -215,17 +215,64 @@ static void SysLog_FlushBuffer(bool forceAll = false)
 
 static bool SysLog_Open()
 {
+    if (s_sysLogFileOpen) return true;
+    if (!SD_IsReady) return false;
+
     s_sysLogFile = SD.open(SYS_LOG_FILE_NAME, FILE_WRITE);
-    if(!s_sysLogFile)
+    if (!s_sysLogFile)
     {
-        Serial.printf("SYS_LOG: open \"%s\" failed\r\n", SYS_LOG_FILE_NAME);
         return false;
     }
 
-    Serial.printf("SYS_LOG: logging to \"%s\"\r\n", SYS_LOG_FILE_NAME);
+    s_sysLogFileOpen = true;
     s_sysLogNeedSync = false;
     s_sysLogLastSyncTick = millis();
     return true;
+}
+
+void HAL::SysLog_RawWrite(const char* data, uint32_t len)
+{
+    if (data == NULL || len == 0) return;
+
+    // 写入内存缓冲（即使 SD 尚未初始化也能暂存开机前期的日志）
+    uint32_t remain = SYS_LOG_WRITE_BUF_SIZE - s_sysLogWriteBufLen;
+    uint32_t writeLen = (len < remain) ? len : remain;
+    if (writeLen > 0)
+    {
+        memcpy(s_sysLogWriteBuf + s_sysLogWriteBufLen, data, writeLen);
+        s_sysLogWriteBufLen += writeLen;
+        s_sysLogNeedSync = true;
+    }
+
+    if (s_sysLogFileOpen && s_sysLogWriteBufLen >= SD_CLUSTER_SIZE)
+    {
+        SysLog_FlushBuffer(false);
+    }
+}
+
+void HAL::SysLog_RawWriteChar(char c)
+{
+    if (s_sysLogWriteBufLen < SYS_LOG_WRITE_BUF_SIZE)
+    {
+        s_sysLogWriteBuf[s_sysLogWriteBufLen++] = c;
+        s_sysLogNeedSync = true;
+    }
+
+    if (s_sysLogFileOpen && s_sysLogWriteBufLen >= SD_CLUSTER_SIZE)
+    {
+        SysLog_FlushBuffer(false);
+    }
+}
+
+void HAL::SysLog_Flush()
+{
+    if (s_sysLogFileOpen && (s_sysLogWriteBufLen > 0 || s_sysLogNeedSync))
+    {
+        SysLog_FlushBuffer(true);
+        s_sysLogFile.sync();
+        s_sysLogNeedSync = false;
+        s_sysLogLastSyncTick = millis();
+    }
 }
 
 void HAL::SysLog_Write(const char* fmt, ...)
@@ -243,6 +290,7 @@ void HAL::SysLog_Write(const char* fmt, ...)
     snprintf(timeStr, sizeof(timeStr), "[%02d-%02d %02d:%02d:%02d.%03d][T:%lu] ",
              clock.month, clock.day, clock.hour, clock.minute, clock.second, clock.millisecond, (unsigned long)tick);
 
+    // 输出至串口（HardwareSerial 会自动将数据送入 SysLog_RawWrite）
     Serial.print(timeStr);
     Serial.println(msg);
 
@@ -254,25 +302,6 @@ void HAL::SysLog_Write(const char* fmt, ...)
         HAL::NMEA_Log_Write(nmeaComment, (uint32_t)nLen);
     }
 #endif
-
-    if(!SD_IsReady || s_sysLogOpenFailed)
-    {
-        return;
-    }
-
-    uint32_t tlen = (uint32_t)strlen(timeStr);
-    uint32_t mlen = (uint32_t)strlen(msg);
-    uint32_t totalLen = tlen + mlen + 2;
-
-    if(s_sysLogWriteBufLen + totalLen <= SYS_LOG_WRITE_BUF_SIZE)
-    {
-        memcpy(s_sysLogWriteBuf + s_sysLogWriteBufLen, timeStr, tlen);
-        s_sysLogWriteBufLen += tlen;
-        memcpy(s_sysLogWriteBuf + s_sysLogWriteBufLen, msg, mlen);
-        s_sysLogWriteBufLen += mlen;
-        s_sysLogWriteBuf[s_sysLogWriteBufLen++] = '\r';
-        s_sysLogWriteBuf[s_sysLogWriteBufLen++] = '\n';
-    }
 }
 
 void HAL::SysLog_Close()
@@ -542,18 +571,14 @@ void HAL::SD_Update()
     }
 #endif
 
-    // 处理系统诊断日志 /system.log
+    // 处理系统诊断与全量运行日志 /system.log
     if (SD_IsReady)
     {
-        if (!s_sysLogFileOpen && !s_sysLogOpenFailed && s_sysLogWriteBufLen > 0 && millis() > 3000)
+        if (!s_sysLogFileOpen && !s_sysLogOpenFailed)
         {
             if (!SysLog_Open())
             {
                 s_sysLogOpenFailed = true;
-            }
-            else
-            {
-                s_sysLogFileOpen = true;
             }
         }
 

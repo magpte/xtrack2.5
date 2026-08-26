@@ -52,9 +52,9 @@ extern "C" {
 #define TILE_CHUNK_FETCH_BUF_SIZE (TILE_SCRATCH_BUF_SIZE + 64)      // Max compressed chunk size
 
 // =========================================================================
-// Diagnostic Logging (Zero-overhead release macro)
+// Diagnostic Logging (Outputs to SD Card /system.log & Serial console)
 // =========================================================================
-#define map_log(...) ((void)0)
+#define map_log(fmt, ...) HAL::SysLog_Write("[MAP] " fmt, ##__VA_ARGS__)
 
 // =========================================================================
 // Shared bundle file handle
@@ -324,30 +324,38 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
     uint32_t local_y = tile_y % BUNDLE_BLOCK_SIZE;
 
     // Candidate bundle paths to probe on SD card
-    char candidate[5][96];
+    char candidate[8][96];
     int cand_count = 0;
 
-    // 1. /:<prefix>/<level>/<blockX>_<blockY>.tbnd
+    // 1. /:<prefix>/<level>/<blockX>_<blockY>.tbnd and /<prefix>/...
     snprintf(candidate[cand_count++], sizeof(candidate[0]),
              "%c:%s/%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, prefix, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
+    snprintf(candidate[cand_count++], sizeof(candidate[0]),
+             "/%s/%u/%u_%u.tbnd", prefix, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
 
-    // 2. /:MAPRB/<level>/<blockX>_<blockY>.tbnd
-    if (strcmp(prefix, "MAPRB") != 0)
-    {
-        snprintf(candidate[cand_count++], sizeof(candidate[0]),
-                 "%c:MAPRB/%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
-    }
-
-    // 3. /:MAP/<level>/<blockX>_<blockY>.tbnd
+    // 2. /:MAP/<level>/<blockX>_<blockY>.tbnd and /MAP/...
     if (strcmp(prefix, "MAP") != 0)
     {
         snprintf(candidate[cand_count++], sizeof(candidate[0]),
                  "%c:MAP/%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
+        snprintf(candidate[cand_count++], sizeof(candidate[0]),
+                 "/MAP/%u/%u_%u.tbnd", (unsigned)level, (unsigned)block_x, (unsigned)block_y);
     }
 
-    // 4. /:<level>/<blockX>_<blockY>.tbnd
+    // 3. /:MAPRB/<level>/<blockX>_<blockY>.tbnd and /MAPRB/...
+    if (strcmp(prefix, "MAPRB") != 0)
+    {
+        snprintf(candidate[cand_count++], sizeof(candidate[0]),
+                 "%c:MAPRB/%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
+        snprintf(candidate[cand_count++], sizeof(candidate[0]),
+                 "/MAPRB/%u/%u_%u.tbnd", (unsigned)level, (unsigned)block_x, (unsigned)block_y);
+    }
+
+    // 4. /:<level>/<blockX>_<blockY>.tbnd and /<level>/...
     snprintf(candidate[cand_count++], sizeof(candidate[0]),
              "%c:%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
+    snprintf(candidate[cand_count++], sizeof(candidate[0]),
+             "/%u/%u_%u.tbnd", (unsigned)level, (unsigned)block_x, (unsigned)block_y);
 
     bool opened = false;
     for (int i = 0; i < cand_count; i++)
@@ -361,6 +369,7 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
 
     if (!opened)
     {
+        map_log("open_tile: Failed to find bundle for src='%s' (tried %s, etc.)", src, candidate[0]);
         return false;
     }
 
@@ -369,17 +378,20 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
     uint32_t br = 0;
     if (!tile_read_bytes(0, hdr, BUNDLE_HEADER_SIZE, &br) || br != BUNDLE_HEADER_SIZE)
     {
+        map_log("open_tile: Failed to read header for bundle '%s'", s_bundle_path);
         return false;
     }
 
     if (memcmp(hdr, BUNDLE_MAGIC, 4) != 0)
     {
+        map_log("open_tile: Invalid bundle magic in '%s'", s_bundle_path);
         return false;
     }
 
     uint16_t blk_size = (uint16_t)(hdr[4] | ((uint16_t)hdr[5] << 8));
     if (blk_size != BUNDLE_BLOCK_SIZE)
     {
+        map_log("open_tile: Bundle blk_size=%u != %u in '%s'", blk_size, BUNDLE_BLOCK_SIZE, s_bundle_path);
         return false;
     }
 
@@ -405,6 +417,7 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
 
     if (rel_offset == ABSENT_OFFSET || length == 0)
     {
+        // Normal case: tile is not covered in this bundle block
         return false;
     }
 

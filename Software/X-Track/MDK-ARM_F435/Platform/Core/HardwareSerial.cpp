@@ -21,6 +21,8 @@
  * SOFTWARE.
  */
 #include "HardwareSerial.h"
+#include "HAL/HAL.h"
+#include "Config/Config.h"
 
 typedef struct
 {
@@ -502,7 +504,30 @@ size_t HardwareSerial::write(uint8_t n)
 {
     while(usart_flag_get(_USARTx, USART_TDBE_FLAG) == RESET) {};
     usart_data_transmit(_USARTx, n);
+#if CONFIG_SD_SYS_LOG_ENABLE
+    if (_USARTx == SERIAL_1_USART)
+    {
+        HAL::SysLog_RawWriteChar((char)n);
+    }
+#endif
     return 1;
+}
+
+size_t HardwareSerial::write(const uint8_t *buffer, size_t size)
+{
+    if (buffer == NULL || size == 0) return 0;
+    for (size_t i = 0; i < size; i++)
+    {
+        while(usart_flag_get(_USARTx, USART_TDBE_FLAG) == RESET) {};
+        usart_data_transmit(_USARTx, buffer[i]);
+    }
+#if CONFIG_SD_SYS_LOG_ENABLE
+    if (_USARTx == SERIAL_1_USART)
+    {
+        HAL::SysLog_RawWrite((const char*)buffer, (uint32_t)size);
+    }
+#endif
+    return size;
 }
 
 #if SERIAL_1_ENABLE

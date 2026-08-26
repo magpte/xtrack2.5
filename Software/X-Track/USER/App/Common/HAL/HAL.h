@@ -96,6 +96,9 @@ void NMEA_Log_Close();
 /* System / Diagnostic Event Log */
 // 系统诊断日志落盘（输出到 SD 卡 /system.log 及 USB 串口，同时以 # 注释写入 NMEA 原始日志中）
 void SysLog_Write(const char* fmt, ...);
+void SysLog_RawWrite(const char* data, uint32_t len);
+void SysLog_RawWriteChar(char c);
+void SysLog_Flush();
 void SysLog_Close();
 
 

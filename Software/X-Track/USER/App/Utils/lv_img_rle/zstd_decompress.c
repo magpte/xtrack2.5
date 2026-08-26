@@ -12,6 +12,7 @@
 #define ZSTD_STATIC_LINKING_ONLY
 #endif
 #define ZSTD_NO_INTRINSICS 1
+#define ZSTD_DECODER_INTERNAL_BUFFER 64
 
 #include "zstd/zstd.h"
 #include "zstd/common/entropy_common.c"
@@ -24,7 +25,7 @@
 #include "zstd/decompress/zstd_decompress.c"
 #include "zstd/decompress/zstd_decompress_block.c"
 
-#define ZSTD_EMBED_WORKSPACE_SIZE (24 * 1024)
+#define ZSTD_EMBED_WORKSPACE_SIZE (32 * 1024)
 
 static uint8_t s_zstd_workspace[ZSTD_EMBED_WORKSPACE_SIZE] __attribute__((aligned(8)));
 static ZSTD_DCtx* s_zstd_dctx = NULL;

@@ -95,6 +95,7 @@ public:
     virtual void flush(void);
 
     virtual size_t write(uint8_t n);
+    virtual size_t write(const uint8_t *buffer, size_t size);
     inline size_t write(unsigned long n)
     {
         return write((uint8_t)n);
@@ -111,7 +112,7 @@ public:
     {
         return write((uint8_t)n);
     }
-    using Print::write; // pull in write(str) and write(buf, size) from Print
+    using Print::write; // pull in write(str) from Print
     operator bool()
     {
         return true;
