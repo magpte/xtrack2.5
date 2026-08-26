@@ -200,24 +200,27 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 }
 
 // Optimization C: 32-bit fast parallel palette batch loading
+// Uses __builtin_memcpy for safe unaligned 32-bit reads on Cortex-M4
 static inline void load_micro_palette_fast(lv_color_t* dst_pal, const uint8_t* src_raw, uint16_t pal_cnt)
 {
 #if LV_COLOR_16_SWAP == 1
-    const uint32_t* src32 = (const uint32_t*)src_raw;
     uint32_t* dst32 = (uint32_t*)dst_pal;
     uint16_t pi = 0;
     for (; pi + 1 < pal_cnt; pi += 2)
     {
-        uint32_t pair = *src32++;
+        // Fix 2: Use __builtin_memcpy for safe potentially-unaligned 32-bit load
+        uint32_t pair;
+        __builtin_memcpy(&pair, src_raw + pi * 2, sizeof(pair));
         uint32_t swapped = ((pair & 0x00FF00FF) << 8) | ((pair & 0xFF00FF00) >> 8);
         *dst32++ = swapped;
     }
     if (pi < pal_cnt)
     {
-        uint16_t c565 = *(const uint16_t*)src32;
-        dst_pal[pi] = rgb565_to_lv_color(c565);
+        dst_pal[pi] = rgb565_to_lv_color(
+            (uint16_t)(src_raw[pi * 2] | ((uint16_t)src_raw[pi * 2 + 1] << 8)));
     }
 #else
+    // LV_COLOR_16_SWAP == 0: RGB565 native, direct copy (lv_color_t is uint16_t)
     memcpy(dst_pal, src_raw, pal_cnt * sizeof(uint16_t));
 #endif
 }
@@ -371,6 +374,9 @@ static bool ensure_bundle_open(const char* bundle_path)
         lv_fs_close(&s_bundle_file);
         s_bundle_valid = false;
         s_bundle_path[0] = '\0';
+        // Fix 1: Reset seek cache and bundle metadata when closing old file
+        s_bundle_cur_pos = 0xFFFFFFFFu;
+        s_cached_bundle.valid = false;
     }
 
     if (lv_fs_open(&s_bundle_file, bundle_path, LV_FS_MODE_RD) != LV_FS_RES_OK)
@@ -383,6 +389,7 @@ static bool ensure_bundle_open(const char* bundle_path)
     memcpy(s_bundle_path, bundle_path, len);
     s_bundle_path[len] = '\0';
     s_bundle_valid = true;
+    s_bundle_cur_pos = 0xFFFFFFFFu; // New file: pointer unknown until first seek
     return true;
 }
 
@@ -415,6 +422,8 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
         uint32_t br = 0;
         if (!tile_read_bytes(idx_pos, entry, 8, &br) || br != 8)
         {
+            // Fix 3: Invalidate cached bundle on SD read failure to force re-probe
+            s_cached_bundle.valid = false;
             return false;
         }
 
@@ -430,7 +439,7 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
 
         if (rel_offset == ABSENT_OFFSET || length == 0)
         {
-            return false;
+            return false; // Absent tile: cache remains valid, not an error
         }
 
         uint32_t data_section_start = BUNDLE_HEADER_SIZE + (uint32_t)blk_size * (uint32_t)blk_size * 8u;
