@@ -2,20 +2,20 @@
 """
 tile_bundle.py
 
-Goes directly from source map tile images (PNG/JPG/IMAGE, or raw .bin tiles)
-to packed "TBND" bundle files using Adaptive ZST2 compression.
+Converts source map tile images (PNG/JPG/IMAGE, or raw .bin tiles) directly
+into high-performance "TBND" bundle files using Adaptive ZST2 compression.
 
-Supports:
+Features:
   - Adaptive ZST2: 3-Tier micro-chunk compression (100% bit-exact lossless).
-  - Tencent Map tiles (--tencent): automatically flips Tencent's inverted Y axis
-    (Y_osm = 2^z - 1 - Y_tencent).
-  - GCJ-02 to WGS-84 conversion (--gcj02-to-wgs84): performs sub-pixel PIL
-    re-projection and tile cropping on PC so output bundles are 100% standard WGS-84.
-  - Flexible file matching: supports both flat names (e.g. 16.53354.28462.image)
-    and nested directory layouts (<level>/<tileX>/<tileY>.<ext>).
+  - High Performance: Multi-process parallel compression & 512-byte sector alignment.
+  - Optional Coordinate Correction:
+      * --gcj02-to-wgs84: Sub-pixel PIL re-projection to convert domestic GCJ-02
+        (Mars coordinates) map tiles into standard WGS-84 for perfect GPS track alignment.
+      * --tencent: Flips Tencent's inverted Y axis if downloading raw Tencent tiles.
+  - Flexible File Matching: supports flat (<level>.<x>.<y>.<ext>) and nested (<level>/<x>/<y>.<ext>).
 
 Usage:
-    python tile_bundle.py <input_dir> <output_dir> [--tencent] [--gcj02-to-wgs84] [--block-size N] [--workers N]
+    python tile_bundle.py <input_dir> <output_dir> [--gcj02-to-wgs84] [--tencent] [--workers N]
 """
 import argparse
 import math
@@ -36,7 +36,7 @@ from tile_zstd_encode import encode_tile_bytes, load_source_image
 
 MAGIC = b"TBND"
 ABSENT_OFFSET = 0xFFFFFFFF
-DEFAULT_BLOCK_SIZE = 100
+BLOCK_SIZE = 100  # Fixed 100x100 grid per .tbnd bundle (matching MCU BUNDLE_BLOCK_SIZE)
 
 TILE_RE = re.compile(r"^(\d+)\.(png|jpg|jpeg|bin|image)$", re.IGNORECASE)
 FLAT_TILE_RE = re.compile(r"^(\d+)[\._](\d+)[\._](\d+)\.(png|jpg|jpeg|bin|image)$", re.IGNORECASE)
@@ -150,17 +150,17 @@ def find_tiles(input_dir, is_tencent=False):
 
 def _encode_block(args):
     """Worker process: packs one bundle block (.tbnd) with ZST2 tiles."""
-    level, block_x, block_y, block_size, entries, out_path, gcj_warp, tile_lookup = args
+    level, block_x, block_y, entries, out_path, gcj_warp, tile_lookup = args
 
-    index = [(ABSENT_OFFSET, 0)] * (block_size * block_size)
+    index = [(ABSENT_OFFSET, 0)] * (BLOCK_SIZE * BLOCK_SIZE)
     data_chunks = []
     data_offset = 0
     total_raw = 0
     failed = []
 
     for local_x, local_y, path_or_target in entries:
-        tile_x_wgs = block_x * block_size + local_x
-        tile_y_wgs = block_y * block_size + local_y
+        tile_x_wgs = block_x * BLOCK_SIZE + local_x
+        tile_y_wgs = block_y * BLOCK_SIZE + local_y
 
         try:
             if gcj_warp and Image is not None and tile_lookup:
@@ -196,14 +196,14 @@ def _encode_block(args):
             continue
 
         # Align (data_section_start + data_offset) to 512-byte physical sector boundary
-        data_section_start = 14 + (block_size * block_size * 8)
+        data_section_start = 14 + (BLOCK_SIZE * BLOCK_SIZE * 8)
         current_abs_pos = data_section_start + data_offset
         pad = (512 - (current_abs_pos % 512)) % 512
         if pad > 0:
             data_chunks.append(b"\x00" * pad)
             data_offset += pad
 
-        idx = local_y * block_size + local_x
+        idx = local_y * BLOCK_SIZE + local_x
         index[idx] = (data_offset, len(encoded))
         data_chunks.append(encoded)
         data_offset += len(encoded)
@@ -213,7 +213,7 @@ def _encode_block(args):
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "wb") as f:
             f.write(MAGIC)
-            f.write(struct.pack("<H", block_size))
+            f.write(struct.pack("<H", BLOCK_SIZE))
             f.write(struct.pack("<ii", block_x, block_y))
             for offset, length in index:
                 f.write(struct.pack("<II", offset, length))
@@ -227,19 +227,15 @@ def _encode_block(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("input_dir", help="directory containing tile files/folders")
+    parser.add_argument("input_dir", help="directory containing source tile files/folders")
     parser.add_argument("output_dir", help="directory to write <level>/<blockX>_<blockY>.tbnd into")
     parser.add_argument(
-        "--tencent", action="store_true",
-        help="enable Tencent Map Y-axis flip (Y_osm = 2^z - 1 - Y_tencent). Use when downloading tiles from Tencent Maps.",
-    )
-    parser.add_argument(
         "--gcj02-to-wgs84", action="store_true",
-        help="convert input GCJ-02 tiles to WGS-84 standard coordinates using sub-pixel PIL cropping.",
+        help="convert input GCJ-02 (Mars coordinates) tiles to WGS-84 standard using sub-pixel PIL cropping.",
     )
     parser.add_argument(
-        "--block-size", type=int, default=DEFAULT_BLOCK_SIZE,
-        help=f"tiles per side of a bundle grid (default {DEFAULT_BLOCK_SIZE}).",
+        "--tencent", action="store_true",
+        help="enable Tencent Map Y-axis flip (Y_osm = 2^z - 1 - Y_tencent) for raw un-converted Tencent tiles.",
     )
     parser.add_argument(
         "--workers", type=int, default=os.cpu_count(),
@@ -247,11 +243,11 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Scanning {args.input_dir} ... (Encoder: ZST2 Lossless)", file=sys.stderr)
-    if args.tencent:
-        print("  [Option] Tencent Map Y-axis inversion enabled.", file=sys.stderr)
+    print(f"Scanning {args.input_dir} ... (Encoder: ZST2 Lossless, BlockSize: {BLOCK_SIZE}x{BLOCK_SIZE})", file=sys.stderr)
     if args.gcj02_to_wgs84:
         print("  [Option] GCJ-02 to WGS-84 sub-pixel coordinate conversion enabled.", file=sys.stderr)
+    if args.tencent:
+        print("  [Option] Tencent Map Y-axis inversion enabled.", file=sys.stderr)
 
     tile_lookup = {}
     by_level = defaultdict(list)
@@ -280,16 +276,16 @@ def main():
             else:
                 target_x, target_y = tile_x, tile_y
 
-            block_x, local_x = divmod(target_x, args.block_size)
-            block_y, local_y = divmod(target_y, args.block_size)
+            block_x, local_x = divmod(target_x, BLOCK_SIZE)
+            block_y, local_y = divmod(target_y, BLOCK_SIZE)
             blocks[(block_x, block_y)].append((local_x, local_y, path))
 
         level_out_dir = os.path.join(args.output_dir, str(level))
         for (block_x, block_y), entries in blocks.items():
             out_path = os.path.join(level_out_dir, f"{block_x}_{block_y}.tbnd")
-            tasks.append((level, block_x, block_y, args.block_size, entries, out_path, args.gcj02_to_wgs84, tile_lookup))
+            tasks.append((level, block_x, block_y, entries, out_path, args.gcj02_to_wgs84, tile_lookup))
 
-        total_blocks = len(tasks)
+    total_blocks = len(tasks)
     print(f"Packing into {total_blocks} bundle file(s) using {args.workers} worker process(es)...", file=sys.stderr)
 
     grand_tiles = 0
