@@ -189,7 +189,7 @@ void lv_img_rle_cache_deinit()
     }
 }
 
-static inline lv_color_t rgb565_to_lv_color(uint16_t c)
+static inline __attribute__((unused)) lv_color_t rgb565_to_lv_color(uint16_t c)
 {
 #if LV_COLOR_16_SWAP == 1
     uint16_t swapped = (uint16_t)((c << 8) | (c >> 8));
