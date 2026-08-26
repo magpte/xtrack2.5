@@ -766,7 +766,11 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                         uint32_t r5 = (dr5 + half_g) & 0x1F;
                         uint32_t b5 = (db5 + half_g) & 0x1F;
                         uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
-                        px16[i] = *(uint16_t*)&rgb565_to_lv_color(c565);
+#if LV_COLOR_16_SWAP == 1
+                        px16[i] = (uint16_t)((c565 << 8) | (c565 >> 8));
+#else
+                        px16[i] = c565;
+#endif
                     }
                 }
                 else
@@ -796,7 +800,7 @@ static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
                 lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
-                FastMemcpy(dest_row, src_row_pixels, blit_w * sizeof(lv_color_t));
+                arm_fast_memcpy(dest_row, src_row_pixels, blit_w * sizeof(lv_color_t));
             }
         }
         else

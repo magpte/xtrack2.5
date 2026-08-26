@@ -8,7 +8,9 @@
 #include "zstd_decompress.h"
 #include <string.h>
 
-#define ZSTD_STATIC_LINKING_ONLY 1
+#ifndef ZSTD_STATIC_LINKING_ONLY
+#define ZSTD_STATIC_LINKING_ONLY
+#endif
 #define ZSTD_NO_INTRINSICS 1
 
 #include "zstd/zstd.h"
