@@ -3,9 +3,10 @@
 tile_bundle.py
 
 Goes directly from source map tile images (PNG/JPG/IMAGE, or raw .bin tiles)
-to packed "TBND" bundle files.
+to packed "TBND" bundle files using Adaptive ZST2 compression.
 
 Supports:
+  - Adaptive ZST2: 3-Tier micro-chunk compression (100% bit-exact lossless).
   - Tencent Map tiles (--tencent): automatically flips Tencent's inverted Y axis
     (Y_osm = 2^z - 1 - Y_tencent).
   - GCJ-02 to WGS-84 conversion (--gcj02-to-wgs84): performs sub-pixel PIL
@@ -31,8 +32,7 @@ try:
 except ImportError:
     Image = None
 
-from tile_lz4_encode import encode_tile_bytes as encode_tile_bytes_lz4, load_source_image
-from tile_zstd_encode import encode_tile_bytes as encode_tile_bytes_zstd
+from tile_zstd_encode import encode_tile_bytes, load_source_image
 
 MAGIC = b"TBND"
 ABSENT_OFFSET = 0xFFFFFFFF
@@ -67,59 +67,62 @@ def _transform_lon(x, y):
 def wgs84_to_gcj02(lat, lon):
     if out_of_china(lat, lon):
         return lat, lon
-    d_lat = _transform_lat(lon - 105.0, lat - 35.0)
-    d_lon = _transform_lon(lon - 105.0, lat - 35.0)
+    a = 6378245.0
+    ee = 0.00669342162296594323
+    dlat = _transform_lat(lon - 105.0, lat - 35.0)
+    dlon = _transform_lon(lon - 105.0, lat - 35.0)
     rad_lat = lat / 180.0 * math.pi
     magic = math.sin(rad_lat)
-    magic = 1.0 - 0.00669342162296594323 * magic * magic
+    magic = 1 - ee * magic * magic
     sqrt_magic = math.sqrt(magic)
-    d_lat = (d_lat * 180.0) / ((6378245.0 * (1.0 - 0.00669342162296594323)) / (magic * sqrt_magic) * math.pi)
-    d_lon = (d_lon * 180.0) / (6378245.0 / sqrt_magic * math.cos(rad_lat) * math.pi)
-    return lat + d_lat, lon + d_lon
+    dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrt_magic) * math.pi)
+    dlon = (dlon * 180.0) / (a / sqrt_magic * math.cos(rad_lat) * math.pi)
+    return lat + dlat, lon + dlon
 
 
 def gcj02_to_wgs84(lat, lon):
     if out_of_china(lat, lon):
         return lat, lon
     g_lat, g_lon = wgs84_to_gcj02(lat, lon)
-    return lat * 2 - g_lat, lon * 2 - g_lon
+    dlat = g_lat - lat
+    dlon = g_lon - lon
+    return lat - dlat, lon - dlon
 
 
-def latlon_to_pixel_xy(lat, lon, zoom):
-    map_size = (1 << zoom) * 256.0
-    x = (lon + 180.0) / 360.0
-    sin_lat = math.sin(math.radians(lat))
-    sin_lat = max(-0.9999, min(0.9999, sin_lat))
-    y = 0.5 - math.log((1.0 + sin_lat) / (1.0 - sin_lat)) / (4.0 * math.pi)
-    return x * map_size, y * map_size
+def tile_xy_to_latlon(x, y, z):
+    n = 2.0 ** z
+    lon_deg = x / n * 360.0 - 180.0
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    lat_deg = math.degrees(lat_rad)
+    return lat_deg, lon_deg
 
 
-def pixel_xy_to_latlon(pixel_x, pixel_y, zoom):
-    map_size = (1 << zoom) * 256.0
-    x = (pixel_x / map_size) - 0.5
-    y = 0.5 - (pixel_y / map_size)
-    lat = 90.0 - 360.0 * math.atan(math.exp(-y * 2.0 * math.pi)) / math.pi
-    lon = 360.0 * x
-    return lat, lon
+def latlon_to_tile_xy(lat, lon, z):
+    n = 2.0 ** z
+    x = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return x, y
 
 
-def tile_xy_to_latlon(tile_x, tile_y, zoom):
-    return pixel_xy_to_latlon(tile_x * 256.0, tile_y * 256.0, zoom)
+def latlon_to_pixel_xy(lat, lon, z):
+    n = 2.0 ** z
+    px = ((lon + 180.0) / 360.0 * n) * 256.0
+    lat_rad = math.radians(lat)
+    py = ((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n) * 256.0
+    return px, py
 
 
-def latlon_to_tile_xy(lat, lon, zoom):
-    px, py = latlon_to_pixel_xy(lat, lon, zoom)
-    return int(px // 256), int(py // 256)
-
+# --- Tile Scanner ---
 
 def find_tiles(input_dir, is_tencent=False):
-    """Recursively scans input_dir for tile files (supports both nested and flat layouts).
-    Yields (level, tileX, tileY_osm, full_path)."""
-    for root, dirs, files in os.walk(input_dir):
+    """Yields (level, tile_x, tile_y, full_path) for all supported tile images found."""
+    input_dir = os.path.abspath(input_dir)
+    for root, _, files in os.walk(input_dir):
         for fname in files:
             full_path = os.path.join(root, fname)
 
-            # 1. Flat layout check: e.g. 16.53354.28462.image or 16_53354_28462.png
+            # 1. Flat format: <level>.<tileX>.<tileY>.<ext> or <level>_<tileX>_<tileY>.<ext>
             m_flat = FLAT_TILE_RE.match(fname)
             if m_flat:
                 level = int(m_flat.group(1))
@@ -130,32 +133,24 @@ def find_tiles(input_dir, is_tencent=False):
                 yield level, tile_x, tile_y, full_path
                 continue
 
-            # 2. Nested layout check: <level>/<tileX>/<tileY>.<ext> or <tileX>/<tileY>.<ext> when root is <level>
+            # 2. Hierarchical format: <input_dir>/<level>/<tileX>/<tileY>.<ext>
             m = TILE_RE.match(fname)
             if m:
-                rel_path = os.path.relpath(full_path, input_dir)
-                parts = os.path.normpath(rel_path).split(os.sep)
-                if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                    level = int(parts[0])
-                    tile_x = int(parts[1])
-                    tile_y = int(m.group(1))
-                    if is_tencent:
-                        tile_y = (1 << level) - 1 - tile_y
-                    yield level, tile_x, tile_y, full_path
-                elif len(parts) == 2 and parts[0].isdigit() and os.path.basename(input_dir).isdigit():
-                    level = int(os.path.basename(input_dir))
-                    tile_x = int(parts[0])
-                    tile_y = int(m.group(1))
+                tile_y = int(m.group(1))
+                parent_dir = os.path.basename(root)
+                grandparent_dir = os.path.basename(os.path.dirname(root))
+
+                if parent_dir.isdigit() and grandparent_dir.isdigit():
+                    tile_x = int(parent_dir)
+                    level = int(grandparent_dir)
                     if is_tencent:
                         tile_y = (1 << level) - 1 - tile_y
                     yield level, tile_x, tile_y, full_path
 
 
 def _encode_block(args):
-    """Worker process: packs one bundle block (.tbnd). Handles sub-pixel cropping if PIL is available."""
-    level, block_x, block_y, block_size, entries, out_path, gcj_warp, tile_lookup, encoder = args
-
-    encode_fn = encode_tile_bytes_zstd if encoder == "zstd" else encode_tile_bytes_lz4
+    """Worker process: packs one bundle block (.tbnd) with ZST2 tiles."""
+    level, block_x, block_y, block_size, entries, out_path, gcj_warp, tile_lookup = args
 
     index = [(ABSENT_OFFSET, 0)] * (block_size * block_size)
     data_chunks = []
@@ -192,10 +187,10 @@ def _encode_block(args):
                                 pass
 
                 cropped = canvas.crop((off_x, off_y, off_x + 256, off_y + 256))
-                raw_size, encoded = encode_fn(cropped)
+                raw_size, encoded = encode_tile_bytes(cropped)
             else:
                 src_path = path_or_target if isinstance(path_or_target, str) else path_or_target[0]
-                raw_size, encoded = encode_fn(src_path)
+                raw_size, encoded = encode_tile_bytes(src_path)
         except Exception as exc:
             failed.append((str(path_or_target), str(exc)))
             continue
@@ -235,10 +230,6 @@ def main():
     parser.add_argument("input_dir", help="directory containing tile files/folders")
     parser.add_argument("output_dir", help="directory to write <level>/<blockX>_<blockY>.tbnd into")
     parser.add_argument(
-        "--encoder", choices=["zstd", "lz4"], default="zstd",
-        help="tile compression engine: 'zstd' (Adaptive ZST2, 100%% lossless, default) or 'lz4' (LZ42).",
-    )
-    parser.add_argument(
         "--tencent", action="store_true",
         help="enable Tencent Map Y-axis flip (Y_osm = 2^z - 1 - Y_tencent). Use when downloading tiles from Tencent Maps.",
     )
@@ -256,7 +247,7 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Scanning {args.input_dir} ... (Encoder: {args.encoder.upper()})", file=sys.stderr)
+    print(f"Scanning {args.input_dir} ... (Encoder: ZST2 Lossless)", file=sys.stderr)
     if args.tencent:
         print("  [Option] Tencent Map Y-axis inversion enabled.", file=sys.stderr)
     if args.gcj02_to_wgs84:
@@ -296,9 +287,9 @@ def main():
         level_out_dir = os.path.join(args.output_dir, str(level))
         for (block_x, block_y), entries in blocks.items():
             out_path = os.path.join(level_out_dir, f"{block_x}_{block_y}.tbnd")
-            tasks.append((level, block_x, block_y, args.block_size, entries, out_path, args.gcj02_to_wgs84, tile_lookup, args.encoder))
+            tasks.append((level, block_x, block_y, args.block_size, entries, out_path, args.gcj02_to_wgs84, tile_lookup))
 
-    total_blocks = len(tasks)
+        total_blocks = len(tasks)
     print(f"Packing into {total_blocks} bundle file(s) using {args.workers} worker process(es)...", file=sys.stderr)
 
     grand_tiles = 0

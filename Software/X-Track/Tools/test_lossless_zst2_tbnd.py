@@ -183,7 +183,6 @@ def main():
         "tile_bundle.py",
         os.path.join(OUTPUT_DIR, "in_tiles"),
         os.path.join(OUTPUT_DIR, "tbnd_out"),
-        "--encoder", "zstd",
         "--workers", "4"
     ]
     tile_bundle.main()

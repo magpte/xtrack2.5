@@ -1,26 +1,21 @@
 /*
  * lv_img_rle.cpp
  *
- * High-Performance Micro-Chunk On-Demand Streaming Engine with Triple-Format
- * (ZST2, LZ42 & RLE2) Support.
+ * High-Performance Micro-Chunk On-Demand Streaming Engine for ZST2 Lossless Tiles.
  * Part of X-Track 2.5 Map System.
  *
  * Features:
- *   1. Adaptive ZST2 (Lossless 3-Tier Micro-Palette + G-Decorrelation + Zstd-1/FSE):
- *      - Tier 1: 4-bit packed micro-palette (≤16 colors, 100% lossless)
- *      - Tier 2: 8-bit compact micro-palette (17~256 colors, 100% lossless)
- *      - Tier 3: 16-bit G-color decorrelation linear stream (>256 colors, 100% lossless)
- *   2. Micro-chunk On-Demand Streaming: reads and decodes only the required 32-row chunk (1~4KB) from SD.
- *   3. Zero memory limit: renders photographic & vector tiles with zero heap allocation risk.
- *   4. Ultra-low static RAM: 16 descriptors + 16KB scratchpad + 16KB chunk fetch buffer + 24KB Zstd DCtx.
- *   5. Full backward compatibility: seamlessly renders existing LZ42 and RLE2 bundles alongside ZST2.
+ *   1. Adaptive ZST2 (3-Tier Micro-Palette + G-Color Decorrelation + Zstd-1/FSE):
+ *      - Tier 1: 4-bit packed micro-palette (≤16 colors, 100% lossless).
+ *      - Tier 2: 8-bit compact micro-palette (17~256 colors, 100% lossless).
+ *      - Tier 3: 16-bit Green-decorrelation linear stream (>256 colors, 100% lossless).
+ *   2. Micro-Chunk On-Demand Streaming: reads and decodes only the required 32-row chunk (1~4KB) from SD.
+ *   3. Zero Heap Allocations: 100% static memory (Zero malloc / free).
+ *   4. Ultra-Low Static RAM: 16 descriptors + 16KB scratchpad + 16KB chunk buffer + 24KB Zstd DCtx.
+ *   5. High-Throughput Rendering: FastMemcpy for Tier 3, 4-pixel parallel 32-bit burst lookup for Tier 1/2.
  */
 
 #include "lv_img_rle.h"
-#include "lz4_decompress.h"
-extern "C" {
-#include "lz4_decompress.c"
-}
 #include "zstd_decompress.h"
 extern "C" {
 #include "zstd_decompress.c"
@@ -36,33 +31,25 @@ extern "C" {
 #define MY_CLASS &lv_img_rle_class
 
 // ---- Bundle constants (must match tile_bundle.py) -----------------------
-#define BUNDLE_MAGIC          "TBND"
-#define BUNDLE_HEADER_SIZE    14u
-#define BUNDLE_BLOCK_SIZE     100
-#define ABSENT_OFFSET         0xFFFFFFFFu
+#define BUNDLE_MAGIC              "TBND"
+#define BUNDLE_HEADER_SIZE        14u
+#define BUNDLE_BLOCK_SIZE         100
+#define ABSENT_OFFSET             0xFFFFFFFFu
 
-// ---- Tile constants (must match tile_zstd_encode.py / lz4 / rle) --------
-#define ZST_MAGIC             "ZST2"
-#define LZ4_MAGIC             "LZ42"
-#define RLE_MAGIC             "RLE2"
-#define LZ4_HEADER_SIZE       16u
-#define LZ4_MAX_PALETTE       256
-#define LZ4_MAX_CHUNKS        8
-#define LZ4_CHUNK_ROWS        32
-#define LZ4_TILE_SIZE         256
-#define LZ4_MAX_DESCRIPTORS   16
+// ---- ZST2 Tile constants (must match tile_zstd_encode.py) ---------------
+#define ZST_MAGIC                 "ZST2"
+#define TILE_HEADER_SIZE          16u
+#define TILE_MAX_PALETTE          256
+#define TILE_MAX_CHUNKS           8
+#define TILE_CHUNK_ROWS           32
+#define TILE_SIZE                 256
+#define TILE_MAX_DESCRIPTORS      16
 
 // ---- LVGL drive letter for SD card --------------------------------------
-#define TILE_SD_DRIVE_LETTER  '/'
+#define TILE_SD_DRIVE_LETTER      '/'
 
-#define LZ4_SCRATCH_BUF_SIZE      (LZ4_TILE_SIZE * LZ4_CHUNK_ROWS * 2) // 16384 bytes (supports 16-bit RGB565 chunks)
-#define LZ4_CHUNK_FETCH_BUF_SIZE  (LZ4_SCRATCH_BUF_SIZE + 64)          // Max compressed chunk size
-
-enum TileFormat_t {
-    TILE_FMT_LZ42 = 0,
-    TILE_FMT_RLE2 = 1,
-    TILE_FMT_ZST2 = 2,
-};
+#define TILE_SCRATCH_BUF_SIZE     (TILE_SIZE * TILE_CHUNK_ROWS * 2) // 16384 bytes (supports 16-bit RGB565 chunks)
+#define TILE_CHUNK_FETCH_BUF_SIZE (TILE_SCRATCH_BUF_SIZE + 64)      // Max compressed chunk size
 
 // =========================================================================
 // Diagnostic Logging (Zero-overhead release macro)
@@ -83,7 +70,7 @@ static bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t*
 }
 
 // =========================================================================
-// Tile Descriptors (Metadata & Pre-baked Palette)
+// Tile Descriptors (Metadata & Layout)
 // =========================================================================
 typedef struct {
     char        path[64];
@@ -95,29 +82,26 @@ typedef struct {
     uint32_t    payload_start;
     uint32_t    payload_length;
 
-    uint8_t     format;               // TILE_FMT_ZST2, TILE_FMT_LZ42, or TILE_FMT_RLE2
     uint16_t    width;
     uint16_t    height;
-    uint16_t    palette_count;
     uint16_t    chunk_interval;
     uint16_t    chunk_count;
 
-    uint32_t    chunk_offsets[LZ4_MAX_CHUNKS]; // offsets from payload start to each chunk
-    lv_color_t  palette[LZ4_MAX_PALETTE];      // pre-baked lv_color_t (for LZ42 / RLE2)
+    uint32_t    chunk_offsets[TILE_MAX_CHUNKS]; // offsets from payload start to each chunk
 
     bool        valid;
-} Lz4TileDesc_t;
+} TileDesc_t;
 
-static Lz4TileDesc_t  s_descriptors[LZ4_MAX_DESCRIPTORS];
-static uint8_t        s_comp_chunk_buf[LZ4_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 16.5 KB static buffer
-static uint8_t        s_scratch_buf[LZ4_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 16 KB static uncompressed pixel buffer
+static TileDesc_t s_descriptors[TILE_MAX_DESCRIPTORS];
+static uint8_t    s_comp_chunk_buf[TILE_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 16.5 KB static buffer
+static uint8_t    s_scratch_buf[TILE_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 16 KB static uncompressed pixel buffer
 
 // MRU decompression cache: eliminates redundant SD reads & decompression
 static struct {
-    const Lz4TileDesc_t* desc;
-    int chunk_idx;
-    uint8_t chunk_tier;                        // Tier mode for ZST2 (1=4bit, 2=8bit, 3=16bit G-dec)
-    lv_color_t micro_palette[LZ4_MAX_PALETTE]; // Pre-baked palette for ZST2 micro-chunks
+    const TileDesc_t* desc;
+    int               chunk_idx;
+    uint8_t           chunk_tier;                         // Tier mode (1=4bit, 2=8bit, 3=16bit G-dec)
+    lv_color_t        micro_palette[TILE_MAX_PALETTE];    // Pre-baked micro-palette for active chunk
 } s_mru_chunk = { NULL, -1, 0 };
 
 // =========================================================================
@@ -131,7 +115,7 @@ void lv_img_rle_cache_init()
     s_mru_chunk.chunk_idx = -1;
     s_mru_chunk.chunk_tier = 0;
     zstd_decompress_init();
-    map_log("Cache init: Micro-chunk Streaming (ZST2/LZ42/RLE2, 16 Descs, 16KB Scratch, MRU Opt)");
+    map_log("Cache init: Micro-chunk Streaming (ZST2 Engine, 16 Descs, 16KB Scratch, MRU Opt)");
 }
 
 void lv_img_rle_cache_deinit()
@@ -140,7 +124,7 @@ void lv_img_rle_cache_deinit()
     s_mru_chunk.chunk_idx = -1;
     s_mru_chunk.chunk_tier = 0;
 
-    for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
         s_descriptors[i].valid = false;
         s_descriptors[i].path[0] = '\0';
@@ -165,10 +149,10 @@ static inline lv_color_t rgb565_to_lv_color(uint16_t c)
 }
 
 // Find descriptor by tile path
-static Lz4TileDesc_t* cache_find(const char* path)
+static TileDesc_t* cache_find(const char* path)
 {
     uint32_t now = lv_tick_get();
-    for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
         if (s_descriptors[i].valid && strcmp(s_descriptors[i].path, path) == 0)
         {
@@ -180,10 +164,10 @@ static Lz4TileDesc_t* cache_find(const char* path)
 }
 
 // Allocate or evict LRU descriptor slot
-static Lz4TileDesc_t* get_or_allocate_desc(const char* path)
+static TileDesc_t* get_or_allocate_desc(const char* path)
 {
     // 1. Check if already exists
-    for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
         if (s_descriptors[i].valid && strcmp(s_descriptors[i].path, path) == 0)
         {
@@ -193,11 +177,11 @@ static Lz4TileDesc_t* get_or_allocate_desc(const char* path)
     }
 
     // 2. Find empty slot
-    for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
         if (!s_descriptors[i].valid)
         {
-            memset(&s_descriptors[i], 0, sizeof(Lz4TileDesc_t));
+            memset(&s_descriptors[i], 0, sizeof(TileDesc_t));
             strncpy(s_descriptors[i].path, path, sizeof(s_descriptors[i].path) - 1);
             s_descriptors[i].last_access_tick = lv_tick_get();
             return &s_descriptors[i];
@@ -207,7 +191,7 @@ static Lz4TileDesc_t* get_or_allocate_desc(const char* path)
     // 3. Evict oldest LRU descriptor
     uint32_t oldest_tick = 0xFFFFFFFFu;
     int evict_idx = 0;
-    for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
     {
         if (s_descriptors[i].last_access_tick < oldest_tick)
         {
@@ -222,7 +206,7 @@ static Lz4TileDesc_t* get_or_allocate_desc(const char* path)
         s_mru_chunk.chunk_idx = -1;
     }
 
-    memset(&s_descriptors[evict_idx], 0, sizeof(Lz4TileDesc_t));
+    memset(&s_descriptors[evict_idx], 0, sizeof(TileDesc_t));
     strncpy(s_descriptors[evict_idx].path, path, sizeof(s_descriptors[evict_idx].path) - 1);
     s_descriptors[evict_idx].last_access_tick = lv_tick_get();
     return &s_descriptors[evict_idx];
@@ -265,7 +249,7 @@ static bool parse_tile_path(const char* src,
     unsigned long level = strtoul(level_str, &endptr, 10);
     if (endptr == level_str) return false;
 
-    // Reject out-of-world coordinates (e.g. negative coords cast to UINT32_MAX)
+    // Reject out-of-world coordinates
     if (level > 24) return false;
     uint32_t max_tiles = (level >= 31) ? 0xFFFFFFFFu : (1u << level);
     if (tile_x >= max_tiles || tile_y >= max_tiles)
@@ -434,56 +418,41 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
 // Tile Header Loading and Descriptor Population
 // =========================================================================
 
-static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start, uint32_t tile_length)
+static TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start, uint32_t tile_length)
 {
-    if (tile_length < LZ4_HEADER_SIZE)
+    if (tile_length < TILE_HEADER_SIZE)
     {
         map_log("Tile '%s' length %u too short for header", src, tile_length);
         return NULL;
     }
 
-    uint8_t head[LZ4_HEADER_SIZE];
+    uint8_t head[TILE_HEADER_SIZE];
     uint32_t br = 0;
-    if (!tile_read_bytes(tile_start, head, LZ4_HEADER_SIZE, &br) || br != LZ4_HEADER_SIZE)
+    if (!tile_read_bytes(tile_start, head, TILE_HEADER_SIZE, &br) || br != TILE_HEADER_SIZE)
     {
         map_log("Failed to read header for '%s'", src);
         return NULL;
     }
 
-    uint8_t format = TILE_FMT_LZ42;
-    if (memcmp(head, ZST_MAGIC, 4) == 0)
-    {
-        format = TILE_FMT_ZST2;
-    }
-    else if (memcmp(head, LZ4_MAGIC, 4) == 0)
-    {
-        format = TILE_FMT_LZ42;
-    }
-    else if (memcmp(head, RLE_MAGIC, 4) == 0)
-    {
-        format = TILE_FMT_RLE2;
-    }
-    else
+    if (memcmp(head, ZST_MAGIC, 4) != 0)
     {
         map_log("Unknown tile magic '%.4s' in '%s'", head, src);
         return NULL;
     }
 
-    uint16_t width         = (uint16_t)(head[4]  | ((uint16_t)head[5]  << 8));
-    uint16_t height        = (uint16_t)(head[6]  | ((uint16_t)head[7]  << 8));
-    uint16_t palette_count = (uint16_t)(head[8]  | ((uint16_t)head[9]  << 8));
-    uint16_t chunk_intvl   = (uint16_t)(head[10] | ((uint16_t)head[11] << 8));
-    uint16_t chunk_count   = (uint16_t)(head[12] | ((uint16_t)head[13] << 8));
+    uint16_t width       = (uint16_t)(head[4]  | ((uint16_t)head[5]  << 8));
+    uint16_t height      = (uint16_t)(head[6]  | ((uint16_t)head[7]  << 8));
+    uint16_t chunk_intvl = (uint16_t)(head[10] | ((uint16_t)head[11] << 8));
+    uint16_t chunk_count = (uint16_t)(head[12] | ((uint16_t)head[13] << 8));
 
-    if (chunk_count == 0 || chunk_count > LZ4_MAX_CHUNKS)
+    if (chunk_count == 0 || chunk_count > TILE_MAX_CHUNKS)
     {
-        map_log("Invalid tile meta: Pal=%u Chunks=%u", palette_count, chunk_count);
+        map_log("Invalid tile meta: Chunks=%u", chunk_count);
         return NULL;
     }
 
-    uint32_t palette_bytes = (format == TILE_FMT_ZST2) ? 0 : ((uint32_t)palette_count * 2u);
     uint32_t chunk_tbl_bytes = (uint32_t)chunk_count * 4u;
-    uint32_t meta_bytes = LZ4_HEADER_SIZE + palette_bytes + chunk_tbl_bytes;
+    uint32_t meta_bytes = TILE_HEADER_SIZE + chunk_tbl_bytes;
 
     if (tile_length <= meta_bytes)
     {
@@ -492,44 +461,24 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
     }
     uint32_t payload_bytes = tile_length - meta_bytes;
 
-    Lz4TileDesc_t* desc = get_or_allocate_desc(src);
+    TileDesc_t* desc = get_or_allocate_desc(src);
     if (!desc)
     {
         return NULL;
     }
 
-    desc->format          = format;
     desc->tile_start      = tile_start;
     desc->tile_length     = tile_length;
     desc->payload_start   = tile_start + meta_bytes;
     desc->payload_length  = payload_bytes;
     desc->width           = width;
     desc->height          = height;
-    desc->palette_count   = palette_count;
     desc->chunk_interval  = chunk_intvl;
     desc->chunk_count     = chunk_count;
 
-    // For LZ42 / RLE2, read global palette and pre-convert to lv_color_t
-    if (format != TILE_FMT_ZST2 && palette_bytes > 0)
-    {
-        uint8_t pal_raw[LZ4_MAX_PALETTE * 2];
-        if (!tile_read_bytes(tile_start + LZ4_HEADER_SIZE, pal_raw, palette_bytes, &br) || br != palette_bytes)
-        {
-            map_log("Failed to read palette (%u bytes) for '%s'", palette_bytes, src);
-            desc->valid = false;
-            return NULL;
-        }
-        for (uint16_t pi = 0; pi < palette_count; pi++)
-        {
-            uint16_t c565 = (uint16_t)(pal_raw[pi * 2] | ((uint16_t)pal_raw[pi * 2 + 1] << 8));
-            desc->palette[pi] = rgb565_to_lv_color(c565);
-        }
-    }
-
-    // Read chunk offsets table
-    uint32_t tbl_start_pos = tile_start + LZ4_HEADER_SIZE + palette_bytes;
-    uint8_t tbl_raw[LZ4_MAX_CHUNKS * 4];
-    if (!tile_read_bytes(tbl_start_pos, tbl_raw, chunk_tbl_bytes, &br) || br != chunk_tbl_bytes)
+    // Read chunk offsets table directly after 16B header
+    uint8_t tbl_raw[TILE_MAX_CHUNKS * 4];
+    if (!tile_read_bytes(tile_start + TILE_HEADER_SIZE, tbl_raw, chunk_tbl_bytes, &br) || br != chunk_tbl_bytes)
     {
         map_log("Failed to read chunk table (%u bytes) for '%s'", chunk_tbl_bytes, src);
         desc->valid = false;
@@ -546,9 +495,8 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
     strncpy(desc->bundle_path, s_bundle_path, sizeof(desc->bundle_path) - 1);
 
     desc->valid = true;
-    map_log("Loaded '%s' [%s %ux%u pal=%u chunks=%u payload=%u B]",
-            src, (format == TILE_FMT_ZST2 ? "ZST2" : (format == TILE_FMT_LZ42 ? "LZ42" : "RLE2")),
-            width, height, palette_count, chunk_count, payload_bytes);
+    map_log("Loaded '%s' [ZST2 %ux%u chunks=%u payload=%u B]",
+            src, width, height, chunk_count, payload_bytes);
     return desc;
 }
 
@@ -588,7 +536,7 @@ static void lv_img_rle_destructor(const lv_obj_class_t* class_p, lv_obj_t* obj)
     }
 }
 
-static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc);
+static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc);
 
 static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
 {
@@ -625,8 +573,8 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
 
         if (local_x1 < 0) local_x1 = 0;
         if (local_y1 < 0) local_y1 = 0;
-        if (local_x2 >= LZ4_TILE_SIZE) local_x2 = LZ4_TILE_SIZE - 1;
-        if (local_y2 >= LZ4_TILE_SIZE) local_y2 = LZ4_TILE_SIZE - 1;
+        if (local_x2 >= TILE_SIZE) local_x2 = TILE_SIZE - 1;
+        if (local_y2 >= TILE_SIZE) local_y2 = TILE_SIZE - 1;
         if (local_x1 > local_x2 || local_y1 > local_y2) return;
 
         lv_img_rle_draw_dsc_t dsc;
@@ -642,7 +590,7 @@ static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
         dsc.local_y2   = local_y2;
         dsc.blit_w     = local_x2 - local_x1 + 1;
 
-        lv_lz4_draw(img->src, &dsc);
+        lv_zst2_draw(img->src, &dsc);
     }
 }
 
@@ -686,13 +634,13 @@ void lv_img_rle_set_src(lv_obj_t* obj, const char* src)
 }
 
 // =========================================================================
-// Main Micro-Chunk Streaming Draw Function
+// Main ZST2 Micro-Chunk Streaming Draw Function
 // =========================================================================
 
-static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
+static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
     // Step 1: Lookup or load tile descriptor
-    Lz4TileDesc_t* desc = cache_find(src);
+    TileDesc_t* desc = cache_find(src);
 
     if (!desc)
     {
@@ -716,8 +664,8 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     }
 
     // Step 3: Determine which 32-row chunks overlap local_y1 .. local_y2
-    int chunk_start = dsc->local_y1 / LZ4_CHUNK_ROWS;
-    int chunk_end   = dsc->local_y2 / LZ4_CHUNK_ROWS;
+    int chunk_start = dsc->local_y1 / TILE_CHUNK_ROWS;
+    int chunk_end   = dsc->local_y2 / TILE_CHUNK_ROWS;
     if (chunk_start < 0) chunk_start = 0;
     if (chunk_end >= (int)desc->chunk_count) chunk_end = (int)desc->chunk_count - 1;
 
@@ -745,146 +693,86 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 continue;
             }
 
-            if (desc->format == TILE_FMT_ZST2)
+            uint8_t mode = s_comp_chunk_buf[0];
+            s_mru_chunk.chunk_tier = mode;
+
+            if (mode == 0x01)
             {
-                uint8_t mode = s_comp_chunk_buf[0];
-                s_mru_chunk.chunk_tier = mode;
-
-                if (mode == 0x01)
+                // Tier 1: 4-bit packed micro-palette (≤16 colors)
+                uint8_t pal_cnt = s_comp_chunk_buf[1];
+                for (uint8_t pi = 0; pi < pal_cnt; pi++)
                 {
-                    // Tier 1: 4-bit packed micro-palette (≤16 colors)
-                    uint8_t pal_cnt = s_comp_chunk_buf[1];
-                    for (uint8_t pi = 0; pi < pal_cnt; pi++)
-                    {
-                        uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                        s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
-                    }
+                    uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
+                    s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                }
 
-                    size_t hdr_len = 2 + (size_t)pal_cnt * 2;
-                    // Decompress 4096 bytes of 4-bit indices into upper half of s_scratch_buf
-                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf + 8192, 4096,
-                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
-                    if (dec_bytes > 0)
+                size_t hdr_len = 2 + (size_t)pal_cnt * 2;
+                // Decompress 4096 bytes of 4-bit indices into upper half of s_scratch_buf
+                int dec_bytes = zstd_decompress_chunk(s_scratch_buf + 8192, 4096,
+                                                      s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                if (dec_bytes > 0)
+                {
+                    // Unpack 4-bit indices into s_scratch_buf[0..8191]
+                    const uint8_t* p4 = &s_scratch_buf[8192];
+                    for (int i = 0; i < 4096; i++)
                     {
-                        // Unpack 4-bit indices into s_scratch_buf[0..8191]
-                        const uint8_t* p4 = &s_scratch_buf[8192];
-                        for (int i = 0; i < 4096; i++)
-                        {
-                            uint8_t b = p4[i];
-                            s_scratch_buf[i * 2]     = b >> 4;
-                            s_scratch_buf[i * 2 + 1] = b & 0x0F;
-                        }
-                    }
-                    else
-                    {
-                        map_log("ZSTD Tier1 decompress failed on chunk %d", ci);
-                        continue;
+                        uint8_t b = p4[i];
+                        s_scratch_buf[i * 2]     = b >> 4;
+                        s_scratch_buf[i * 2 + 1] = b & 0x0F;
                     }
                 }
-                else if (mode == 0x02)
+                else
                 {
-                    // Tier 2: 8-bit micro-palette (17..256 colors)
-                    uint16_t pal_cnt = (uint16_t)s_comp_chunk_buf[1] + 1;
-                    for (uint16_t pi = 0; pi < pal_cnt; pi++)
-                    {
-                        uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
-                        s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
-                    }
-
-                    size_t hdr_len = 2 + (size_t)pal_cnt * 2;
-                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 8192,
-                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
-                    if (dec_bytes <= 0)
-                    {
-                        map_log("ZSTD Tier2 decompress failed on chunk %d", ci);
-                        continue;
-                    }
-                }
-                else if (mode == 0x03)
-                {
-                    // Tier 3: 16-bit G-decorrelated raw pixels (>256 colors)
-                    size_t hdr_len = 2;
-                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 16384,
-                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
-                    if (dec_bytes > 0)
-                    {
-                        // In-place Green-Decorrelation Inverse Transform
-                        uint16_t* px16 = (uint16_t*)s_scratch_buf;
-                        for (int i = 0; i < LZ4_TILE_SIZE * LZ4_CHUNK_ROWS; i++)
-                        {
-                            uint32_t val = px16[i];
-                            uint32_t dr5 = (val >> 11) & 0x1F;
-                            uint32_t g6  = (val >> 5) & 0x3F;
-                            uint32_t db5 = val & 0x1F;
-                            uint32_t half_g = g6 >> 1;
-                            uint32_t r5 = (dr5 + half_g) & 0x1F;
-                            uint32_t b5 = (db5 + half_g) & 0x1F;
-                            uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
-                            px16[i] = *(uint16_t*)&rgb565_to_lv_color(c565);
-                        }
-                    }
-                    else
-                    {
-                        map_log("ZSTD Tier3 decompress failed on chunk %d", ci);
-                        continue;
-                    }
-                }
-            }
-            else if (desc->format == TILE_FMT_LZ42)
-            {
-                s_mru_chunk.chunk_tier = 0;
-                int dec_bytes = LZ4_decompress_fast((const char*)s_comp_chunk_buf, (char*)s_scratch_buf, LZ4_TILE_SIZE * LZ4_CHUNK_ROWS);
-                if (dec_bytes <= 0)
-                {
-                    map_log("LZ4 decompress failed on chunk %d", ci);
+                    map_log("ZSTD Tier1 decompress failed on chunk %d", ci);
                     continue;
                 }
             }
-            else // TILE_FMT_RLE2
+            else if (mode == 0x02)
             {
-                s_mru_chunk.chunk_tier = 0;
-                uint32_t sp = 0, dp = 0;
-                const uint32_t target_pixels = LZ4_TILE_SIZE * LZ4_CHUNK_ROWS;
-                while (sp + 1 < chunk_comp_len && dp < target_pixels)
+                // Tier 2: 8-bit micro-palette (17..256 colors)
+                uint16_t pal_cnt = (uint16_t)s_comp_chunk_buf[1] + 1;
+                for (uint16_t pi = 0; pi < pal_cnt; pi++)
                 {
-                    uint32_t run_len = s_comp_chunk_buf[sp++];
-                    uint8_t idx      = s_comp_chunk_buf[sp++];
-                    if (dp + run_len > target_pixels)
-                    {
-                        run_len = target_pixels - dp;
-                    }
+                    uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
+                    s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                }
 
-                    if (run_len >= 8)
+                size_t hdr_len = 2 + (size_t)pal_cnt * 2;
+                int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 8192,
+                                                      s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                if (dec_bytes <= 0)
+                {
+                    map_log("ZSTD Tier2 decompress failed on chunk %d", ci);
+                    continue;
+                }
+            }
+            else if (mode == 0x03)
+            {
+                // Tier 3: 16-bit G-decorrelated raw pixels (>256 colors)
+                size_t hdr_len = 2;
+                int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 16384,
+                                                      s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                if (dec_bytes > 0)
+                {
+                    // In-place Green-Decorrelation Inverse Transform
+                    uint16_t* px16 = (uint16_t*)s_scratch_buf;
+                    for (int i = 0; i < TILE_SIZE * TILE_CHUNK_ROWS; i++)
                     {
-                        uint32_t val32 = (uint32_t)idx * 0x01010101u;
-                        while ((dp & 3) && run_len > 0)
-                        {
-                            s_scratch_buf[dp++] = idx;
-                            run_len--;
-                        }
-                        uint32_t* dp32 = (uint32_t*)&s_scratch_buf[dp];
-                        while (run_len >= 16)
-                        {
-                            dp32[0] = val32;
-                            dp32[1] = val32;
-                            dp32[2] = val32;
-                            dp32[3] = val32;
-                            dp32 += 4;
-                            run_len -= 16;
-                        }
-                        while (run_len >= 4)
-                        {
-                            *dp32++ = val32;
-                            run_len -= 4;
-                        }
-                        dp = (uint32_t)((uint8_t*)dp32 - s_scratch_buf);
+                        uint32_t val = px16[i];
+                        uint32_t dr5 = (val >> 11) & 0x1F;
+                        uint32_t g6  = (val >> 5) & 0x3F;
+                        uint32_t db5 = val & 0x1F;
+                        uint32_t half_g = g6 >> 1;
+                        uint32_t r5 = (dr5 + half_g) & 0x1F;
+                        uint32_t b5 = (db5 + half_g) & 0x1F;
+                        uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+                        px16[i] = *(uint16_t*)&rgb565_to_lv_color(c565);
                     }
-
-                    while (run_len > 0)
-                    {
-                        s_scratch_buf[dp++] = idx;
-                        run_len--;
-                    }
+                }
+                else
+                {
+                    map_log("ZSTD Tier3 decompress failed on chunk %d", ci);
+                    continue;
                 }
             }
 
@@ -893,18 +781,18 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         }
 
         // Render overlapping rows within this chunk
-        int chunk_row_start = ci * LZ4_CHUNK_ROWS;
+        int chunk_row_start = ci * TILE_CHUNK_ROWS;
         int row_min = (dsc->local_y1 > chunk_row_start) ? dsc->local_y1 : chunk_row_start;
-        int row_max = (dsc->local_y2 < chunk_row_start + LZ4_CHUNK_ROWS - 1) ? dsc->local_y2 : (chunk_row_start + LZ4_CHUNK_ROWS - 1);
+        int row_max = (dsc->local_y2 < chunk_row_start + TILE_CHUNK_ROWS - 1) ? dsc->local_y2 : (chunk_row_start + TILE_CHUNK_ROWS - 1);
         int blit_w = dsc->blit_w;
 
         // Path A: Tier 3 Direct 16-bit RGB565 memory copy
-        if (desc->format == TILE_FMT_ZST2 && s_mru_chunk.chunk_tier == 0x03)
+        if (s_mru_chunk.chunk_tier == 0x03)
         {
             for (int y = row_min; y <= row_max; y++)
             {
                 int row_in_chunk = y - chunk_row_start;
-                const lv_color_t* src_row_pixels = (const lv_color_t*)&s_scratch_buf[(row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1) * 2];
+                const lv_color_t* src_row_pixels = (const lv_color_t*)&s_scratch_buf[(row_in_chunk * TILE_SIZE + dsc->local_x1) * 2];
                 int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
                 lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
@@ -913,15 +801,13 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         }
         else
         {
-            // Path B: Palette lookup (Tier 1/2 Micro-palette or LZ42/RLE2 Global Palette)
-            const uint16_t* pal = (desc->format == TILE_FMT_ZST2)
-                                  ? (const uint16_t*)s_mru_chunk.micro_palette
-                                  : (const uint16_t*)desc->palette;
+            // Path B: Micro-Palette lookup (Tier 1 & Tier 2)
+            const uint16_t* pal = (const uint16_t*)s_mru_chunk.micro_palette;
 
             for (int y = row_min; y <= row_max; y++)
             {
                 int row_in_chunk = y - chunk_row_start;
-                const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1];
+                const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * TILE_SIZE + dsc->local_x1];
 
                 int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
                 lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
