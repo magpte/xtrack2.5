@@ -19,4 +19,7 @@
 - **Supported Special Symbols**: `! " # $ % & ' ( ) * + , - . / : ; < = > ? @ [ \ ] ^ _ ` { | } ~`
 - For angles: Display pure numeric degrees (e.g. `0`, `356`).
 
-
+## System Logging & Debugging Rules
+- **SD Card System Log**: All system diagnostic logs, serial output (`Serial.print/println/printf`), standard C `printf`, and module-specific logs (e.g. `map_log`, GPS, IMU, SD driver) MUST be routed and persisted to the SD card at `/system.log`.
+- **Zero Log Loss Principle**: Maintain RAM buffer for early boot stages so startup logs prior to SD card mount are never discarded.
+- **Unified Capture**: All serial streams from `HardwareSerial::write` must be mirrored to `HAL::SysLog_RawWrite` with `CONFIG_SD_SYS_LOG_ENABLE` enabled.
