@@ -94,7 +94,9 @@ void App_Init()
     Page::StatusBar_Create(lv_layer_top());
 
     /* Initialize pages */
+#if CONFIG_PAGE_TEMPLATE_ENABLE
     manager.Install("Template",    "Pages/_Template");
+#endif
     manager.Install("LiveMap",     "Pages/LiveMap");
     manager.Install("Dialplate",   "Pages/Dialplate");
     manager.Install("SystemInfos", "Pages/SystemInfos");
@@ -107,7 +109,13 @@ void App_Init()
 
 void App_Uninit()
 {
-    ACCOUNT_SEND_CMD(SysConfig, SYSCONFIG_CMD_SAVE);
-    ACCOUNT_SEND_CMD(Storage,   STORAGE_CMD_SAVE);
+    /* 1. Stop track recorder and finalize GPX file before saving config */
     ACCOUNT_SEND_CMD(Recorder,  RECORDER_CMD_STOP);
+
+    /* 2. Save system configuration and odometer/stats */
+    ACCOUNT_SEND_CMD(SysConfig, SYSCONFIG_CMD_SAVE);
+
+    /* 3. Save storage meta cache */
+    ACCOUNT_SEND_CMD(Storage,   STORAGE_CMD_SAVE);
 }
+

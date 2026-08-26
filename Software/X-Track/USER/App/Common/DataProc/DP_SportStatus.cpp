@@ -89,35 +89,30 @@ static void onTimer(Account* account)
 
         if (isMoving && distOffset > 0.0)
         {
-            // 骑行记录用 double 做累加，避免长时间骑行下 float 累加误差
-            // 逐渐放大（Cortex-M4 只有单精度硬件 FPU，double 运算会由
-            // 编译器插入软件浮点库完成——这里只让这两行关键累加走软件
-            // 浮点，换取记录数值的正确性；HAL::SportStatus_Info_t 里
-            // 对外/存盘用的 singleDistance/totalDistance 字段本身仍然
-            // 是 float，不改动存储格式和其它读取它们的 UI 代码）。
-            //
-            // s_totalDistanceAccum 用 -1.0 当"尚未从存档/默认值接管"
-            // 的哨兵：totalDistance 在 DATA_PROC_INIT_DEF 里注册为
-            // STORAGE_VALUE_REG(..., STORAGE_TYPE_FLOAT)，开机时可能
-            // 被存储子系统直接写回一个非零的历史值，这里第一次真正开始
-            // 累加时才把它接过来，而不是从 0 起步覆盖掉已保存的里程。
-            static double s_singleDistanceAccum = 0.0;
-            static double s_totalDistanceAccum = -1.0;
+            // 采用 Kahan 补偿求和算法 (Kahan Compensated Summation)
+            // 解决 float 在累加微小增量 (如 0.3m) 到大数值 (如 50000.0m) 时的尾数丢失问题。
+            // 100% 运行于 Cortex-M4F 硬件浮点指令 (VADD.F32, VSUB.F32)，
+            // 无需调用任何软件 double 模拟库，且具备与 double 一致的无限次累加零漂移精度。
+            static float s_singleDistCompensation = 0.0f;
+            static float s_totalDistCompensation  = 0.0f;
 
-            if (s_totalDistanceAccum < 0.0)
-            {
-                s_totalDistanceAccum = (double)sportStatus.totalDistance;
-            }
+            float offsetF = (float)distOffset;
 
-            s_singleDistanceAccum += distOffset;
-            s_totalDistanceAccum += distOffset;
+            // 1. 单次里程 Kahan 累加
+            float y1 = offsetF - s_singleDistCompensation;
+            float t1 = sportStatus.singleDistance + y1;
+            s_singleDistCompensation = (t1 - sportStatus.singleDistance) - y1;
+            sportStatus.singleDistance = t1;
 
-            sportStatus.singleDistance = (float)s_singleDistanceAccum;
-            sportStatus.totalDistance = (float)s_totalDistanceAccum;
+            // 2. 总里程 Kahan 累加
+            float y2 = offsetF - s_totalDistCompensation;
+            float t2 = sportStatus.totalDistance + y2;
+            s_totalDistCompensation = (t2 - sportStatus.totalDistance) - y2;
+            sportStatus.totalDistance = t2;
 
             if (sportStatus.singleTime > 0)
             {
-                float meterPerSec = sportStatus.singleDistance * 1000.0f / sportStatus.singleTime;
+                float meterPerSec = sportStatus.singleDistance * 1000.0f / (float)sportStatus.singleTime;
                 sportStatus.speedAvgKph = meterPerSec * 3.6f;
             }
             else

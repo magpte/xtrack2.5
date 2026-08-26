@@ -163,35 +163,15 @@ void DialplateView::Compass_Create(lv_obj_t* par)
     lv_obj_clear_flag(dial, LV_OBJ_FLAG_SCROLLABLE);
     ui.compass.dialBg = dial;
 
-    // Static Outer Ring (100x100px)
-    lv_obj_t* ring = lv_obj_create(dial);
-    lv_obj_remove_style_all(ring);
-    lv_obj_set_size(ring, 100, 100);
-    lv_obj_center(ring);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(ring, 2, 0);
-    lv_obj_set_style_border_color(ring, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
-    ui.compass.ring = ring;
-
-    // Line 1: Course Angle Number (bahnschrift_17)
+    // Center: Course Angle Number (bahnschrift_17)
     lv_obj_t* labelAngle = lv_label_create(cont);
     lv_obj_set_style_text_font(labelAngle, ResourcePool::GetFont("bahnschrift_17"), 0);
     lv_obj_set_style_text_color(labelAngle, lv_color_white(), 0);
     lv_label_set_text(labelAngle, "0");
-    lv_obj_align(labelAngle, LV_ALIGN_CENTER, 0, 5);
+    lv_obj_align(labelAngle, LV_ALIGN_CENTER, 0, 4);
     ui.compass.labelAngle = labelAngle;
 
-    // Line 2: Direction Text (bahnschrift_13)
-    lv_obj_t* labelDir = lv_label_create(cont);
-    lv_obj_set_style_text_font(labelDir, ResourcePool::GetFont("bahnschrift_13"), 0);
-    lv_obj_set_style_text_color(labelDir, lv_color_hex(0xaaaaaa), 0);
-    lv_label_set_text(labelDir, "N");
-    lv_obj_align(labelDir, LV_ALIGN_CENTER, 0, 24);
-    ui.compass.labelDir = labelDir;
-
-    // Register Draw Event Callback for Compass Center Red Pointer & N/S/E/W Markers
+    // Register Draw Event Callback for Compass Center Red Pointer, 16-Division Ticks & N/S/E/W Markers
     compassCourse = -1.0f;
     lv_obj_add_event_cb(dial, onCompassDraw, LV_EVENT_DRAW_POST_END, this);
 }
@@ -225,7 +205,7 @@ void DialplateView::onCompassDraw(lv_event_t* event)
 
     lv_coord_t cx = plotArea.x1 + 50;
     lv_coord_t cy = plotArea.y1 + 50;
-    lv_coord_t R = 42; // Outer Ring Radius
+    lv_coord_t R_outer = 45; // Outer circle radius
 
     float course = view->compassCourse;
     if (course < 0) course = 0.0f;
@@ -234,11 +214,72 @@ void DialplateView::onCompassDraw(lv_event_t* event)
     while (rel_angle_N < 0) rel_angle_N += 360;
     while (rel_angle_N >= 360) rel_angle_N -= 360;
 
-    // 1. Draw N Red Circle Badge
+    // 1. 绘制罗盘外圈圆形轮廓 (Outer Ring Frame)
+    lv_draw_rect_dsc_t ring_dsc;
+    lv_draw_rect_dsc_init(&ring_dsc);
+    ring_dsc.bg_opa = LV_OPA_TRANSP;
+    ring_dsc.border_width = 1;
+    ring_dsc.border_color = lv_color_hex(0x444444);
+    ring_dsc.border_opa = LV_OPA_60;
+    ring_dsc.radius = LV_RADIUS_CIRCLE;
+
+    lv_area_t ringArea;
+    ringArea.x1 = cx - R_outer;
+    ringArea.y1 = cy - R_outer;
+    ringArea.x2 = cx + R_outer;
+    ringArea.y2 = cy + R_outer;
+    lv_draw_rect(draw_ctx, &ring_dsc, &ringArea);
+
+    // 2. 绘制 16 分度专业刻度线盘（长短粗细交替）
+    // 0°/90°/180°/270°: 主方位长刻度 (长8px, 宽2px)
+    // 45°/135°/225°/315°: 副方位中刻度 (长6px, 宽1px)
+    // 22.5°/67.5°/...: 次级分度短刻度 (长4px, 宽1px)
+    lv_draw_line_dsc_t tick_dsc;
+    lv_draw_line_dsc_init(&tick_dsc);
+
+    for (int i = 0; i < 16; i++)
+    {
+        int16_t angle = (int16_t)(rel_angle_N + (i * 45) / 2);
+        while (angle < 0) angle += 360;
+        while (angle >= 360) angle -= 360;
+
+        int32_t sin_a = (int32_t)lv_trigo_sin(angle);
+        int32_t cos_a = (int32_t)lv_trigo_cos(angle);
+
+        lv_coord_t r_in;
+        if (i % 4 == 0) // 0°, 90°, 180°, 270° 主方位
+        {
+            r_in = R_outer - 8;
+            tick_dsc.width = 2;
+            tick_dsc.color = (i == 0) ? lv_color_hex(0xE74C3C) : lv_color_hex(0xCCCCCC);
+            tick_dsc.opa = LV_OPA_COVER;
+        }
+        else if (i % 2 == 0) // 45°, 135°, 225°, 315° 副方位
+        {
+            r_in = R_outer - 6;
+            tick_dsc.width = 1;
+            tick_dsc.color = lv_color_hex(0x888888);
+            tick_dsc.opa = LV_OPA_80;
+        }
+        else // 22.5° 次级刻度
+        {
+            r_in = R_outer - 4;
+            tick_dsc.width = 1;
+            tick_dsc.color = lv_color_hex(0x555555);
+            tick_dsc.opa = LV_OPA_50;
+        }
+
+        lv_point_t p_out = { (lv_coord_t)(cx + (((int32_t)R_outer * sin_a) >> 15)), (lv_coord_t)(cy - (((int32_t)R_outer * cos_a) >> 15)) };
+        lv_point_t p_in  = { (lv_coord_t)(cx + (((int32_t)r_in    * sin_a) >> 15)), (lv_coord_t)(cy - (((int32_t)r_in    * cos_a) >> 15)) };
+        lv_draw_line(draw_ctx, &tick_dsc, &p_out, &p_in);
+    }
+
+    // 3. 绘制 N 极鲜红醒目标识 (Red Badge)
     int32_t sin_N = (int32_t)lv_trigo_sin(rel_angle_N);
     int32_t cos_N = (int32_t)lv_trigo_cos(rel_angle_N);
-    lv_coord_t nx = cx + (lv_coord_t)(((int32_t)R * sin_N) >> 15);
-    lv_coord_t ny = cy - (lv_coord_t)(((int32_t)R * cos_N) >> 15);
+    lv_coord_t r_badge = 32;
+    lv_coord_t nx = cx + (lv_coord_t)(((int32_t)r_badge * sin_N) >> 15);
+    lv_coord_t ny = cy - (lv_coord_t)(((int32_t)r_badge * cos_N) >> 15);
 
     lv_draw_rect_dsc_t n_bg_dsc;
     lv_draw_rect_dsc_init(&n_bg_dsc);
@@ -247,10 +288,10 @@ void DialplateView::onCompassDraw(lv_event_t* event)
     n_bg_dsc.radius = LV_RADIUS_CIRCLE;
 
     lv_area_t n_area;
-    n_area.x1 = nx - 8;
-    n_area.y1 = ny - 8;
-    n_area.x2 = n_area.x1 + 15;
-    n_area.y2 = n_area.y1 + 15;
+    n_area.x1 = nx - 7;
+    n_area.y1 = ny - 7;
+    n_area.x2 = n_area.x1 + 13;
+    n_area.y2 = n_area.y1 + 13;
     lv_draw_rect(draw_ctx, &n_bg_dsc, &n_area);
 
     lv_draw_label_dsc_t label_dsc;
@@ -260,11 +301,11 @@ void DialplateView::onCompassDraw(lv_event_t* event)
 
     lv_area_t txt_area = n_area;
     txt_area.x1 += 3;
-    txt_area.y1 += 1;
+    txt_area.y1 += 0;
     lv_draw_label(draw_ctx, &label_dsc, &txt_area, "N", nullptr);
 
-    // 2. Draw S, W, E Markers
-    label_dsc.color = lv_color_hex(0xDDDDDD);
+    // 4. 绘制 S, W, E 方位文字标
+    label_dsc.color = lv_color_hex(0xBBBBBB);
     const struct { int16_t add_angle; const char* txt; } markers[] = {
         { 180, "S" },
         { 270, "W" },
@@ -279,22 +320,22 @@ void DialplateView::onCompassDraw(lv_event_t* event)
 
         int32_t sin_m = (int32_t)lv_trigo_sin(angle);
         int32_t cos_m = (int32_t)lv_trigo_cos(angle);
-        lv_coord_t mx = cx + (lv_coord_t)(((int32_t)R * sin_m) >> 15);
-        lv_coord_t my = cy - (lv_coord_t)(((int32_t)R * cos_m) >> 15);
+        lv_coord_t mx = cx + (lv_coord_t)(((int32_t)r_badge * sin_m) >> 15);
+        lv_coord_t my = cy - (lv_coord_t)(((int32_t)r_badge * cos_m) >> 15);
 
         lv_area_t m_area;
-        m_area.x1 = mx - 5;
-        m_area.y1 = my - 7;
+        m_area.x1 = mx - 4;
+        m_area.y1 = my - 6;
         m_area.x2 = m_area.x1 + 12;
         m_area.y2 = m_area.y1 + 14;
         lv_draw_label(draw_ctx, &label_dsc, &m_area, markers[i].txt, nullptr);
     }
 
-    // 3. Draw Center Red Pointer Triangle (3 points, zero dynamic buffer allocations)
+    // 5. 绘制中心红色指向三角标 (12 点钟行进航向顶端指示)
     lv_point_t arrow_pts[3];
     arrow_pts[0].x = cx;       arrow_pts[0].y = cy - 24; // Tip
-    arrow_pts[1].x = cx - 6;   arrow_pts[1].y = cy - 10; // Left wing
-    arrow_pts[2].x = cx + 6;   arrow_pts[2].y = cy - 10; // Right wing
+    arrow_pts[1].x = cx - 5;   arrow_pts[1].y = cy - 11; // Left wing
+    arrow_pts[2].x = cx + 5;   arrow_pts[2].y = cy - 11; // Right wing
 
     lv_draw_rect_dsc_t arrow_dsc;
     lv_draw_rect_dsc_init(&arrow_dsc);
@@ -325,8 +366,25 @@ void DialplateView::BtnCont_Create(lv_obj_t* par)
     ui.btnCont.btnMenu = Btn_Create(cont, ResourcePool::GetImage("menu"), 80);
 }
 
+static lv_style_transition_dsc_t s_btnTran;
+static const lv_style_prop_t     s_btnTranProp[] = { LV_STYLE_WIDTH, LV_STYLE_HEIGHT, LV_STYLE_PROP_INV };
+static bool                      s_btnTranInited = false;
+
 lv_obj_t* DialplateView::Btn_Create(lv_obj_t* par, const void* img_src, lv_coord_t x_ofs)
 {
+    if (!s_btnTranInited)
+    {
+        lv_style_transition_dsc_init(
+            &s_btnTran,
+            s_btnTranProp,
+            lv_anim_path_ease_out,
+            200,
+            0,
+            nullptr
+        );
+        s_btnTranInited = true;
+    }
+
     lv_obj_t* obj = lv_obj_create(par);
     lv_obj_remove_style_all(obj);
     lv_obj_set_size(obj, 40, 31);
@@ -343,18 +401,8 @@ lv_obj_t* DialplateView::Btn_Create(lv_obj_t* par, const void* img_src, lv_coord
     lv_obj_set_style_bg_color(obj, lv_color_hex(0xff931e), LV_STATE_FOCUSED);
     lv_obj_set_style_radius(obj, 9, 0);
 
-    static lv_style_transition_dsc_t tran;
-    static const lv_style_prop_t prop[] = { LV_STYLE_WIDTH, LV_STYLE_HEIGHT, LV_STYLE_PROP_INV};
-    lv_style_transition_dsc_init(
-        &tran,
-        prop,
-        lv_anim_path_ease_out,
-        200,
-        0,
-        nullptr
-    );
-    lv_obj_set_style_transition(obj, &tran, LV_STATE_PRESSED);
-    lv_obj_set_style_transition(obj, &tran, LV_STATE_FOCUSED);
+    lv_obj_set_style_transition(obj, &s_btnTran, LV_STATE_PRESSED);
+    lv_obj_set_style_transition(obj, &s_btnTran, LV_STATE_FOCUSED);
 
     lv_obj_update_layout(obj);
 

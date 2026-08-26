@@ -171,6 +171,13 @@ void LiveMapView::SetLineActivePoint(lv_coord_t x, lv_coord_t y)
     lv_line_set_points(ui.track.lineActive, ui.track.pointActive, 2);
 }
 
+void LiveMapView::ClearLineActivePoint()
+{
+    ui.track.pointActive[0] = { 0, 0 };
+    ui.track.pointActive[1] = { 0, 0 };
+    lv_line_set_points(ui.track.lineActive, nullptr, 0);
+}
+
 void LiveMapView::ZoomCtrl_Create(lv_obj_t* par)
 {
     lv_obj_t* cont = lv_obj_create(par);

@@ -164,22 +164,13 @@ void Dialplate::Update()
     float course = Model.GetCourse();
     View.SetCompassCourse(course);
 
-    // Line 1: Course Angle Number (e.g. "346")
+    // Center Course Heading Angle (e.g. "0", "346")
     snprintf(tmpBuf, sizeof(tmpBuf), "%d", (int)course);
     if (strcmp(cache.headingStr, tmpBuf) != 0)
     {
         strncpy(cache.headingStr, tmpBuf, sizeof(cache.headingStr) - 1);
         cache.headingStr[sizeof(cache.headingStr) - 1] = '\0';
         lv_label_set_text(View.ui.compass.labelAngle, cache.headingStr);
-    }
-
-    // Line 2: Direction Text (e.g. "NE")
-    const char* dirStr = Model.GetCourseDirection();
-    if (strcmp(cache.courseStr, dirStr) != 0)
-    {
-        strncpy(cache.courseStr, dirStr, sizeof(cache.courseStr) - 1);
-        cache.courseStr[sizeof(cache.courseStr) - 1] = '\0';
-        lv_label_set_text(View.ui.compass.labelDir, cache.courseStr);
     }
 }
 
@@ -213,6 +204,12 @@ void Dialplate::onRecord(bool longPress)
             Model.RecorderCommand(Model.REC_START);
             SetBtnRecImgSrc("pause");
             recState = RECORD_STATE_RUN;
+        }
+        else
+        {
+            // 短按在 READY 状态没有实际操作（需要长按才能开始录制），
+            // 但给用户一个轻提示音，避免"按了没反应"的误解。
+            HAL::Buzz_Tone(500, 15);
         }
         break;
     case RECORD_STATE_RUN:

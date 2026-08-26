@@ -116,31 +116,60 @@ static void StatusBar_FpsMonitorCb(lv_disp_drv_t *drv, uint32_t time, uint32_t p
 }
 #endif
 
+/* 状态栏脏数据缓存：仅在数值真正改变时才调用 lv_label_set_text_fmt，
+ * 避免每 1 秒无条件标记脏区域、触发重绘和 SPI 传输。
+ * 静止待机时（时间/卫星/电量不变）StatusBar 达到真正 0 重绘。 */
+static struct {
+    int  satellites;
+    int  clockHour;
+    int  clockMin;
+    int  battUsage;
+    bool sdDetect;
+    bool inited;
+} s_sbCache;
+
 static void StatusBar_Update(lv_timer_t *timer) {
   /* satellite */
   HAL::GPS_Info_t gps;
   if (actStatusBar->Pull("GPS", &gps, sizeof(gps)) == Account::RES_OK) {
-    lv_label_set_text_fmt(ui.satellite.label, "%d", gps.satellites);
+    if (!s_sbCache.inited || gps.satellites != s_sbCache.satellites) {
+      s_sbCache.satellites = gps.satellites;
+      lv_label_set_text_fmt(ui.satellite.label, "%d", gps.satellites);
+    }
   }
 
   DataProc::Storage_Basic_Info_t sdInfo;
   if (actStatusBar->Pull("Storage", &sdInfo, sizeof(sdInfo)) ==
       Account::RES_OK) {
-    sdInfo.isDetect ? lv_obj_clear_state(ui.imgSD, LV_STATE_DISABLED)
-                    : lv_obj_add_state(ui.imgSD, LV_STATE_DISABLED);
+    if (!s_sbCache.inited || sdInfo.isDetect != s_sbCache.sdDetect) {
+      s_sbCache.sdDetect = sdInfo.isDetect;
+      sdInfo.isDetect ? lv_obj_clear_state(ui.imgSD, LV_STATE_DISABLED)
+                      : lv_obj_add_state(ui.imgSD, LV_STATE_DISABLED);
+    }
   }
 
   /* clock */
   HAL::Clock_Info_t clock;
   if (actStatusBar->Pull("Clock", &clock, sizeof(clock)) == Account::RES_OK) {
-    lv_label_set_text_fmt(ui.labelClock, "%02d:%02d", clock.hour, clock.minute);
+    if (!s_sbCache.inited ||
+        clock.hour   != s_sbCache.clockHour ||
+        clock.minute != s_sbCache.clockMin) {
+      s_sbCache.clockHour = clock.hour;
+      s_sbCache.clockMin  = clock.minute;
+      lv_label_set_text_fmt(ui.labelClock, "%02d:%02d", clock.hour, clock.minute);
+    }
   }
 
   /* battery */
   HAL::Power_Info_t power;
   if (actStatusBar->Pull("Power", &power, sizeof(power)) == Account::RES_OK) {
-    lv_label_set_text_fmt(ui.battery.label, "%d", power.usage);
+    if (!s_sbCache.inited || power.usage != s_sbCache.battUsage) {
+      s_sbCache.battUsage = power.usage;
+      lv_label_set_text_fmt(ui.battery.label, "%d", power.usage);
+    }
   }
+
+  s_sbCache.inited = true;
 
   bool Is_BattCharging = power.isCharging;
   lv_obj_t *contBatt = ui.battery.objUsage;
@@ -198,16 +227,16 @@ static void StatusBar_Update(lv_timer_t *timer) {
 #endif
 }
 
+
 static void StatusBar_StyleInit(lv_obj_t *cont) {
-  /* style1 */
+  /* style1: 默认透明背景，用于表盘页等深色背景页面 */
   lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(cont, lv_color_hex(0x333333), LV_STATE_DEFAULT);
 
-  /* style2 */
+  /* style2: 沉浸式半透明深色磨砂背景，用于地图页覆盖在彩色瓦片之上。
+   * 移除突兀的 shadow_width，消除页面切换时先瞬间弹出的黑色横线伪影。 */
   lv_obj_set_style_bg_opa(cont, LV_OPA_60, LV_STATE_USER_1);
   lv_obj_set_style_bg_color(cont, lv_color_black(), LV_STATE_USER_1);
-  lv_obj_set_style_shadow_color(cont, lv_color_black(), LV_STATE_USER_1);
-  lv_obj_set_style_shadow_width(cont, 10, LV_STATE_USER_1);
 
   static lv_style_transition_dsc_t tran;
   static const lv_style_prop_t prop[] = {LV_STYLE_BG_COLOR, LV_STYLE_BG_OPA,

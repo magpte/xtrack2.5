@@ -38,12 +38,12 @@ public:
         this->dT = dt;
         if (cutoff > 0.001f)
         {
-            float RC = 1 / (2 * 3.141592653f * cutoff);
+            float RC = 1.0f / (2.0f * 3.1415926535f * cutoff);
             this->rc = dt / (RC + dt);
         }
         else
         {
-            this->rc = 1;
+            this->rc = 1.0f;
         }
     }
 
@@ -55,7 +55,7 @@ public:
         }
         else
         {
-            this->lastValue = (this->lastValue + (value - this->lastValue) * this->rc);
+            this->lastValue = (T)(this->lastValue + (value - this->lastValue) * this->rc);
             return this->lastValue;
         }
     }

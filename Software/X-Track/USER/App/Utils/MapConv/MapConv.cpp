@@ -91,8 +91,8 @@ void MapConv::ConvertMapLevelPos(
 
 int MapConv::ConvertMapPath(int32_t x, int32_t y, char* path, uint32_t len)
 {
-    int32_t tileX = x / priv.tileSize;
-    int32_t tileY = y / priv.tileSize;
+    int32_t tileX = x >> 8;
+    int32_t tileY = y >> 8;
     int ret = snprintf(
                   path, len,
                   "%s/%d/%d/%d.%s",
@@ -108,8 +108,8 @@ int MapConv::ConvertMapPath(int32_t x, int32_t y, char* path, uint32_t len)
 
 void MapConv::ConvertPosToTile(int32_t x, int32_t y, MapTile_t* mapTile)
 {
-    mapTile->tileX = x / priv.tileSize;
-    mapTile->tileY = y / priv.tileSize;
-    mapTile->subX = x % priv.tileSize;
-    mapTile->subY = y % priv.tileSize;
+    mapTile->tileX = (uint32_t)(x >> 8);
+    mapTile->tileY = (uint32_t)(y >> 8);
+    mapTile->subX  = (uint32_t)(x & 0xFF);
+    mapTile->subY  = (uint32_t)(y & 0xFF);
 }

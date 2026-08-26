@@ -41,26 +41,37 @@ double TileSystem::MapScale(double latitude, int levelOfDetail, int screenDpi)
 
 void TileSystem::LatLongToPixelXY(double latitude, double longitude, int levelOfDetail, int* pixelX, int* pixelY)
 {
-    double lat = latitude < -85.05112878 ? -85.05112878 : (latitude > 85.05112878 ? 85.05112878 : latitude);
-    double lon = longitude < -180.0 ? -180.0 : (longitude > 180.0 ? 180.0 : longitude);
+    if (latitude < -85.05112878) latitude = -85.05112878;
+    else if (latitude > 85.05112878) latitude = 85.05112878;
+    if (longitude < -180.0) longitude = -180.0;
+    else if (longitude > 180.0) longitude = 180.0;
 
-    double x = (lon + 180.0) / 360.0;
-    double sinLatitude = sin(lat * (3.14159265358979323846 / 180.0));
+    double x = (longitude + 180.0) * (1.0 / 360.0);
+    double sinLatitude = sin(latitude * (3.14159265358979323846 / 180.0));
     if (sinLatitude < -0.9999) sinLatitude = -0.9999;
     if (sinLatitude > 0.9999) sinLatitude = 0.9999;
-    double y = 0.5 - log((1.0 + sinLatitude) / (1.0 - sinLatitude)) / (4.0 * 3.14159265358979323846);
+    double y = 0.5 - log((1.0 + sinLatitude) / (1.0 - sinLatitude)) * (1.0 / (4.0 * 3.14159265358979323846));
 
-    uint32_t mapSize = MapSize(levelOfDetail);
-    double mapSize_d = (double)mapSize;
-    double px = x * mapSize_d + 0.5;
-    double py = y * mapSize_d + 0.5;
-    if (px < 0.0) px = 0.0;
-    if (px > mapSize_d - 1.0) px = mapSize_d - 1.0;
-    if (py < 0.0) py = 0.0;
-    if (py > mapSize_d - 1.0) py = mapSize_d - 1.0;
+    uint32_t numTiles = (uint32_t)1 << levelOfDetail;
+    double numTiles_d = (double)numTiles;
 
-    *pixelX = (int)px;
-    *pixelY = (int)py;
+    double totalTileX = x * numTiles_d;
+    double totalTileY = y * numTiles_d;
+
+    uint32_t tileX = (uint32_t)totalTileX;
+    uint32_t tileY = (uint32_t)totalTileY;
+    if (tileX >= numTiles) tileX = numTiles - 1;
+    if (tileY >= numTiles) tileY = numTiles - 1;
+
+    double subX = (totalTileX - (double)tileX) * 256.0;
+    double subY = (totalTileY - (double)tileY) * 256.0;
+    int32_t isubX = (int32_t)subX;
+    int32_t isubY = (int32_t)subY;
+    if (isubX < 0) isubX = 0; else if (isubX > 255) isubX = 255;
+    if (isubY < 0) isubY = 0; else if (isubY > 255) isubY = 255;
+
+    *pixelX = (int32_t)((tileX << 8) | (uint32_t)isubX);
+    *pixelY = (int32_t)((tileY << 8) | (uint32_t)isubY);
 }
 
 void TileSystem::PixelXYToLatLong(int pixelX, int pixelY, int levelOfDetail, double* latitude, double* longitude)
@@ -76,20 +87,20 @@ void TileSystem::PixelXYToLatLong(int pixelX, int pixelY, int levelOfDetail, dou
     double x = (px / mapSize) - 0.5;
     double y = 0.5 - (py / mapSize);
 
-    *latitude = 90.0 - 360.0 * atan(exp(-y * 2.0 * 3.14159265358979323846)) / 3.14159265358979323846;
+    *latitude = 90.0 - 360.0 * atan(exp(-y * 2.0 * 3.14159265358979323846)) * (1.0 / 3.14159265358979323846);
     *longitude = 360.0 * x;
 }
 
 void TileSystem::PixelXYToTileXY(int pixelX, int pixelY, int* tileX, int* tileY)
 {
-    *tileX = pixelX / 256;
-    *tileY = pixelY / 256;
+    *tileX = pixelX >> 8;
+    *tileY = pixelY >> 8;
 }
  
 void TileSystem::TileXYToPixelXY(int tileX, int tileY, int* pixelX, int* pixelY)
 {
-    *pixelX = tileX * 256;
-    *pixelY = tileY * 256;
+    *pixelX = tileX << 8;
+    *pixelY = tileY << 8;
 }
 
 void TileSystem::TileXYToQuadKey(int tileX, int tileY, int levelOfDetail, char* quadKeyBuffer, uint32_t len)

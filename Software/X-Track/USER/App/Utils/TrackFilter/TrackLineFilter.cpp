@@ -54,6 +54,37 @@ void TrackLineFilter::Reset()
     SendEvent(EVENT_RESET, nullptr);
 }
 
+static inline bool GetIsSegmentIntersectArea(const TrackLineFilter::Area_t* area, const TrackLineFilter::Point_t* p0, const TrackLineFilter::Point_t* p1)
+{
+    int32_t minX = (p0->x < p1->x) ? p0->x : p1->x;
+    int32_t maxX = (p0->x > p1->x) ? p0->x : p1->x;
+    int32_t minY = (p0->y < p1->y) ? p0->y : p1->y;
+    int32_t maxY = (p0->y > p1->y) ? p0->y : p1->y;
+
+    if (maxX < area->x0 || minX > area->x1 || maxY < area->y0 || minY > area->y1)
+    {
+        return false;
+    }
+
+    int64_t dx = (int64_t)p1->x - p0->x;
+    int64_t dy = (int64_t)p1->y - p0->y;
+    if (dx == 0 && dy == 0) return false;
+
+    int64_t c1 = dx * ((int64_t)area->y0 - p0->y) - dy * ((int64_t)area->x0 - p0->x);
+    int64_t c2 = dx * ((int64_t)area->y0 - p0->y) - dy * ((int64_t)area->x1 - p0->x);
+    int64_t c3 = dx * ((int64_t)area->y1 - p0->y) - dy * ((int64_t)area->x0 - p0->x);
+    int64_t c4 = dx * ((int64_t)area->y1 - p0->y) - dy * ((int64_t)area->x1 - p0->x);
+
+    bool allPos = (c1 > 0 && c2 > 0 && c3 > 0 && c4 > 0);
+    bool allNeg = (c1 < 0 && c2 < 0 && c3 < 0 && c4 < 0);
+    if (allPos || allNeg)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 void TrackLineFilter::PushPoint(const Point_t* point)
 {
     if (GetIsPointInArea(&priv.clipArea, point))
@@ -72,6 +103,16 @@ void TrackLineFilter::PushPoint(const Point_t* point)
         if (priv.inArea)
         {
             SendEvent(EVENT_END_LINE, point);
+            priv.lineCount++;
+            priv.inArea = false;
+        }
+        else if (priv.pointCnt > 0 && GetIsSegmentIntersectArea(&priv.clipArea, &priv.prePoint, point))
+        {
+            // 穿屏长线段：两端点虽都在视口外，但中间线段横穿视口，单独生成一段跨屏线
+            // 注意：EVENT_END_LINE 传 nullptr，避免 onTrackLineEvent 再次追加终点造成重复
+            SendEvent(EVENT_START_LINE, &priv.prePoint);
+            SendEvent(EVENT_APPEND_POINT, point);
+            SendEvent(EVENT_END_LINE, nullptr);
             priv.lineCount++;
             priv.inArea = false;
         }

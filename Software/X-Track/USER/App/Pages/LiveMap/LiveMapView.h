@@ -69,6 +69,7 @@ public:
     void SetMapTileSrc(uint32_t index, const char* src);
     void SetArrowTheme(const char* theme);
     void SetLineActivePoint(lv_coord_t x, lv_coord_t y);
+    void ClearLineActivePoint();
 
 private:
     void Style_Create();

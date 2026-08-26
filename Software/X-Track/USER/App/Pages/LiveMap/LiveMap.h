@@ -60,6 +60,16 @@ private:
 
         // 实时平滑轨迹点基准
         TileConv::Point_t lastLiveTrackPoint;
+
+        // 轨迹渲染屏幕像素抽稀基准点与当前阈值平方
+        TileConv::Point_t lastFilterPoint;
+        int32_t trackMinDistSq;
+
+        // LKP (Last Known Position) 保护机制：记录最后一次真实有效的 GPS 坐标与瓦片像素位置
+        bool hasLastValidPos;
+        double lastValidLongitude;
+        double lastValidLatitude;
+        TileConv::Point_t lastValidMapPos;
     } priv;
 
 

@@ -24,6 +24,25 @@
 #define __CONFIG_H
 
 /*=========================
+   UI Font & Character Set Configuration & Guidelines
+ *=========================
+ * 固件内置的 Bahnschrift 字体系列 (13px, 17px, 32px, 65px)
+ * 为节省 Flash 空间，仅收录了标准 ASCII 字符集 (Unicode 0x0020 ~ 0x007E，共 95 个字符)。
+ *
+ * 【系统支持且可正常显示的特殊符号/标点 (标准 ASCII 32~126)】
+ *   !  "  #  $  %  &  '  (  )  *  +  ,  -  .  /
+ *   :  ;  <  =  >  ?  @
+ *   [  \  ]  ^  _  `
+ *   {  |  }  ~
+ *
+ * 【系统不支持的非 ASCII 特殊字符（严禁在 UI Label 中直接使用）】
+ *   - 度数符号 '°' (U+00B0)  --> 无法识别，请直接显示数字（如 "356" 或 "0"）
+ *   - 摄氏度 '℃' (U+2103)   --> 无法识别，请使用 "C" 或 "degC"
+ *   - 箭头符号 '↑' '↓' '←' '→' --> 无法识别，请使用 LVGL 图像或 Polygon 矢量绘制
+ *   - 中文字符 / 日韩字符 / 扩展拉丁字符 --> 无法识别
+ *=========================*/
+
+/*=========================
    Application configuration
  *=========================*/
 
@@ -61,13 +80,18 @@
 // 像素死区过滤阈值（单位：像素）。设置为 1 保持地图背景与箭头图标无迟滞同步
 #define CONFIG_LIVE_MAP_DEADBAND_THRESHOLD    1
 
-// 轨迹渲染时的屏幕空间抽稀间距阈值（单位：像素）
-#define CONFIG_TRACK_LINE_SIMPLIFY_MIN_DIST   2
+// 全局统一最高精度轨迹存储基准层级（Level 18，地面分辨率 0.52m/px）
+#define CONFIG_TRACK_BASE_LEVEL               18
+
+// 轨迹特征拐点提取阈值（Level 18 坐标系下，1 像素 ≈ 0.52 米）
+#define CONFIG_TRACK_FILTER_OFFSET_THRESHOLD  1
+
+// 远景/大范围视图（Level 1~16）屏幕像素空间自适应抽稀间距平方阈值（2px ^ 2 = 4）
+#define CONFIG_TRACK_SIMPLIFY_MIN_DIST_SQ     4
 
 #define CONFIG_GPS_LONGITUDE_DEFAULT          113.055735
 #define CONFIG_GPS_LATITUDE_DEFAULT           23.011105
 
-#define CONFIG_TRACK_FILTER_OFFSET_THRESHOLD  2 // pixel
 #define CONFIG_TRACK_RECORD_FILE_DIR_NAME     "Track"
 
 // 原始 NMEA 语句日志目录（采用短目录 "N"，配合 8.3 SFN 格式极速读写）。
@@ -110,4 +134,8 @@
 #  define CONFIG_MONKEY_INPUT_RANGE_MAX       5
 #endif
 
+#define CONFIG_PAGE_TEMPLATE_ENABLE           0
+
 #endif
+
+

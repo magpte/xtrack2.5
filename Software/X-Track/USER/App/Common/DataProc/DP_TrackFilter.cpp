@@ -144,9 +144,11 @@ static void onPublish(Account* account, HAL::GPS_Info_t* gps)
                     // 惯性平滑阻力轻微衰减
                     trackFilter.drSpeedKph *= 0.995f;
 
-                    // 距离推算 (米 -> Level 16 瓦片像素，1像素约为 2.388 米)
-                    float distMeters = (trackFilter.drSpeedKph * 1000.0f / 3600.0f) * dt;
-                    float distPixels = distMeters / 2.388f;
+                    // 距离推算 (米 -> 瓦片像素，根据当前 MapConv 缩放层级自适应地面分辨率，Level 18 约 0.52m/px)
+                    float distMeters = (trackFilter.drSpeedKph * (1000.0f / 3600.0f)) * dt;
+                    float groundRes = (float)Microsoft_MapPoint::TileSystem::GroundResolution(30.0, trackFilter.mapConv.GetLevel());
+                    if (groundRes < 0.05f) groundRes = 0.52f;
+                    float distPixels = distMeters / groundRes;
                     float rad = trackFilter.drCourse * (3.14159265f / 180.0f);
 
                     trackFilter.drMapX += distPixels * sinf(rad);
@@ -219,6 +221,6 @@ DATA_PROC_INIT_DEF(TrackFilter)
     trackFilter.hasLastValidGps = false;
     trackFilter.isDeadReckoning = false;
 
-    trackFilter.mapConv.SetLevel(CONFIG_LIVE_MAP_LEVEL_DEFAULT);
+    trackFilter.mapConv.SetLevel(CONFIG_TRACK_BASE_LEVEL);
     trackFilter.pointFilter.SetOffsetThreshold(CONFIG_TRACK_FILTER_OFFSET_THRESHOLD);
 }

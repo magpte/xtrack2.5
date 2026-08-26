@@ -92,8 +92,15 @@ void lv_poly_line::append_to_end(const lv_point_t* point)
     single_line_t* single_line = get_end_line();
     if (single_line == nullptr)
     {
-        LV_LOG_ERROR("failed");
-        return;
+        // 容错自愈：尚无已完成折线时，检查 current_index 处是否已有开放（已start但未stop）的活动折线
+        // 若无（points为空），则调用 start() 初始化（可见性+重置）；若有，则直接复用，持续追加 GPS 点
+        // 不调用 stop()，使该线段保持"开放"状态，下一帧 GPS 到来时自然累积，2点后即可被 LVGL 渲染
+        if (poly_line.size() == 0 || current_index >= poly_line.size() ||
+            poly_line[current_index].points.empty())
+        {
+            start();
+        }
+        single_line = &poly_line[current_index];
     }
 
     std::vector<lv_point_t>& pts = single_line->points;

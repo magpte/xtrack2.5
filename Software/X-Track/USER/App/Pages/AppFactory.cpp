@@ -21,27 +21,35 @@
  * SOFTWARE.
  */
 #include "AppFactory.h"
+#include "Config/Config.h"
+
+#if CONFIG_PAGE_TEMPLATE_ENABLE
 #include "_Template/Template.h"
+#endif
+
 #include "LiveMap/LiveMap.h"
 #include "Dialplate/Dialplate.h"
 #include "SystemInfos/SystemInfos.h"
 #include "Startup/Startup.h"
-
-#define APP_CLASS_MATCH(className)\
-do{\
-    if (strcmp(name, #className) == 0)\
-    {\
-        return new Page::className;\
-    }\
-}while(0)
+#include <string.h>
 
 PageBase* AppFactory::CreatePage(const char* name)
 {
-    APP_CLASS_MATCH(Template);
-    APP_CLASS_MATCH(LiveMap);
-    APP_CLASS_MATCH(Dialplate);
-    APP_CLASS_MATCH(SystemInfos);
-    APP_CLASS_MATCH(Startup);
+    static Page::Startup     pageStartup;
+    static Page::Dialplate   pageDialplate;
+    static Page::LiveMap     pageLiveMap;
+    static Page::SystemInfos pageSystemInfos;
+
+#if CONFIG_PAGE_TEMPLATE_ENABLE
+    static Page::Template    pageTemplate;
+    if (strcmp(name, "Template") == 0)    return &pageTemplate;
+#endif
+
+    if (strcmp(name, "Startup") == 0)     return &pageStartup;
+    if (strcmp(name, "Dialplate") == 0)   return &pageDialplate;
+    if (strcmp(name, "LiveMap") == 0)     return &pageLiveMap;
+    if (strcmp(name, "SystemInfos") == 0) return &pageSystemInfos;
 
     return nullptr;
 }
+

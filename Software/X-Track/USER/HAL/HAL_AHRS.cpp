@@ -8,14 +8,8 @@
 
 static inline float ahrs_inv_sqrtf(float x)
 {
-#if defined(__ARM_FEATURE_DSP) || defined(ARM_MATH_CM4) || defined(__ARM_ARCH_7EM__)
-    float root;
-    if (arm_sqrt_f32(x, &root) == ARM_MATH_SUCCESS && root > 0.0f)
-    {
-        return 1.0f / root;
-    }
-#endif
-    return 1.0f / sqrtf(x);
+    float root = sqrtf(x);
+    return (root > 1e-8f) ? (1.0f / root) : 0.0f;
 }
 
 static void MahonyAHRSupdate(

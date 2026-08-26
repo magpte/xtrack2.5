@@ -37,19 +37,18 @@ public:
         return sportStatusInfo.speedAvgKph;
     }
 		
-	  float GetCourse()  
-		{  
+    float GetCourse()  
+    {  
         HAL::GPS_Info_t gps;  
         if(account->Pull("GPS", &gps, sizeof(gps)) != Account::RES_OK)  
         {  
             return 0.0f;  
         }  
         return gps.course;  
-		}  
+    }  
   
-    const char* GetCourseDirection()  
+    const char* GetCourseDirection(float course)  
     {  
-        float course = GetCourse();  
         while (course < 0.0f) course += 360.0f;
         while (course >= 360.0f) course -= 360.0f;
         static const char* const directions[] = {
@@ -58,6 +57,11 @@ public:
         };
         int index = (int)((course + 11.25f) / 22.5f);
         return directions[index % 16];  
+    }
+
+    const char* GetCourseDirection()
+    {
+        return GetCourseDirection(GetCourse());
     }
 
     void RecorderCommand(RecCmd_t cmd);

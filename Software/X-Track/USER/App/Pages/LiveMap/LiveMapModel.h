@@ -19,6 +19,7 @@ public:
     void Init();
     void Deinit();
     void GetGPS_Info(HAL::GPS_Info_t* info);
+    void GetDefaultCoord(double* longitude, double* latitude);
     void GetArrowTheme(char* buf, uint32_t size);
     bool GetTrackFilterActive();
     void TrackReload(TrackPointFilter::Callback_t callback, void* userData, const TrackLineFilter::Area_t* area = nullptr);

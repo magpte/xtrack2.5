@@ -37,9 +37,7 @@ public:
         {
             lv_obj_t* cont;
             lv_obj_t* dialBg;
-            lv_obj_t* ring;
             lv_obj_t* labelAngle;
-            lv_obj_t* labelDir;
         } compass;
 
         struct

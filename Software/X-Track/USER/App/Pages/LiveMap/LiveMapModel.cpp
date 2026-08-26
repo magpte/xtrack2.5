@@ -33,20 +33,21 @@ void LiveMapModel::Deinit()
 void LiveMapModel::GetGPS_Info(HAL::GPS_Info_t* info)
 {
     memset(info, 0, sizeof(HAL::GPS_Info_t));
-    if(account->Pull("GPS", info, sizeof(HAL::GPS_Info_t)) != Account::RES_OK)
-    {
-        return;
-    }
+    account->Pull("GPS", info, sizeof(HAL::GPS_Info_t));
+}
 
-    /* 仅在从未获取过定位（经纬度均为 0.0）时使用默认/保存的位置兜底；
-     * 若此前已有定位点，在信号丢失（如进室内）时必须保持最后已知位置（LKP），严禁跳回原点 */
-    if (info->longitude == 0.0 && info->latitude == 0.0)
+void LiveMapModel::GetDefaultCoord(double* longitude, double* latitude)
+{
+    *longitude = CONFIG_GPS_LONGITUDE_DEFAULT;
+    *latitude = CONFIG_GPS_LATITUDE_DEFAULT;
+
+    DataProc::SysConfig_Info_t sysConfig;
+    if(account->Pull("SysConfig", &sysConfig, sizeof(sysConfig)) == Account::RES_OK)
     {
-        DataProc::SysConfig_Info_t sysConfig;
-        if(account->Pull("SysConfig", &sysConfig, sizeof(sysConfig)) == Account::RES_OK)
+        if (sysConfig.longitude != 0.0 || sysConfig.latitude != 0.0)
         {
-            info->longitude = sysConfig.longitude;
-            info->latitude = sysConfig.latitude;
+            *longitude = sysConfig.longitude;
+            *latitude = sysConfig.latitude;
         }
     }
 }
@@ -107,6 +108,7 @@ void LiveMapModel::TrackReload(TrackPointFilter::Callback_t callback, void* user
 
     PointContainer* pointContainer = (PointContainer*)info.pointCont;
 
+    // 采用全量连续点流遍历，确保跨分块线段 100% 连贯，彻底消除小视口粗筛截断引起的悬空断线
     pointContainer->PopStart();
 
     TrackPointFilter dummyFilter;

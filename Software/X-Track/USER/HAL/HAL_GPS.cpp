@@ -48,7 +48,10 @@ static void Sky_ParseLine(const char* line, size_t len)
     HAL::Sky_Constellation_t sys = HAL::SKY_CONSTELLATION_UNKNOWN;
     if (line[1] == 'G' && line[2] == 'P') sys = HAL::SKY_CONSTELLATION_GPS;
     else if (line[1] == 'B' && line[2] == 'D') sys = HAL::SKY_CONSTELLATION_BDS;
+    else if (line[1] == 'G' && line[2] == 'B') sys = HAL::SKY_CONSTELLATION_BDS;
     else if (line[1] == 'G' && line[2] == 'L') sys = HAL::SKY_CONSTELLATION_GLONASS;
+    else if (line[1] == 'G' && line[2] == 'A') sys = HAL::SKY_CONSTELLATION_UNKNOWN;
+    else if (line[1] == 'G' && line[2] == 'Q') sys = HAL::SKY_CONSTELLATION_GPS;
     else return;
 
     int totalMsgs = NMEA_ParseIntField(line, 1, len);

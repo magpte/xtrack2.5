@@ -154,6 +154,13 @@ void LiveMap::onViewDidAppear()
     priv.lastSingleDistance = -1.0f;
     priv.lastSingleTime     = (uint32_t)-1;
     priv.lastLiveTrackPoint = { INT32_MIN, INT32_MIN };
+    priv.lastFilterPoint    = { INT32_MIN, INT32_MIN };
+
+    // LKP (Last Known Position) 状态初始化
+    priv.hasLastValidPos    = false;
+    priv.lastValidLongitude = 0.0;
+    priv.lastValidLatitude  = 0.0;
+    priv.lastValidMapPos    = { 0, 0 };
 
     priv.lastTilePosGroup.clear();
 
@@ -318,9 +325,11 @@ void LiveMap::CheckPosition()
     HAL::GPS_Info_t gpsInfo;
     Model.GetGPS_Info(&gpsInfo);
 
+    bool isGpsValid = gpsInfo.isVaild && (gpsInfo.longitude != 0.0 || gpsInfo.latitude != 0.0);
+
     // 静止判断（双阈值迟滞）：没有有效定位时保持静止状态，避免室内无信号时产生漂移和跳跃
     bool wasStationary = priv.isStationary;
-    if (!gpsInfo.isVaild)
+    if (!isGpsValid)
     {
         priv.isStationary = true;
     }
@@ -360,10 +369,38 @@ void LiveMap::CheckPosition()
     }
 
     int32_t mapX, mapY;
-    Model.mapConv.ConvertMapCoordinate(
-        gpsInfo.longitude, gpsInfo.latitude,
-        &mapX, &mapY
-    );
+    if (isGpsValid)
+    {
+        priv.hasLastValidPos    = true;
+        priv.lastValidLongitude = gpsInfo.longitude;
+        priv.lastValidLatitude  = gpsInfo.latitude;
+        Model.mapConv.ConvertMapCoordinate(
+            gpsInfo.longitude, gpsInfo.latitude,
+            &mapX, &mapY
+        );
+        priv.lastValidMapPos.x = mapX;
+        priv.lastValidMapPos.y = mapY;
+    }
+    else if (priv.hasLastValidPos)
+    {
+        // LKP (Last Known Position) 保持：信号丢失时锁定在最后已知有效经纬度。
+        // 必须基于 lastValidLongitude/Latitude 转换当前层级像素坐标，
+        // 确保在丢星期间用户缩放地图时，视口与瓦片焦点依然能精确居中，不会因层级像素跨度倍增而错位。
+        Model.mapConv.ConvertMapCoordinate(
+            priv.lastValidLongitude, priv.lastValidLatitude,
+            &mapX, &mapY
+        );
+        priv.lastValidMapPos.x = mapX;
+        priv.lastValidMapPos.y = mapY;
+    }
+    else
+    {
+        // 开机冷启动阶段且尚未搜到星：使用系统默认/保存的中心坐标初始化底图瓦片
+        double defLng, defLat;
+        Model.GetDefaultCoord(&defLng, &defLat);
+        Model.mapConv.ConvertMapCoordinate(defLng, defLat, &mapX, &mapY);
+    }
+
     Model.tileConv.SetFocusPos(mapX, mapY);
 
     if (GetIsMapTileContChanged())
@@ -390,7 +427,7 @@ void LiveMap::CheckPosition()
     MapTileContUpdate(mapX, mapY, gpsInfo.course);
 
     // 运动中通过 Model.pointFilter 实时提取拐点追加轨迹，与存盘记录保持100%一致
-    if (priv.isTrackAvtive && gpsInfo.isVaild && !priv.isStationary)
+    if (priv.isTrackAvtive && isGpsValid && !priv.isStationary)
     {
         Model.pointFilter.PushPoint(mapX, mapY);
     }
@@ -446,10 +483,14 @@ void LiveMap::MapTileContUpdate(int32_t mapX, int32_t mapY, float course)
         View.SetImgArrowStatus(arrowX, arrowY, (float)arrowAngle / 10.0f);
     }
 
-    /* active line — 优化3：静止时避免末端线段坐标抖动触发折线控件重绘 */
-    if (priv.isTrackAvtive && !priv.isStationary)
+    /* active line — 仅在记录激活且实际运动中绘制车头延伸活动线段 */
+    if (priv.isTrackAvtive && priv.hasLastValidPos && !priv.isStationary)
     {
         View.SetLineActivePoint((lv_coord_t)offset.x, (lv_coord_t)offset.y);
+    }
+    else
+    {
+        View.ClearLineActivePoint();
     }
 
     /* map cont — 像素死区过滤优化：偏移量改动小于死区阈值时跳过 lv_obj_set_pos，避免 LVGL 脏区标记与无谓全屏重绘 */
@@ -506,14 +547,61 @@ bool LiveMap::GetIsMapTileContChanged()
 void LiveMap::TrackLineReload(const Area_t* area, int32_t x, int32_t y)
 {
     Model.pointFilter.Reset();
-    Model.lineFilter.SetClipArea(area);
+
+    // 视口边界外扩 32 像素冗余缓冲，避免骑行靠近瓦片边缘时反复进出视口产生碎片单点折线
+    Area_t clipArea = *area;
+    clipArea.x0 -= 32;
+    clipArea.y0 -= 32;
+    clipArea.x1 += 32;
+    clipArea.y1 += 32;
+    Model.lineFilter.SetClipArea(&clipArea);
     Model.lineFilter.Reset();
+
+    // 根据当前地图缩放层级自适应设置屏幕像素抽稀阈值：
+    // Level 18+: 直通零抽稀（100% 原始点全保真输出）
+    // Level 17:   微距过滤（仅滤同像素完全重合点，minDistSq = 1）
+    // Level 1~16: 屏幕像素空间自适应抽稀（minDistSq = CONFIG_TRACK_SIMPLIFY_MIN_DIST_SQ, 2px^2 = 4）
+    if (mapLevelCurrent >= 18)
+    {
+        priv.trackMinDistSq = 0;
+    }
+    else if (mapLevelCurrent == 17)
+    {
+        priv.trackMinDistSq = 1;
+    }
+    else
+    {
+        priv.trackMinDistSq = CONFIG_TRACK_SIMPLIFY_MIN_DIST_SQ;
+    }
+
+    priv.lastFilterPoint = { INT32_MIN, INT32_MIN };
+
     Model.TrackReload([](TrackPointFilter * filter, const TrackPointFilter::Point_t* point)
     {
         LiveMap* instance = (LiveMap*)filter->userData;
+        int32_t minDistSq = instance->priv.trackMinDistSq;
+
+        if (minDistSq > 0 && instance->priv.lastFilterPoint.x != INT32_MIN)
+        {
+            int32_t dx = (int32_t)point->x - instance->priv.lastFilterPoint.x;
+            int32_t dy = (int32_t)point->y - instance->priv.lastFilterPoint.y;
+            if ((dx * dx + dy * dy) < minDistSq)
+            {
+                return; // 屏幕像素距离过密，跳过冗余点
+            }
+        }
+
+        instance->priv.lastFilterPoint.x = (int32_t)point->x;
+        instance->priv.lastFilterPoint.y = (int32_t)point->y;
         instance->Model.lineFilter.PushPoint((int32_t)point->x, (int32_t)point->y);
     }, this, area);
-    Model.lineFilter.PushPoint(x, y);
+
+    // 仅在记录激活且处于运动状态时，才将活动车头位置连接至历史轨迹末尾
+    // 丢星或静止时绝不压入未校验坐标，使轨迹干净收尾在最后真实有效位置
+    if (priv.isTrackAvtive && priv.hasLastValidPos && !priv.isStationary)
+    {
+        Model.lineFilter.PushPoint(x, y);
+    }
     Model.lineFilter.PushEnd();
 }
 

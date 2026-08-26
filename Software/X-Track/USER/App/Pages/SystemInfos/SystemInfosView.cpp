@@ -435,12 +435,11 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
     int32_t sin_N = (int32_t)lv_trigo_sin(rel_angle_N);
     int32_t cos_N = (int32_t)lv_trigo_cos(rel_angle_N);
 
-    // 1. 绘制根据 Course 转向的 8 等分分割线 (每 45° 一条线，共 4 条穿过圆心的线)
+    // 1. 绘制随 Course 旋转的 8 等分分割线 (每 45° 一条线，共 4 条穿过圆心的轴线)
     lv_draw_line_dsc_t line_dsc;
     lv_draw_line_dsc_init(&line_dsc);
-    line_dsc.color = lv_palette_main(LV_PALETTE_GREY);
+    line_dsc.color = lv_color_hex(0x666666);
     line_dsc.width = 1;
-    line_dsc.opa = LV_OPA_40;
 
     for (int i = 0; i < 4; i++)
     {
@@ -451,23 +450,39 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
         int32_t sin_a = (int32_t)lv_trigo_sin(angle);
         int32_t cos_a = (int32_t)lv_trigo_cos(angle);
 
-        lv_point_t p1 = { (lv_coord_t)(cx + (((int32_t)c * sin_a) >> 15)), (lv_coord_t)(cy - (((int32_t)c * cos_a) >> 15)) };
-        lv_point_t p2 = { (lv_coord_t)(cx - (((int32_t)c * sin_a) >> 15)), (lv_coord_t)(cy + (((int32_t)c * cos_a) >> 15)) };
+        line_dsc.opa = (i % 2 == 0) ? LV_OPA_60 : LV_OPA_30;
+
+        lv_point_t p1 = { (lv_coord_t)(cx + (((int32_t)(c - 4) * sin_a) >> 15)), (lv_coord_t)(cy - (((int32_t)(c - 4) * cos_a) >> 15)) };
+        lv_point_t p2 = { (lv_coord_t)(cx - (((int32_t)(c - 4) * sin_a) >> 15)), (lv_coord_t)(cy + (((int32_t)(c - 4) * cos_a) >> 15)) };
 
         lv_draw_line(draw_ctx, &line_dsc, &p1, &p2);
     }
 
-    // 2. 绘制正北方向的红色向外箭头标识
+    // 2. 绘制中心天顶十字准星 (Zenith Cross at Elevation 90°)
+    {
+        lv_draw_line_dsc_t zen_dsc;
+        lv_draw_line_dsc_init(&zen_dsc);
+        zen_dsc.color = lv_color_hex(0x888888);
+        zen_dsc.width = 1;
+        zen_dsc.opa = LV_OPA_70;
+
+        lv_point_t zh1 = { (lv_coord_t)(cx - 4), cy };
+        lv_point_t zh2 = { (lv_coord_t)(cx + 4), cy };
+        lv_draw_line(draw_ctx, &zen_dsc, &zh1, &zh2);
+
+        lv_point_t zv1 = { cx, (lv_coord_t)(cy - 4) };
+        lv_point_t zv2 = { cx, (lv_coord_t)(cy + 4) };
+        lv_draw_line(draw_ctx, &zen_dsc, &zv1, &zv2);
+    }
+
+    // 3. 绘制正北红色向外箭头标识
     lv_point_t arrow_pts[3];
-    // 顶点：指向圆盘外缘
     arrow_pts[0].x = (lv_coord_t)(cx + (((int32_t)(c - 2) * sin_N) >> 15));
     arrow_pts[0].y = (lv_coord_t)(cy - (((int32_t)(c - 2) * cos_N) >> 15));
 
-    // 箭尾中心点 (向内 10 像素)
-    int32_t bx = cx + (((int32_t)(c - 12) * sin_N) >> 15);
-    int32_t by = cy - (((int32_t)(c - 12) * cos_N) >> 15);
+    int32_t bx = cx + (((int32_t)(c - 10) * sin_N) >> 15);
+    int32_t by = cy - (((int32_t)(c - 10) * cos_N) >> 15);
 
-    // 箭尾左右两翼 (宽度半长 4 像素)
     arrow_pts[1].x = (lv_coord_t)(bx - (((int32_t)4 * cos_N) >> 15));
     arrow_pts[1].y = (lv_coord_t)(by - (((int32_t)4 * sin_N) >> 15));
 
@@ -476,46 +491,65 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
 
     lv_draw_rect_dsc_t arrow_dsc;
     lv_draw_rect_dsc_init(&arrow_dsc);
-    arrow_dsc.bg_color = lv_palette_main(LV_PALETTE_RED);
+    arrow_dsc.bg_color = lv_color_hex(0xE74C3C);
     arrow_dsc.bg_opa = LV_OPA_COVER;
-
     lv_draw_polygon(draw_ctx, &arrow_dsc, arrow_pts, 3);
 
-    // 3. 绘制卫星点（根据 Course 方向旋转）
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.radius = LV_RADIUS_CIRCLE;
-    dsc.bg_opa = LV_OPA_COVER;
-
+    // 4. 绘制卫星点（根据 Course 方向旋转，区分已锁定高饱和实心 vs 跟踪中半透明 vs 未锁定/仅在视野虚化镂空）
     for (int i = 0; i < view->sky.info.count; i++)
     {
         HAL::Sky_Satellite_t* sat = &view->sky.info.satellites[i];
 
         // 仰角 90°（正头顶）在圆心，仰角 0°（地平线）在圆周边缘。
-        int32_t r = (int32_t)c * (90 - (int32_t)sat->elevation) / 90;
+        int32_t r = (int32_t)(c - 6) * (90 - (int32_t)sat->elevation) / 90;
 
         // 相对角度 = 卫星绝对方位角 - Course 航向角
         int16_t rel_angle = (int16_t)(sat->azimuth - view->sky.course);
         while (rel_angle < 0) rel_angle += 360;
         while (rel_angle >= 360) rel_angle -= 360;
 
-        // 硬件加速：使用 LVGL 的快速查表三角函数 (lv_trigo_sin / lv_trigo_cos) 计算坐标
         int32_t sin_val = (int32_t)lv_trigo_sin(rel_angle);
         int32_t cos_val = (int32_t)lv_trigo_cos(rel_angle);
         lv_coord_t x = c + (lv_coord_t)(((int32_t)r * sin_val) >> 15);
         lv_coord_t y = c - (lv_coord_t)(((int32_t)r * cos_val) >> 15);
 
-        // 信噪比映射成点的直径：0 dB-Hz 最小点，40+ dB-Hz 最大点。
-        uint8_t snr = sat->snr;
-        if (snr > 40) snr = 40;
-        lv_coord_t dotSize = SKY_DOT_MIN + (SKY_DOT_MAX - SKY_DOT_MIN) * snr / 40;
-
+        // 星座专属鲜明色彩
+        lv_color_t satColor;
         switch (sat->constellation)
         {
-        case HAL::SKY_CONSTELLATION_GPS:     dsc.bg_color = lv_palette_main(LV_PALETTE_GREEN); break;
-        case HAL::SKY_CONSTELLATION_BDS:     dsc.bg_color = lv_palette_main(LV_PALETTE_RED); break;
-        case HAL::SKY_CONSTELLATION_GLONASS: dsc.bg_color = lv_palette_main(LV_PALETTE_BLUE); break;
-        default:                             dsc.bg_color = lv_palette_main(LV_PALETTE_GREY); break;
+        case HAL::SKY_CONSTELLATION_GPS:     satColor = lv_color_hex(0x2ECC71); break; // 鲜绿 (GPS)
+        case HAL::SKY_CONSTELLATION_BDS:     satColor = lv_color_hex(0xE74C3C); break; // 艳红 (北斗)
+        case HAL::SKY_CONSTELLATION_GLONASS: satColor = lv_color_hex(0x3498DB); break; // 天蓝 (GLONASS)
+        default:                             satColor = lv_color_hex(0xF39C12); break; // 琥珀黄 (Galileo/其他)
+        }
+
+        uint8_t snr = sat->snr;
+        lv_draw_rect_dsc_t sat_dsc;
+        lv_draw_rect_dsc_init(&sat_dsc);
+        sat_dsc.radius = LV_RADIUS_CIRCLE;
+
+        lv_coord_t dotSize;
+
+        if (snr > 0)
+        {
+            // --- 已捕获信号/已锁定卫星 (Solid Circle) ---
+            if (snr > 40) snr = 40;
+            dotSize = SKY_DOT_MIN + (SKY_DOT_MAX - SKY_DOT_MIN) * snr / 40;
+
+            sat_dsc.bg_color = satColor;
+            sat_dsc.bg_opa   = (snr >= 20) ? LV_OPA_COVER : LV_OPA_70;
+            sat_dsc.border_width = 1;
+            sat_dsc.border_color = lv_color_white();
+            sat_dsc.border_opa   = (snr >= 25) ? LV_OPA_80 : LV_OPA_40;
+        }
+        else
+        {
+            // --- 仅在视野内未捕获/未锁定虚星 (Hollow / Outlined Ring) ---
+            dotSize = 5;
+            sat_dsc.bg_opa       = LV_OPA_TRANSP;
+            sat_dsc.border_width = 1;
+            sat_dsc.border_color = satColor;
+            sat_dsc.border_opa   = LV_OPA_50;
         }
 
         lv_area_t dotArea;
@@ -524,7 +558,7 @@ void SystemInfosView::onSkyPlotDraw(lv_event_t* event)
         dotArea.x2 = dotArea.x1 + dotSize - 1;
         dotArea.y2 = dotArea.y1 + dotSize - 1;
 
-        lv_draw_rect(draw_ctx, &dsc, &dotArea);
+        lv_draw_rect(draw_ctx, &sat_dsc, &dotArea);
     }
 }
 
