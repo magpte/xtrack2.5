@@ -31,7 +31,8 @@ try:
 except ImportError:
     Image = None
 
-from tile_lz4_encode import encode_tile_bytes, load_source_image
+from tile_lz4_encode import encode_tile_bytes as encode_tile_bytes_lz4, load_source_image
+from tile_zstd_encode import encode_tile_bytes as encode_tile_bytes_zstd
 
 MAGIC = b"TBND"
 ABSENT_OFFSET = 0xFFFFFFFF
@@ -152,7 +153,9 @@ def find_tiles(input_dir, is_tencent=False):
 
 def _encode_block(args):
     """Worker process: packs one bundle block (.tbnd). Handles sub-pixel cropping if PIL is available."""
-    level, block_x, block_y, block_size, entries, out_path, gcj_warp, tile_lookup = args
+    level, block_x, block_y, block_size, entries, out_path, gcj_warp, tile_lookup, encoder = args
+
+    encode_fn = encode_tile_bytes_zstd if encoder == "zstd" else encode_tile_bytes_lz4
 
     index = [(ABSENT_OFFSET, 0)] * (block_size * block_size)
     data_chunks = []
@@ -189,10 +192,10 @@ def _encode_block(args):
                                 pass
 
                 cropped = canvas.crop((off_x, off_y, off_x + 256, off_y + 256))
-                raw_size, encoded = encode_tile_bytes(cropped)
+                raw_size, encoded = encode_fn(cropped)
             else:
                 src_path = path_or_target if isinstance(path_or_target, str) else path_or_target[0]
-                raw_size, encoded = encode_tile_bytes(src_path)
+                raw_size, encoded = encode_fn(src_path)
         except Exception as exc:
             failed.append((str(path_or_target), str(exc)))
             continue
@@ -232,6 +235,10 @@ def main():
     parser.add_argument("input_dir", help="directory containing tile files/folders")
     parser.add_argument("output_dir", help="directory to write <level>/<blockX>_<blockY>.tbnd into")
     parser.add_argument(
+        "--encoder", choices=["zstd", "lz4"], default="zstd",
+        help="tile compression engine: 'zstd' (Adaptive ZST2, 100%% lossless, default) or 'lz4' (LZ42).",
+    )
+    parser.add_argument(
         "--tencent", action="store_true",
         help="enable Tencent Map Y-axis flip (Y_osm = 2^z - 1 - Y_tencent). Use when downloading tiles from Tencent Maps.",
     )
@@ -249,7 +256,7 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Scanning {args.input_dir} ...", file=sys.stderr)
+    print(f"Scanning {args.input_dir} ... (Encoder: {args.encoder.upper()})", file=sys.stderr)
     if args.tencent:
         print("  [Option] Tencent Map Y-axis inversion enabled.", file=sys.stderr)
     if args.gcj02_to_wgs84:
@@ -289,7 +296,7 @@ def main():
         level_out_dir = os.path.join(args.output_dir, str(level))
         for (block_x, block_y), entries in blocks.items():
             out_path = os.path.join(level_out_dir, f"{block_x}_{block_y}.tbnd")
-            tasks.append((level, block_x, block_y, args.block_size, entries, out_path, args.gcj02_to_wgs84, tile_lookup))
+            tasks.append((level, block_x, block_y, args.block_size, entries, out_path, args.gcj02_to_wgs84, tile_lookup, args.encoder))
 
     total_blocks = len(tasks)
     print(f"Packing into {total_blocks} bundle file(s) using {args.workers} worker process(es)...", file=sys.stderr)

@@ -1,22 +1,29 @@
 /*
  * lv_img_rle.cpp
  *
- * High-Performance Micro-Chunk On-Demand Streaming Engine with Dual-Format (LZ42 & RLE2) Support.
+ * High-Performance Micro-Chunk On-Demand Streaming Engine with Triple-Format
+ * (ZST2, LZ42 & RLE2) Support.
  * Part of X-Track 2.5 Map System.
  *
  * Features:
- *   1. Micro-chunk On-Demand Streaming: reads and decodes only the required 32-row chunk (2~6KB) from SD.
- *   2. Zero memory limit: easily renders complex 50KB~64KB photographic tiles with zero risk of heap/arena overflow.
- *   3. Ultra-low static RAM: requires only ~25KB total (16 descriptors x 560B + 8KB scratchpad + 8KB chunk buffer).
- *   4. Multi-path probe: automatically resolves /MAPRB, /MAP, and zoom directory structures.
- *   5. Out-of-bounds rejection: strictly guards against invalid negative / out-of-world tile coordinates.
- *   6. Robust diagnostic logging to SD card (/MAP_LOG.TXT) and Serial console.
+ *   1. Adaptive ZST2 (Lossless 3-Tier Micro-Palette + G-Decorrelation + Zstd-1/FSE):
+ *      - Tier 1: 4-bit packed micro-palette (≤16 colors, 100% lossless)
+ *      - Tier 2: 8-bit compact micro-palette (17~256 colors, 100% lossless)
+ *      - Tier 3: 16-bit G-color decorrelation linear stream (>256 colors, 100% lossless)
+ *   2. Micro-chunk On-Demand Streaming: reads and decodes only the required 32-row chunk (1~4KB) from SD.
+ *   3. Zero memory limit: renders photographic & vector tiles with zero heap allocation risk.
+ *   4. Ultra-low static RAM: 16 descriptors + 16KB scratchpad + 16KB chunk fetch buffer + 24KB Zstd DCtx.
+ *   5. Full backward compatibility: seamlessly renders existing LZ42 and RLE2 bundles alongside ZST2.
  */
 
 #include "lv_img_rle.h"
 #include "lz4_decompress.h"
 extern "C" {
 #include "lz4_decompress.c"
+}
+#include "zstd_decompress.h"
+extern "C" {
+#include "zstd_decompress.c"
 }
 #include "Config/Config.h"
 #include "Common/HAL/HAL.h"
@@ -34,7 +41,8 @@ extern "C" {
 #define BUNDLE_BLOCK_SIZE     100
 #define ABSENT_OFFSET         0xFFFFFFFFu
 
-// ---- Tile constants (must match tile_lz4_encode.py / rle_encode) --------
+// ---- Tile constants (must match tile_zstd_encode.py / lz4 / rle) --------
+#define ZST_MAGIC             "ZST2"
 #define LZ4_MAGIC             "LZ42"
 #define RLE_MAGIC             "RLE2"
 #define LZ4_HEADER_SIZE       16u
@@ -47,12 +55,13 @@ extern "C" {
 // ---- LVGL drive letter for SD card --------------------------------------
 #define TILE_SD_DRIVE_LETTER  '/'
 
-#define LZ4_SCRATCH_BUF_SIZE      (LZ4_TILE_SIZE * LZ4_CHUNK_ROWS) // 8192 bytes (32 rows)
-#define LZ4_CHUNK_FETCH_BUF_SIZE  (LZ4_SCRATCH_BUF_SIZE + 64)      // Max compressed chunk size
+#define LZ4_SCRATCH_BUF_SIZE      (LZ4_TILE_SIZE * LZ4_CHUNK_ROWS * 2) // 16384 bytes (supports 16-bit RGB565 chunks)
+#define LZ4_CHUNK_FETCH_BUF_SIZE  (LZ4_SCRATCH_BUF_SIZE + 64)          // Max compressed chunk size
 
 enum TileFormat_t {
     TILE_FMT_LZ42 = 0,
     TILE_FMT_RLE2 = 1,
+    TILE_FMT_ZST2 = 2,
 };
 
 // =========================================================================
@@ -86,28 +95,30 @@ typedef struct {
     uint32_t    payload_start;
     uint32_t    payload_length;
 
-    uint8_t     format;               // TILE_FMT_LZ42 or TILE_FMT_RLE2
+    uint8_t     format;               // TILE_FMT_ZST2, TILE_FMT_LZ42, or TILE_FMT_RLE2
     uint16_t    width;
     uint16_t    height;
     uint16_t    palette_count;
     uint16_t    chunk_interval;
     uint16_t    chunk_count;
 
-    uint32_t    chunk_offsets[LZ4_MAX_CHUNKS]; // offsets from payload start to each chunk/checkpoint
-    lv_color_t  palette[LZ4_MAX_PALETTE];      // pre-baked lv_color_t
+    uint32_t    chunk_offsets[LZ4_MAX_CHUNKS]; // offsets from payload start to each chunk
+    lv_color_t  palette[LZ4_MAX_PALETTE];      // pre-baked lv_color_t (for LZ42 / RLE2)
 
     bool        valid;
 } Lz4TileDesc_t;
 
 static Lz4TileDesc_t  s_descriptors[LZ4_MAX_DESCRIPTORS];
-static uint8_t        s_comp_chunk_buf[LZ4_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 8 KB static compressed chunk buffer (8-byte aligned)
-static uint8_t        s_scratch_buf[LZ4_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 8 KB static uncompressed pixel buffer (8-byte aligned)
+static uint8_t        s_comp_chunk_buf[LZ4_CHUNK_FETCH_BUF_SIZE] __attribute__((aligned(8))); // 16.5 KB static buffer
+static uint8_t        s_scratch_buf[LZ4_SCRATCH_BUF_SIZE] __attribute__((aligned(8)));        // 16 KB static uncompressed pixel buffer
 
-// MRU decompression cache: eliminates redundant SD reads & LZ4 decompression
+// MRU decompression cache: eliminates redundant SD reads & decompression
 static struct {
     const Lz4TileDesc_t* desc;
     int chunk_idx;
-} s_mru_chunk = { NULL, -1 };
+    uint8_t chunk_tier;                        // Tier mode for ZST2 (1=4bit, 2=8bit, 3=16bit G-dec)
+    lv_color_t micro_palette[LZ4_MAX_PALETTE]; // Pre-baked palette for ZST2 micro-chunks
+} s_mru_chunk = { NULL, -1, 0 };
 
 // =========================================================================
 // Cache Management API
@@ -118,13 +129,16 @@ void lv_img_rle_cache_init()
     memset(s_descriptors, 0, sizeof(s_descriptors));
     s_mru_chunk.desc = NULL;
     s_mru_chunk.chunk_idx = -1;
-    map_log("Cache init: Micro-chunk Streaming (16 Descs, 8KB Scratch, 8KB Fetch, MRU Opt)");
+    s_mru_chunk.chunk_tier = 0;
+    zstd_decompress_init();
+    map_log("Cache init: Micro-chunk Streaming (ZST2/LZ42/RLE2, 16 Descs, 16KB Scratch, MRU Opt)");
 }
 
 void lv_img_rle_cache_deinit()
 {
     s_mru_chunk.desc = NULL;
     s_mru_chunk.chunk_idx = -1;
+    s_mru_chunk.chunk_tier = 0;
 
     for (int i = 0; i < LZ4_MAX_DESCRIPTORS; i++)
     {
@@ -351,10 +365,6 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
     snprintf(candidate[cand_count++], sizeof(candidate[0]),
              "%c:%u/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, (unsigned)level, (unsigned)block_x, (unsigned)block_y);
 
-    // 5. /:<prefix>/<blockX>_<blockY>.tbnd (flat directory)
-    snprintf(candidate[cand_count++], sizeof(candidate[0]),
-             "%c:%s/%u_%u.tbnd", TILE_SD_DRIVE_LETTER, prefix, (unsigned)block_x, (unsigned)block_y);
-
     bool opened = false;
     for (int i = 0; i < cand_count; i++)
     {
@@ -367,55 +377,85 @@ static bool open_tile(const char* src, uint32_t* tile_start_out, uint32_t* tile_
 
     if (!opened)
     {
-        map_log("Failed to open bundle for tile (%u,%u) L%u [tried %s ...]",
-                tile_x, tile_y, level, candidate[0]);
         return false;
     }
 
-    uint32_t index_pos = BUNDLE_HEADER_SIZE + (local_y * BUNDLE_BLOCK_SIZE + local_x) * 8u;
-    uint8_t  entry[8];
+    // Read Bundle Header
+    uint8_t hdr[BUNDLE_HEADER_SIZE];
     uint32_t br = 0;
-
-    if (lv_fs_seek(&s_bundle_file, index_pos, LV_FS_SEEK_SET) != LV_FS_RES_OK
-        || lv_fs_read(&s_bundle_file, entry, sizeof(entry), &br) != LV_FS_RES_OK
-        || br != sizeof(entry))
+    if (!tile_read_bytes(0, hdr, BUNDLE_HEADER_SIZE, &br) || br != BUNDLE_HEADER_SIZE)
     {
-        map_log("Index read error at pos %u in '%s'", index_pos, s_bundle_path);
         return false;
     }
 
-    uint32_t offset = (uint32_t)entry[0]        | ((uint32_t)entry[1] << 8)
-                    | ((uint32_t)entry[2] << 16) | ((uint32_t)entry[3] << 24);
-    uint32_t length = (uint32_t)entry[4]        | ((uint32_t)entry[5] << 8)
-                    | ((uint32_t)entry[6] << 16) | ((uint32_t)entry[7] << 24);
-
-    if (offset == ABSENT_OFFSET || length == 0)
+    if (memcmp(hdr, BUNDLE_MAGIC, 4) != 0)
     {
-        map_log("Tile (%u,%u) absent in bundle '%s' (offset=0x%08X, len=%u)",
-                tile_x, tile_y, s_bundle_path, offset, length);
         return false;
     }
 
-    uint32_t data_section_start = BUNDLE_HEADER_SIZE + (uint32_t)BUNDLE_BLOCK_SIZE * BUNDLE_BLOCK_SIZE * 8u;
-    *tile_start_out  = data_section_start + offset;
+    uint16_t blk_size = (uint16_t)(hdr[4] | ((uint16_t)hdr[5] << 8));
+    if (blk_size != BUNDLE_BLOCK_SIZE)
+    {
+        return false;
+    }
+
+    // Read 8-byte (offset, length) from bundle index table
+    uint32_t tile_idx = local_y * (uint32_t)blk_size + local_x;
+    uint32_t idx_pos = BUNDLE_HEADER_SIZE + tile_idx * 8u;
+
+    uint8_t entry[8];
+    if (!tile_read_bytes(idx_pos, entry, 8, &br) || br != 8)
+    {
+        return false;
+    }
+
+    uint32_t rel_offset = (uint32_t)entry[0]
+                        | ((uint32_t)entry[1] << 8)
+                        | ((uint32_t)entry[2] << 16)
+                        | ((uint32_t)entry[3] << 24);
+
+    uint32_t length     = (uint32_t)entry[4]
+                        | ((uint32_t)entry[5] << 8)
+                        | ((uint32_t)entry[6] << 16)
+                        | ((uint32_t)entry[7] << 24);
+
+    if (rel_offset == ABSENT_OFFSET || length == 0)
+    {
+        return false;
+    }
+
+    uint32_t data_section_start = BUNDLE_HEADER_SIZE + (uint32_t)blk_size * (uint32_t)blk_size * 8u;
+    *tile_start_out  = data_section_start + rel_offset;
     *tile_length_out = length;
     return true;
 }
 
-// Load tile metadata into descriptor
+// =========================================================================
+// Tile Header Loading and Descriptor Population
+// =========================================================================
+
 static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start, uint32_t tile_length)
 {
-    // Read header (16 bytes)
+    if (tile_length < LZ4_HEADER_SIZE)
+    {
+        map_log("Tile '%s' length %u too short for header", src, tile_length);
+        return NULL;
+    }
+
     uint8_t head[LZ4_HEADER_SIZE];
     uint32_t br = 0;
     if (!tile_read_bytes(tile_start, head, LZ4_HEADER_SIZE, &br) || br != LZ4_HEADER_SIZE)
     {
-        map_log("Tile header read failed at %u for '%s'", tile_start, src);
+        map_log("Failed to read header for '%s'", src);
         return NULL;
     }
 
     uint8_t format = TILE_FMT_LZ42;
-    if (memcmp(head, LZ4_MAGIC, 4) == 0)
+    if (memcmp(head, ZST_MAGIC, 4) == 0)
+    {
+        format = TILE_FMT_ZST2;
+    }
+    else if (memcmp(head, LZ4_MAGIC, 4) == 0)
     {
         format = TILE_FMT_LZ42;
     }
@@ -435,13 +475,13 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
     uint16_t chunk_intvl   = (uint16_t)(head[10] | ((uint16_t)head[11] << 8));
     uint16_t chunk_count   = (uint16_t)(head[12] | ((uint16_t)head[13] << 8));
 
-    if (palette_count == 0 || palette_count > LZ4_MAX_PALETTE || chunk_count == 0 || chunk_count > LZ4_MAX_CHUNKS)
+    if (chunk_count == 0 || chunk_count > LZ4_MAX_CHUNKS)
     {
         map_log("Invalid tile meta: Pal=%u Chunks=%u", palette_count, chunk_count);
         return NULL;
     }
 
-    uint32_t palette_bytes = (uint32_t)palette_count * 2u;
+    uint32_t palette_bytes = (format == TILE_FMT_ZST2) ? 0 : ((uint32_t)palette_count * 2u);
     uint32_t chunk_tbl_bytes = (uint32_t)chunk_count * 4u;
     uint32_t meta_bytes = LZ4_HEADER_SIZE + palette_bytes + chunk_tbl_bytes;
 
@@ -469,24 +509,27 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
     desc->chunk_interval  = chunk_intvl;
     desc->chunk_count     = chunk_count;
 
-    // Read palette and pre-convert to lv_color_t
-    uint8_t pal_raw[LZ4_MAX_PALETTE * 2];
-    if (!tile_read_bytes(tile_start + LZ4_HEADER_SIZE, pal_raw, palette_bytes, &br) || br != palette_bytes)
+    // For LZ42 / RLE2, read global palette and pre-convert to lv_color_t
+    if (format != TILE_FMT_ZST2 && palette_bytes > 0)
     {
-        map_log("Failed to read palette (%u bytes) for '%s'", palette_bytes, src);
-        desc->valid = false;
-        return NULL;
-    }
-    for (uint16_t pi = 0; pi < palette_count; pi++)
-    {
-        uint16_t c565 = (uint16_t)(pal_raw[pi * 2] | ((uint16_t)pal_raw[pi * 2 + 1] << 8));
-        desc->palette[pi] = rgb565_to_lv_color(c565);
+        uint8_t pal_raw[LZ4_MAX_PALETTE * 2];
+        if (!tile_read_bytes(tile_start + LZ4_HEADER_SIZE, pal_raw, palette_bytes, &br) || br != palette_bytes)
+        {
+            map_log("Failed to read palette (%u bytes) for '%s'", palette_bytes, src);
+            desc->valid = false;
+            return NULL;
+        }
+        for (uint16_t pi = 0; pi < palette_count; pi++)
+        {
+            uint16_t c565 = (uint16_t)(pal_raw[pi * 2] | ((uint16_t)pal_raw[pi * 2 + 1] << 8));
+            desc->palette[pi] = rgb565_to_lv_color(c565);
+        }
     }
 
     // Read chunk offsets table
+    uint32_t tbl_start_pos = tile_start + LZ4_HEADER_SIZE + palette_bytes;
     uint8_t tbl_raw[LZ4_MAX_CHUNKS * 4];
-    if (!tile_read_bytes(tile_start + LZ4_HEADER_SIZE + palette_bytes, tbl_raw, chunk_tbl_bytes, &br)
-        || br != chunk_tbl_bytes)
+    if (!tile_read_bytes(tbl_start_pos, tbl_raw, chunk_tbl_bytes, &br) || br != chunk_tbl_bytes)
     {
         map_log("Failed to read chunk table (%u bytes) for '%s'", chunk_tbl_bytes, src);
         desc->valid = false;
@@ -504,7 +547,7 @@ static Lz4TileDesc_t* load_tile_into_cache(const char* src, uint32_t tile_start,
 
     desc->valid = true;
     map_log("Loaded '%s' [%s %ux%u pal=%u chunks=%u payload=%u B]",
-            src, (format == TILE_FMT_LZ42 ? "LZ42" : "RLE2"),
+            src, (format == TILE_FMT_ZST2 ? "ZST2" : (format == TILE_FMT_LZ42 ? "LZ42" : "RLE2")),
             width, height, palette_count, chunk_count, payload_bytes);
     return desc;
 }
@@ -681,7 +724,7 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
     // Step 4: Stream and decompress only the overlapping chunks
     for (int ci = chunk_start; ci <= chunk_end; ci++)
     {
-        // Optimization 1: MRU Decompression Cache (skip SD read & LZ4 if chunk is already in s_scratch_buf)
+        // Optimization 1: MRU Decompression Cache (skip SD read & decompress if chunk is already cached)
         if (s_mru_chunk.desc != desc || s_mru_chunk.chunk_idx != ci)
         {
             uint32_t chunk_comp_offset = desc->chunk_offsets[ci];
@@ -702,8 +745,94 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
                 continue;
             }
 
-            if (desc->format == TILE_FMT_LZ42)
+            if (desc->format == TILE_FMT_ZST2)
             {
+                uint8_t mode = s_comp_chunk_buf[0];
+                s_mru_chunk.chunk_tier = mode;
+
+                if (mode == 0x01)
+                {
+                    // Tier 1: 4-bit packed micro-palette (≤16 colors)
+                    uint8_t pal_cnt = s_comp_chunk_buf[1];
+                    for (uint8_t pi = 0; pi < pal_cnt; pi++)
+                    {
+                        uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
+                        s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                    }
+
+                    size_t hdr_len = 2 + (size_t)pal_cnt * 2;
+                    // Decompress 4096 bytes of 4-bit indices into upper half of s_scratch_buf
+                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf + 8192, 4096,
+                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                    if (dec_bytes > 0)
+                    {
+                        // Unpack 4-bit indices into s_scratch_buf[0..8191]
+                        const uint8_t* p4 = &s_scratch_buf[8192];
+                        for (int i = 0; i < 4096; i++)
+                        {
+                            uint8_t b = p4[i];
+                            s_scratch_buf[i * 2]     = b >> 4;
+                            s_scratch_buf[i * 2 + 1] = b & 0x0F;
+                        }
+                    }
+                    else
+                    {
+                        map_log("ZSTD Tier1 decompress failed on chunk %d", ci);
+                        continue;
+                    }
+                }
+                else if (mode == 0x02)
+                {
+                    // Tier 2: 8-bit micro-palette (17..256 colors)
+                    uint16_t pal_cnt = (uint16_t)s_comp_chunk_buf[1] + 1;
+                    for (uint16_t pi = 0; pi < pal_cnt; pi++)
+                    {
+                        uint16_t c565 = (uint16_t)(s_comp_chunk_buf[2 + pi * 2] | ((uint16_t)s_comp_chunk_buf[2 + pi * 2 + 1] << 8));
+                        s_mru_chunk.micro_palette[pi] = rgb565_to_lv_color(c565);
+                    }
+
+                    size_t hdr_len = 2 + (size_t)pal_cnt * 2;
+                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 8192,
+                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                    if (dec_bytes <= 0)
+                    {
+                        map_log("ZSTD Tier2 decompress failed on chunk %d", ci);
+                        continue;
+                    }
+                }
+                else if (mode == 0x03)
+                {
+                    // Tier 3: 16-bit G-decorrelated raw pixels (>256 colors)
+                    size_t hdr_len = 2;
+                    int dec_bytes = zstd_decompress_chunk(s_scratch_buf, 16384,
+                                                          s_comp_chunk_buf + hdr_len, chunk_comp_len - hdr_len);
+                    if (dec_bytes > 0)
+                    {
+                        // In-place Green-Decorrelation Inverse Transform
+                        uint16_t* px16 = (uint16_t*)s_scratch_buf;
+                        for (int i = 0; i < LZ4_TILE_SIZE * LZ4_CHUNK_ROWS; i++)
+                        {
+                            uint32_t val = px16[i];
+                            uint32_t dr5 = (val >> 11) & 0x1F;
+                            uint32_t g6  = (val >> 5) & 0x3F;
+                            uint32_t db5 = val & 0x1F;
+                            uint32_t half_g = g6 >> 1;
+                            uint32_t r5 = (dr5 + half_g) & 0x1F;
+                            uint32_t b5 = (db5 + half_g) & 0x1F;
+                            uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+                            px16[i] = *(uint16_t*)&rgb565_to_lv_color(c565);
+                        }
+                    }
+                    else
+                    {
+                        map_log("ZSTD Tier3 decompress failed on chunk %d", ci);
+                        continue;
+                    }
+                }
+            }
+            else if (desc->format == TILE_FMT_LZ42)
+            {
+                s_mru_chunk.chunk_tier = 0;
                 int dec_bytes = LZ4_decompress_fast((const char*)s_comp_chunk_buf, (char*)s_scratch_buf, LZ4_TILE_SIZE * LZ4_CHUNK_ROWS);
                 if (dec_bytes <= 0)
                 {
@@ -713,6 +842,7 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
             }
             else // TILE_FMT_RLE2
             {
+                s_mru_chunk.chunk_tier = 0;
                 uint32_t sp = 0, dp = 0;
                 const uint32_t target_pixels = LZ4_TILE_SIZE * LZ4_CHUNK_ROWS;
                 while (sp + 1 < chunk_comp_len && dp < target_pixels)
@@ -766,52 +896,71 @@ static lv_res_t lv_lz4_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
         int chunk_row_start = ci * LZ4_CHUNK_ROWS;
         int row_min = (dsc->local_y1 > chunk_row_start) ? dsc->local_y1 : chunk_row_start;
         int row_max = (dsc->local_y2 < chunk_row_start + LZ4_CHUNK_ROWS - 1) ? dsc->local_y2 : (chunk_row_start + LZ4_CHUNK_ROWS - 1);
-        const uint16_t* pal = (const uint16_t*)desc->palette;
         int blit_w = dsc->blit_w;
 
-        for (int y = row_min; y <= row_max; y++)
+        // Path A: Tier 3 Direct 16-bit RGB565 memory copy
+        if (desc->format == TILE_FMT_ZST2 && s_mru_chunk.chunk_tier == 0x03)
         {
-            int row_in_chunk = y - chunk_row_start;
-            const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1];
-            
-            // Screen Y = screen_y1 + (y - local_y1), buffer offset relative to draw_ctx->buf_area
-            int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
-            lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
-
-            int x = 0;
-
-            // Optimization 2: Handle first unaligned pixel to guarantee 32-bit word alignment
-            if (((uintptr_t)&dest_row[0] & 2) && blit_w > 0)
+            for (int y = row_min; y <= row_max; y++)
             {
-                dest_row[0] = desc->palette[src_row_indices[0]];
-                x = 1;
+                int row_in_chunk = y - chunk_row_start;
+                const lv_color_t* src_row_pixels = (const lv_color_t*)&s_scratch_buf[(row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1) * 2];
+                int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
+                lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
+
+                FastMemcpy(dest_row, src_row_pixels, blit_w * sizeof(lv_color_t));
             }
+        }
+        else
+        {
+            // Path B: Palette lookup (Tier 1/2 Micro-palette or LZ42/RLE2 Global Palette)
+            const uint16_t* pal = (desc->format == TILE_FMT_ZST2)
+                                  ? (const uint16_t*)s_mru_chunk.micro_palette
+                                  : (const uint16_t*)desc->palette;
 
-            // 4-pixel parallel lookup and 2x 32-bit burst writes (dual-issue / load-use pipeline optimization)
-            uint32_t* dst32 = (uint32_t*)&dest_row[x];
-            for (; x + 3 < blit_w; x += 4)
+            for (int y = row_min; y <= row_max; y++)
             {
-                uint32_t c0 = pal[src_row_indices[x]];
-                uint32_t c1 = pal[src_row_indices[x + 1]];
-                uint32_t c2 = pal[src_row_indices[x + 2]];
-                uint32_t c3 = pal[src_row_indices[x + 3]];
-                dst32[0] = c0 | (c1 << 16);
-                dst32[1] = c2 | (c3 << 16);
-                dst32 += 2;
-            }
+                int row_in_chunk = y - chunk_row_start;
+                const uint8_t* src_row_indices = &s_scratch_buf[row_in_chunk * LZ4_TILE_SIZE + dsc->local_x1];
 
-            // 2-pixel remainder
-            for (; x + 1 < blit_w; x += 2)
-            {
-                uint32_t c0 = pal[src_row_indices[x]];
-                uint32_t c1 = pal[src_row_indices[x + 1]];
-                *dst32++ = c0 | (c1 << 16);
-            }
+                int screen_y = dsc->screen_y1 + (y - dsc->local_y1);
+                lv_color_t* dest_row = dsc->dest_buf + (screen_y - dsc->buf_y1) * dsc->buf_width + (dsc->screen_x1 - dsc->buf_x1);
 
-            // Handle trailing odd pixel
-            if (x < blit_w)
-            {
-                dest_row[x] = desc->palette[src_row_indices[x]];
+                int x = 0;
+
+                // Optimization 2: Handle first unaligned pixel to guarantee 32-bit word alignment
+                if (((uintptr_t)&dest_row[0] & 2) && blit_w > 0)
+                {
+                    dest_row[0] = *(lv_color_t*)&pal[src_row_indices[0]];
+                    x = 1;
+                }
+
+                // 4-pixel parallel lookup and 2x 32-bit burst writes
+                uint32_t* dst32 = (uint32_t*)&dest_row[x];
+                for (; x + 3 < blit_w; x += 4)
+                {
+                    uint32_t c0 = pal[src_row_indices[x]];
+                    uint32_t c1 = pal[src_row_indices[x + 1]];
+                    uint32_t c2 = pal[src_row_indices[x + 2]];
+                    uint32_t c3 = pal[src_row_indices[x + 3]];
+                    dst32[0] = c0 | (c1 << 16);
+                    dst32[1] = c2 | (c3 << 16);
+                    dst32 += 2;
+                }
+
+                // 2-pixel remainder
+                for (; x + 1 < blit_w; x += 2)
+                {
+                    uint32_t c0 = pal[src_row_indices[x]];
+                    uint32_t c1 = pal[src_row_indices[x + 1]];
+                    *dst32++ = c0 | (c1 << 16);
+                }
+
+                // Handle trailing odd pixel
+                if (x < blit_w)
+                {
+                    dest_row[x] = *(lv_color_t*)&pal[src_row_indices[x]];
+                }
             }
         }
     }

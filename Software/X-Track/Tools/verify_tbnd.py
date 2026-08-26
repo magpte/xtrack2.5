@@ -86,7 +86,9 @@ def inspect_tbnd(path):
         if present_tiles > 0:
             f.seek(data_start_offset + first_tile_offset)
             tile_head = f.read(min(16, first_tile_len))
-            if tile_head.startswith(b"LZ42"):
+            if tile_head.startswith(b"ZST2"):
+                fmt = "Adaptive ZST2 (Micro-Palette + G-Decorrelation + Zstd-1/FSE)"
+            elif tile_head.startswith(b"LZ42"):
                 fmt = "Chunked LZ4HC Format (LZ42)"
             elif tile_head.startswith(b"RLE2"):
                 fmt = "RLE2 Format (Palette + Seekable RLE)"
