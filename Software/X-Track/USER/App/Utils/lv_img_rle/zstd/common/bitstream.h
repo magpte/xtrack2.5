@@ -168,6 +168,8 @@ FORCE_INLINE_TEMPLATE BitContainerType BIT_getLowerBits(BitContainerType bitCont
     DEBUG_STATIC_ASSERT(sizeof(bitContainer) == sizeof(U32));
     return _bzhi_u32(bitContainer, nbBits);
 #  endif
+#elif (defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)) && !defined(ZSTD_NO_INTRINSICS)
+    return bitContainer & ((1u << nbBits) - 1);
 #else
     assert(nbBits < BIT_MASK_SIZE);
     return bitContainer & BIT_mask[nbBits];
@@ -309,12 +311,10 @@ FORCE_INLINE_TEMPLATE BitContainerType BIT_getMiddleBits(BitContainerType bitCon
     U32 const regMask = sizeof(bitContainer)*8 - 1;
     /* if start > regMask, bitstream is corrupted, and result is undefined */
     assert(nbBits < BIT_MASK_SIZE);
-    /* x86 transform & ((1 << nbBits) - 1) to bzhi instruction, it is better
-     * than accessing memory. When bmi2 instruction is not present, we consider
-     * such cpus old (pre-Haswell, 2013) and their performance is not of that
-     * importance.
-     */
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)) && !defined(ZSTD_NO_INTRINSICS)
+    /* ArmClang (LLVM) / GCC maps this pattern directly to single-cycle hardware UBFX instruction */
+    return (bitContainer >> (start & regMask)) & ((1u << nbBits) - 1);
+#elif defined(__x86_64__) || defined(_M_X64)
     return (bitContainer >> (start & regMask)) & ((((U64)1) << nbBits) - 1);
 #else
     return (bitContainer >> (start & regMask)) & BIT_mask[nbBits];
