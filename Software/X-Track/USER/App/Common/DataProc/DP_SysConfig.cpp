@@ -13,8 +13,20 @@ static float s_lastKnownSpeed = 0.0f;
 static bool s_lastGpsValid = false;
 static bool s_isAutoDimmed = false;
 static bool s_isScreenLocked = false;
+static bool s_isAutoScreenOff = false;
+static bool s_isDisplaySleeping = false;
 static int16_t s_lastAppliedBrightness = -1;
 static uint32_t s_lastEncoderActivityTick = 0;
+static uint32_t s_lastMovementTick = 0;
+
+static void SysConfig_SetDisplaySleep(bool sleep)
+{
+    if (s_isDisplaySleeping != sleep)
+    {
+        s_isDisplaySleeping = sleep;
+        HAL::Display_SetSleep(sleep);
+    }
+}
 
 static int16_t SysConfig_NormalizeBrightness(int16_t val, int16_t defaultVal)
 {
@@ -32,6 +44,7 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
         {
             s_lastAppliedBrightness = 0;
             HAL::Backlight_SetGradual(0, animTime);
+            SysConfig_SetDisplaySleep(true);
         }
         return;
     }
@@ -40,6 +53,13 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
     int16_t targetLowBright  = SysConfig_NormalizeBrightness(sysConfig.autoDimTargetBright, CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT);
     float speedThresh        = sysConfig.autoDimSpeedThresh;
 
+    bool isMoving = isGpsValid && (currentSpeedKph >= 1.5f);
+    if (isMoving)
+    {
+        s_lastMovementTick = DataProc::GetTick();
+    }
+
+    // 1. 骑行中高亮自动变暗判断 (速度大于阈值且初始设定为高亮度)
     if (sysConfig.screenBrightness > highBrightThresh && speedThresh > 0.0f)
     {
         float exitSpeedThresh = (speedThresh >= 1.0f) ? (speedThresh - 0.5f) : (speedThresh * 0.8f);
@@ -68,7 +88,7 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
 
     if (s_isAutoDimmed)
     {
-        // 自动变暗生效期间：若 5 秒内有编码器操作，临时恢复原本设定的亮度，满 5 秒后回到变暗状态
+        // 骑行自动变暗生效期间：若 5 秒内有编码器操作，临时恢复原本设定的亮度，满 5 秒后回到变暗状态
         if (s_lastEncoderActivityTick != 0 && DataProc::GetTickElaps(s_lastEncoderActivityTick) < 5000)
         {
             targetHardwareBrightness = sysConfig.screenBrightness;
@@ -77,6 +97,40 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
         {
             targetHardwareBrightness = targetLowBright;
         }
+        s_isAutoScreenOff = false;
+    }
+    else if (!isMoving)
+    {
+        // 2. 静止/停车状态下无操作分级节能判断
+        uint32_t lastActiveTick = (s_lastEncoderActivityTick > s_lastMovementTick) ? s_lastEncoderActivityTick : s_lastMovementTick;
+        uint32_t idleTime = (lastActiveTick == 0) ? 0 : DataProc::GetTickElaps(lastActiveTick);
+
+#if CONFIG_AUTO_SCREEN_OFF_TIMEOUT_DEFAULT > 0
+        if (idleTime >= CONFIG_AUTO_SCREEN_OFF_TIMEOUT_DEFAULT)
+        {
+            // 静止超时 -> 自动息屏 (背光关闭 + ST7789 深度睡眠)
+            targetHardwareBrightness = 0;
+            s_isAutoScreenOff = true;
+        }
+        else
+#endif
+        if (idleTime >= CONFIG_AUTO_DIM_IDLE_TIMEOUT_DEFAULT)
+        {
+            // 静止超时 -> 自动降光至目标低亮度
+            targetHardwareBrightness = targetLowBright;
+            s_isAutoScreenOff = false;
+        }
+        else
+        {
+            targetHardwareBrightness = sysConfig.screenBrightness;
+            s_isAutoScreenOff = false;
+        }
+    }
+    else
+    {
+        // 正在正常运动骑行
+        targetHardwareBrightness = sysConfig.screenBrightness;
+        s_isAutoScreenOff = false;
     }
 
     if (targetHardwareBrightness < 0) targetHardwareBrightness = 0;
@@ -85,7 +139,19 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
     if (targetHardwareBrightness != s_lastAppliedBrightness)
     {
         s_lastAppliedBrightness = targetHardwareBrightness;
-        HAL::Backlight_SetGradual(targetHardwareBrightness, animTime);
+
+        if (targetHardwareBrightness > 0)
+        {
+            // 唤醒屏幕控制器并渐变提升亮度
+            SysConfig_SetDisplaySleep(false);
+            HAL::Backlight_SetGradual(targetHardwareBrightness, animTime);
+        }
+        else
+        {
+            // 渐变熄灭背光并进入 ST7789 深度睡眠
+            HAL::Backlight_SetGradual(0, animTime);
+            SysConfig_SetDisplaySleep(true);
+        }
     }
 }
 
@@ -123,6 +189,9 @@ static int onEvent(Account* account, Account::EventParam_t* param)
         if (info->cmd == SYSCONFIG_CMD_LOAD)
         {
             HAL::Buzz_SetEnable(sysConfig.soundEnable);
+            s_lastEncoderActivityTick = DataProc::GetTick();
+            s_lastMovementTick = DataProc::GetTick();
+            s_isAutoScreenOff = false;
             s_lastAppliedBrightness = -1;
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 1000);
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
@@ -205,6 +274,12 @@ static int onEvent(Account* account, Account::EventParam_t* param)
         else if (info->cmd == SYSCONFIG_CMD_ENCODER_ACTIVITY)
         {
             s_lastEncoderActivityTick = DataProc::GetTick();
+            // 收到编码器操作：若之前处于息屏态，强制重置以瞬时唤醒屏幕
+            if (s_isAutoScreenOff || s_lastAppliedBrightness == 0)
+            {
+                s_isAutoScreenOff = false;
+                s_lastAppliedBrightness = -1;
+            }
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 300);
         }
         else if (info->cmd == SYSCONFIG_CMD_SET_LOCK_STATE)
@@ -214,9 +289,11 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             {
                 s_lastAppliedBrightness = 0;
                 HAL::Backlight_SetGradual(0, 500);
+                SysConfig_SetDisplaySleep(true);
             }
             else
             {
+                SysConfig_SetDisplaySleep(false);
                 s_lastAppliedBrightness = -1; // 强制重新计算并平滑恢复原本背光
                 SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
             }

@@ -61,6 +61,14 @@
 #define CONFIG_AUTO_DIM_SPEED_THRESH_DEFAULT 5.0f // 速度触发阈值，5 km/h
 #define CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT 200 // 目标降低亮度，20% (0..1000)
 
+// 静止无操作节能配置 (ms)：
+// 当处于静止状态（速度 < 1.0 km/h 或 GPS 无效）且无编码器操作时：
+// 1. 超过 IDLE_TIMEOUT 自动将背光降至目标低亮度 (20%)；
+// 2. 超过 SCREEN_OFF_TIMEOUT 自动进入息屏模式 (背光关闭 + ST7789 深度睡眠 SLPIN)；
+// 3. 一旦检测到编码器操作或起步速度 > 1.5 km/h，立刻瞬时唤醒并恢复原设定亮度。
+#define CONFIG_AUTO_DIM_IDLE_TIMEOUT_DEFAULT        30000  // 30s 静止无操作自动降光至 20%
+#define CONFIG_AUTO_SCREEN_OFF_TIMEOUT_DEFAULT     120000  // 120s 静止无操作自动息屏 (0: 关闭自动息屏)
+
 #define CONFIG_WEIGHT_DEFAULT 70 // kg
 
 #ifdef ARDUINO

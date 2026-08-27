@@ -288,3 +288,18 @@ void HAL::Display_SetSendFinishCallback(Display_CallbackFunc_t func)
 {
     Disp_Callback = func;
 }
+
+void HAL::Display_SetSleep(bool sleep)
+{
+    if(sleep)
+    {
+        screen.writeCommand(0x28); // DISPOFF (Display Off)
+        screen.writeCommand(0x10); // SLPIN (Sleep In)
+    }
+    else
+    {
+        screen.writeCommand(0x11); // SLPOUT (Sleep Out)
+        delay(120);
+        screen.writeCommand(0x29); // DISPON (Display On)
+    }
+}
