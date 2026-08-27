@@ -65,12 +65,15 @@ CHUNK_INTERVAL = 32  # rows per chunk (8 chunks for 256x256)
 LV_IMG_CF_TRUE_COLOR = 4
 LV_COLOR_16_SWAP = True
 
-# MCU-optimized Zstandard compressor (Level 3 optimal balance of density and speed)
+# MCU-optimized Zstandard compressor (Level 3 optimal balance of density and speed, 16KB window constraint)
 _compressor = zstd.ZstdCompressor(
-    level=3,
-    write_checksum=False,
-    write_content_size=False,
-    write_dict_id=False
+    compression_params=zstd.ZstdCompressionParameters.from_level(
+        3,
+        window_log=14,
+        write_checksum=False,
+        write_content_size=False,
+        write_dict_id=False
+    )
 )
 
 
