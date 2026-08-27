@@ -168,7 +168,7 @@ FORCE_INLINE_TEMPLATE BitContainerType BIT_getLowerBits(BitContainerType bitCont
     DEBUG_STATIC_ASSERT(sizeof(bitContainer) == sizeof(U32));
     return _bzhi_u32(bitContainer, nbBits);
 #  endif
-#elif (defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)) && !defined(ZSTD_NO_INTRINSICS)
+#elif defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)
     return bitContainer & ((1u << nbBits) - 1);
 #else
     assert(nbBits < BIT_MASK_SIZE);
@@ -311,11 +311,11 @@ FORCE_INLINE_TEMPLATE BitContainerType BIT_getMiddleBits(BitContainerType bitCon
     U32 const regMask = sizeof(bitContainer)*8 - 1;
     /* if start > regMask, bitstream is corrupted, and result is undefined */
     assert(nbBits < BIT_MASK_SIZE);
-#if (defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)) && !defined(ZSTD_NO_INTRINSICS)
-    /* ArmClang (LLVM) / GCC maps this pattern directly to single-cycle hardware UBFX instruction */
-    return (bitContainer >> (start & regMask)) & ((1u << nbBits) - 1);
-#elif defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64)
     return (bitContainer >> (start & regMask)) & ((((U64)1) << nbBits) - 1);
+#elif defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)
+    /* ArmClang (LLVM) / GCC on Cortex-M4 directly lowers this to single-cycle hardware instruction UBFX */
+    return (bitContainer >> (start & 31)) & ((1u << nbBits) - 1);
 #else
     return (bitContainer >> (start & regMask)) & BIT_mask[nbBits];
 #endif

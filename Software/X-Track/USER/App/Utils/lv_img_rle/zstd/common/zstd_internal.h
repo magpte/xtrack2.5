@@ -167,15 +167,11 @@ static UNUSED_ATTR const U32 OF_defaultNormLog = OF_DEFAULTNORMLOG;
 /*-*******************************************
 *  Shared functions to include for inlining
 *********************************************/
-#if defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)
-typedef struct { uint32_t v[2]; } __attribute__((packed)) zstd_u64_unaligned;
-typedef struct { uint32_t v[4]; } __attribute__((packed)) zstd_u128_unaligned;
-#endif
-
 static void ZSTD_copy8(void* dst, const void* src) {
 #if defined(ZSTD_ARCH_ARM_NEON) && !defined(__aarch64__)
     vst1_u8((uint8_t*)dst, vld1_u8((const uint8_t*)src));
 #elif defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)
+    typedef struct { uint32_t v[2]; } __attribute__((packed)) zstd_u64_unaligned;
     *(zstd_u64_unaligned*)dst = *(const zstd_u64_unaligned*)src;
 #else
     ZSTD_memcpy(dst, src, 8);
@@ -195,8 +191,8 @@ static void ZSTD_copy16(void* dst, const void* src) {
 #elif defined(ZSTD_ARCH_RISCV_RVV)
     __riscv_vse8_v_u8m1((uint8_t*)dst, __riscv_vle8_v_u8m1((const uint8_t*)src, 16), 16);
 #elif defined(__ARM_ARCH_7EM__) || defined(__ARM_ARCH_7M__) || defined(__arm__) || defined(__thumb2__)
-    zstd_u128_unaligned tmp = *(const zstd_u128_unaligned*)src;
-    *(zstd_u128_unaligned*)dst = tmp;
+    typedef struct { uint32_t v[4]; } __attribute__((packed)) zstd_u128_unaligned;
+    *(zstd_u128_unaligned*)dst = *(const zstd_u128_unaligned*)src;
 #elif defined(__clang__)
     ZSTD_memmove(dst, src, 16);
 #else

@@ -5,6 +5,7 @@
  * ARM Cortex-M4F: hardware CLZ/CTZ intrinsics enabled (ZSTD_NO_INTRINSICS NOT set).
  */
 #define ZSTD_STATIC_LINKING_ONLY 1
+#define HUF_FORCE_DECOMPRESS_X1 1
 
 #include "common/entropy_common.c"
 #include "common/error_private.c"

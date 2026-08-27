@@ -12,6 +12,7 @@
 #define ZSTD_STATIC_LINKING_ONLY
 #endif
 #define ZSTD_DECODER_INTERNAL_BUFFER 64
+#define HUF_FORCE_DECOMPRESS_X1 1
 
 #include "zstd/zstd.h"
 #include "zstd/common/entropy_common.c"
