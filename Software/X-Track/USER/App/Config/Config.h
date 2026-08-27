@@ -141,6 +141,6 @@
 // 开启后，系统所有的串口输出（Serial.print/printf、printf、LV_LOG_USER、地图加载日志等）
 // 均会自动镜像缓存并持久化写入 SD 卡 /system.log，方便拔卡直接在电脑上查看完整运行日志。
 // ---------------------------------------------------------------------
-#define CONFIG_SD_SYS_LOG_ENABLE              1
+#define CONFIG_SD_SYS_LOG_ENABLE              0
 
 #endif

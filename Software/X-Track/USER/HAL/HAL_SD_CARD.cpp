@@ -174,8 +174,9 @@ void HAL::NMEA_Log_Close()
 // ---------------------------------------------------------------------
 #define SYS_LOG_FILE_NAME           "/system.log"
 #define SYS_LOG_WRITE_BUF_SIZE      16384 // 16KB 环形/线性缓冲
-#define SYS_LOG_SYNC_INTERVAL_MS    1000  // 1s 快速落盘
+#define SYS_LOG_SYNC_INTERVAL_MS    30000 // 30s 集中落盘 (消除 1s 频繁 sync 导致的 50~100ms UI 周期性阻塞与掉帧)
 
+#if CONFIG_SD_SYS_LOG_ENABLE
 static File     s_sysLogFile;
 static bool     s_sysLogFileOpen = false;
 static bool     s_sysLogOpenFailed = false;
@@ -229,12 +230,14 @@ static bool SysLog_Open()
     s_sysLogLastSyncTick = millis();
     return true;
 }
+#endif
 
 void HAL::SysLog_RawWrite(const char* data, uint32_t len)
 {
+#if CONFIG_SD_SYS_LOG_ENABLE
     if (data == NULL || len == 0) return;
 
-    // 写入内存缓冲（即使 SD 尚未初始化也能暂存开机前期的日志）
+    // 纯内存写入缓冲（零阻塞，绝不在 Serial.print / 高频任务中执行同步 SPI 写操作）
     uint32_t remain = SYS_LOG_WRITE_BUF_SIZE - s_sysLogWriteBufLen;
     uint32_t writeLen = (len < remain) ? len : remain;
     if (writeLen > 0)
@@ -243,29 +246,28 @@ void HAL::SysLog_RawWrite(const char* data, uint32_t len)
         s_sysLogWriteBufLen += writeLen;
         s_sysLogNeedSync = true;
     }
-
-    if (s_sysLogFileOpen && s_sysLogWriteBufLen >= SD_CLUSTER_SIZE)
-    {
-        SysLog_FlushBuffer(false);
-    }
+#else
+    (void)data;
+    (void)len;
+#endif
 }
 
 void HAL::SysLog_RawWriteChar(char c)
 {
+#if CONFIG_SD_SYS_LOG_ENABLE
     if (s_sysLogWriteBufLen < SYS_LOG_WRITE_BUF_SIZE)
     {
         s_sysLogWriteBuf[s_sysLogWriteBufLen++] = c;
         s_sysLogNeedSync = true;
     }
-
-    if (s_sysLogFileOpen && s_sysLogWriteBufLen >= SD_CLUSTER_SIZE)
-    {
-        SysLog_FlushBuffer(false);
-    }
+#else
+    (void)c;
+#endif
 }
 
 void HAL::SysLog_Flush()
 {
+#if CONFIG_SD_SYS_LOG_ENABLE
     if (s_sysLogFileOpen && (s_sysLogWriteBufLen > 0 || s_sysLogNeedSync))
     {
         SysLog_FlushBuffer(true);
@@ -273,6 +275,7 @@ void HAL::SysLog_Flush()
         s_sysLogNeedSync = false;
         s_sysLogLastSyncTick = millis();
     }
+#endif
 }
 
 void HAL::SysLog_Write(const char* fmt, ...)
@@ -290,7 +293,7 @@ void HAL::SysLog_Write(const char* fmt, ...)
     snprintf(timeStr, sizeof(timeStr), "[%02d-%02d %02d:%02d:%02d.%03d][T:%lu] ",
              clock.month, clock.day, clock.hour, clock.minute, clock.second, clock.millisecond, (unsigned long)tick);
 
-    // 输出至串口（HardwareSerial 会自动将数据送入 SysLog_RawWrite）
+    // 输出至串口（当 CONFIG_SD_SYS_LOG_ENABLE 为 1 时，HardwareSerial 会自动将数据送入 SysLog_RawWrite）
     Serial.print(timeStr);
     Serial.println(msg);
 
@@ -306,6 +309,7 @@ void HAL::SysLog_Write(const char* fmt, ...)
 
 void HAL::SysLog_Close()
 {
+#if CONFIG_SD_SYS_LOG_ENABLE
     if(!s_sysLogFileOpen)
     {
         return;
@@ -317,6 +321,7 @@ void HAL::SysLog_Close()
     s_sysLogFileOpen = false;
     s_sysLogOpenFailed = false;
     s_sysLogNeedSync = false;
+#endif
 }
 
 bool HAL::SD_Init()
@@ -571,6 +576,7 @@ void HAL::SD_Update()
     }
 #endif
 
+#if CONFIG_SD_SYS_LOG_ENABLE
     // 处理系统诊断与全量运行日志 /system.log
     if (SD_IsReady)
     {
@@ -602,6 +608,7 @@ void HAL::SD_Update()
             }
         }
     }
+#endif
 
     if (SD_IsReady)
     {
