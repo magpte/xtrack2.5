@@ -47,7 +47,6 @@ private:
         bool valid;
         lv_obj_t* lastFocused;
         char itemStr[128];
-        uint8_t buffer[3900]; // 4KB SRAM 脏缓存空间，消除 5Hz 定时器盲目刷新与重绘
     } SystemInfosCache_t;
 
     SystemInfosCache_t cache;

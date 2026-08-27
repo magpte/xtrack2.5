@@ -104,7 +104,7 @@ void SystemInfos::Update()
 
     /* 根据当前焦点条目，只刷新用户正在看的那一组数据。
      * 每个条目占满整屏（snap scrolling），不同条目之间互不可见，
-     * 利用 4KB SRAM 脏数据缓存，只在信息真正发生改变时才驱动 LVGL 更新。 */
+     * 利用轻量字符串脏数据缓存，只在信息真正发生改变时才驱动 LVGL 更新。 */
 
     lv_group_t* group = lv_group_get_default();
     lv_obj_t* focused = group ? lv_group_get_focused(group) : nullptr;

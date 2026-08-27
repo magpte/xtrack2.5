@@ -32,7 +32,6 @@
 
 #if CONFIG_SENSOR_ENABLE
 #  define CONFIG_SENSOR_IMU_ENABLE  1
-#  define CONFIG_SENSOR_MAG_ENABLE  0
 #endif
 
 #define NULL_PIN                    PD0
@@ -98,9 +97,6 @@
 #define CONFIG_GPS_TX_PIN           PA3
 #define CONFIG_GPS_RX_PIN           PA2
 #define CONFIG_GPS_BAUD_RATE        9600
-
-/* Mag */
-#define CONFIG_MAG_USE_QMC5883L     1
 
 /* IMU */
 #define CONFIG_IMU_INT1_PIN         PB0
