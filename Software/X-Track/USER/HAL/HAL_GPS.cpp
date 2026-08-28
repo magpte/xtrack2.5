@@ -391,15 +391,25 @@ static void GPS_Recover(uint32_t silentMs)
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
-    if (silentMs > 20000)
+    // Fix: 短时路径连续失败 >= 10 次后强制升级为深度路径。
+    // 日志实证：DMA_Rem=2048（缓冲区全空）且每次 recover 后仍无数据，说明模块已进入
+    // 协议/内部状态异常，纯粹重拉 DMA 和重发配置无法恢复，必须通过热重启才能唤醒。
+    uint32_t effectiveSilentMs = silentMs;
+    if (s_recoverRetryCount >= 10 && effectiveSilentMs < 20001)
     {
-        // 深度掉线（>20s）：模块极可能已内部复位，退回 9600 波特率
-        // 正确顺序：① 先以 9600 与模块握手 → ② 发热重启让定位引擎恢复（保留星历）
-        //          → ③ 发波特率切换 → ④ 以 38400 重新初始化 → ⑤ 武装 DMA → ⑥ 下发全配置
-        GPS_SERIAL.begin(9600);
-        GPS_SERIAL.print("$PCAS10,0*1C\r\n"); // 热重启：唤醒定位引擎，保留星历快速搜星
-        GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 切换至 38400 波特率
+        effectiveSilentMs = 20001; // 强制进入深度路径
+        HAL::SysLog_Write("[GPS_RECOVER] Escalating to deep path after %u failed short retries", s_recoverRetryCount);
+    }
 
+    if (effectiveSilentMs > 60000)
+    {
+        // 极深度掉线（> 60s）：深度路径持续失败的最后手段。
+        // 冷重启会清除星历与历书，重新定位需约 30~60s，但能解决模块彻底挂死的问题。
+        GPS_SERIAL.begin(9600);
+        GPS_SERIAL.print("$PCAS10,2*1E\r\n"); // 冷重启：清除星历、历书、位置，从头搜星
+        delay(500);                            // 等待冷重启完成（模块需约 300~500ms）
+        GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 切换至 38400 波特率
+        delay(50);                             // 等待波特率切换生效，模块需约 20~50ms
         GPS_SERIAL.begin(38400);
 #if defined(AT32F435xx)
         GPS_SERIAL.enableRxDMA(
@@ -409,13 +419,40 @@ static void GPS_Recover(uint32_t silentMs)
             DMA1_Channel4_IRQn
         );
 #endif
-        GPS_SendConfigCommands(); // Mode7 多星座 + 2Hz 输出配置
+        delay(10); // 等待 USART 寄存器与 DMA 稳定后再发配置指令
+        GPS_SendConfigCommands();
+        HAL::SysLog_Write("[GPS_RECOVER] Extreme offline >60s: COLD RESTART + rebaud + config sent");
+    }
+    else if (effectiveSilentMs > 20000)
+    {
+        // 深度掉线（20~60s，或短时路径升级）：模块极可能已内部复位退回 9600 波特率。
+        // Fix: 正确顺序加入必要延时：
+        //   ① 9600 握手 → ② 热重启（保留星历）→ ③ delay(300) 等待模块启动完成
+        //   → ④ 切 38400 → ⑤ delay(50) 等待波特率生效 → ⑥ 武装 DMA
+        //   → ⑦ delay(10) 等待稳定 → ⑧ 下发全配置
+        // 原版遗漏了步骤 ③ 和 ⑤，导致 $PCAS01 波特率切换指令被模块忽略。
+        GPS_SERIAL.begin(9600);
+        GPS_SERIAL.print("$PCAS10,0*1C\r\n"); // 热重启：唤醒定位引擎，保留星历快速搜星
+        delay(300);                            // Fix: 等待热重启完成（CASIC 建议 200ms，留 100ms 余量）
+        GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 切换至 38400 波特率
+        delay(50);                             // Fix: 等待波特率切换生效，模块需约 20~50ms
+        GPS_SERIAL.begin(38400);
+#if defined(AT32F435xx)
+        GPS_SERIAL.enableRxDMA(
+            DMA1_CHANNEL4,
+            DMA1MUX_CHANNEL4,
+            DMAMUX_DMAREQ_ID_USART2_RX,
+            DMA1_Channel4_IRQn
+        );
+#endif
+        delay(10); // Fix: 等待 USART 寄存器与 DMA 稳定后再发配置指令
+        GPS_SendConfigCommands();
         HAL::SysLog_Write("[GPS_RECOVER] Deep offline >20s: warm restart + rebaud + config sent");
     }
     else
     {
-        // 短时掉线（4.5~20s）：模块大概率仍在 38400，直接重拉 DMA 并重锁波特率与配置
-        // 不下发任何复位指令，不破坏模块内部的星历和定位状态
+        // 短时掉线（4.5~20s）：模块大概率仍在 38400，直接重拉 DMA 并重锁波特率与配置。
+        // 不下发任何复位指令，不破坏模块内部的星历和定位状态。
         GPS_SERIAL.begin(38400);
 #if defined(AT32F435xx)
         GPS_SERIAL.enableRxDMA(
@@ -425,6 +462,7 @@ static void GPS_Recover(uint32_t silentMs)
             DMA1_Channel4_IRQn
         );
 #endif
+        delay(10);                             // Fix: 等待 USART 寄存器复位与 DMA 武装完全稳定
         GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 重锁 38400 波特率
         GPS_SendConfigCommands();              // Mode7 多星座 + 2Hz 输出配置
         HAL::SysLog_Write("[GPS_RECOVER] Short offline: DMA re-arm + config sent");

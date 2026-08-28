@@ -19,15 +19,17 @@ static void onTimer(Account* account)
     static GPS_Status_t nowStatus = GPS_STATUS_DISCONNECT;
     static GPS_Status_t lastStatus = GPS_STATUS_DISCONNECT;
 
+    // Fix: 原版状态机在 satellites = 1/2/5/6/7 时无分支命中，nowStatus 保持旧值不更新。
+    // 修正为连续完整覆盖：>7 星优质定位 → CONNECT，3~7 星勉强定位 → UNSTABLE，<3 → DISCONNECT
     if (satellites > 7)
     {
         nowStatus = GPS_STATUS_CONNECT;
     }
-    else if (satellites < 5 && satellites >= 3)
+    else if (satellites >= 3)
     {
         nowStatus = GPS_STATUS_UNSTABLE;
     }
-    else if (satellites == 0)
+    else
     {
         nowStatus = GPS_STATUS_DISCONNECT;
     }
@@ -58,7 +60,9 @@ static void onTimer(Account* account)
         lastStatus = nowStatus;
     }
 
-    if (satellites >= 3)
+    // Fix: 原版用 satellites >= 3 判断，但卫星数在 FIX LOST 后有最长 2.5s 延迟才归零，
+    // 期间可能将过期坐标推送给上层 Pages。改用 isVaild（含 2.5s 时效超时判断）作为门控。
+    if (gpsInfo.isVaild)
     {
         account->Commit(&gpsInfo, sizeof(gpsInfo));
         account->Publish();
