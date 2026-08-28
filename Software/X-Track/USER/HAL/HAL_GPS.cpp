@@ -349,6 +349,8 @@ void HAL::GPS_Init()
     Serial.println("GPS: LwGPS parser v2.4.0 initialized");
 }
 
+static uint8_t s_recoverRetryCount = 0;
+
 static void GPS_Recover(uint32_t silentMs)
 {
     uint32_t usartSts = 0;
@@ -359,22 +361,27 @@ static void GPS_Recover(uint32_t silentMs)
     uint16_t dmaRemain = 0;
 #endif
 
-    HAL::SysLog_Write("[GPS_RECOVER] Triggered! Silent=%lums, STS=0x%08X (RO=%d FE=%d NE=%d PE=%d IDLE=%d), DMA_Rem=%u, Fix=%d, SatsInUse=%u, SatsInView=%u",
-        silentMs,
-        usartSts,
-        (usartSts & USART_ROERR_FLAG) ? 1 : 0,
-        (usartSts & USART_FERR_FLAG) ? 1 : 0,
-        (usartSts & USART_NERR_FLAG) ? 1 : 0,
-        (usartSts & USART_PERR_FLAG) ? 1 : 0,
-        (usartSts & USART_IDLEF_FLAG) ? 1 : 0,
-        dmaRemain,
-        gps.fix,
-        gps.sats_in_use,
-        gps.sats_in_view
-    );
+    s_recoverRetryCount++;
+
+    // 仅在首次触发或关键节点记录日志，避免高频写 SD 卡造成总线拥堵掉帧
+    if (s_recoverRetryCount <= 1 || (s_recoverRetryCount % 6 == 0))
+    {
+        HAL::SysLog_Write("[GPS_RECOVER] Triggered (#%u)! Silent=%lums, STS=0x%08X (RO=%d FE=%d NE=%d PE=%d), DMA_Rem=%u, Fix=%d, Sats=%u",
+            s_recoverRetryCount,
+            silentMs,
+            usartSts,
+            (usartSts & USART_ROERR_FLAG) ? 1 : 0,
+            (usartSts & USART_FERR_FLAG) ? 1 : 0,
+            (usartSts & USART_NERR_FLAG) ? 1 : 0,
+            (usartSts & USART_PERR_FLAG) ? 1 : 0,
+            dmaRemain,
+            gps.fix,
+            gps.sats_in_use
+        );
+    }
 
 #if defined(AT32F435xx)
-    // 硬件级清除 DMA 与 USART2 错误与状态标志
+    // 硬件级清除 DMA 与 USART2 错误与状态标志 (耗时 < 1μs)
     dma_flag_clear(DMA1_GL4_FLAG | DMA1_FDT4_FLAG | DMA1_HDT4_FLAG | DMA1_DTERR4_FLAG);
     usart_flag_clear(USART2, USART_ROERR_FLAG | USART_FERR_FLAG | USART_NERR_FLAG | USART_PERR_FLAG | USART_IDLEF_FLAG | USART_TDC_FLAG);
 #endif
@@ -384,33 +391,47 @@ static void GPS_Recover(uint32_t silentMs)
 #endif
 
 #if CONFIG_GPS_TRY_MODE7_ENABLE
-    // 1. 先在 38400 波特率下盲发一条切换指令（以防模块仅是流控阻塞但仍工作在 38400）
-    GPS_SERIAL.print("$PCAS01,3*1F\r\n");
-#if defined(AT32F435xx)
-    usart_flag_clear(USART2, USART_TDC_FLAG);
-    uint32_t waitCount1 = 100000;
-    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET && --waitCount1 > 0);
-#endif
-    delay(20);
+    if (silentMs > 20000)
+    {
+        // 深度掉线（>20s）：模块极可能已内部复位，退回 9600 波特率
+        // 正确顺序：① 先以 9600 与模块握手 → ② 发热重启让定位引擎恢复（保留星历）
+        //          → ③ 发波特率切换 → ④ 以 38400 重新初始化 → ⑤ 武装 DMA → ⑥ 下发全配置
+        GPS_SERIAL.begin(9600);
+        GPS_SERIAL.print("$PCAS10,0*1C\r\n"); // 热重启：唤醒定位引擎，保留星历快速搜星
+        GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 切换至 38400 波特率
 
-    // 2. 重新通过 9600 波特率向可能复位的 GPS 模块握手并切回 38400
-    GPS_SERIAL.end();
-    GPS_SERIAL.begin(9600);
-    delay(50);
+        GPS_SERIAL.begin(38400);
 #if defined(AT32F435xx)
-    usart_flag_clear(USART2, USART_TDC_FLAG);
+        GPS_SERIAL.enableRxDMA(
+            DMA1_CHANNEL4,
+            DMA1MUX_CHANNEL4,
+            DMAMUX_DMAREQ_ID_USART2_RX,
+            DMA1_Channel4_IRQn
+        );
 #endif
-    GPS_SERIAL.print("$PCAS01,3*1F\r\n");
-
+        GPS_SendConfigCommands(); // Mode7 多星座 + 2Hz 输出配置
+        HAL::SysLog_Write("[GPS_RECOVER] Deep offline >20s: warm restart + rebaud + config sent");
+    }
+    else
+    {
+        // 短时掉线（4.5~20s）：模块大概率仍在 38400，直接重拉 DMA 并重锁波特率与配置
+        // 不下发任何复位指令，不破坏模块内部的星历和定位状态
+        GPS_SERIAL.begin(38400);
 #if defined(AT32F435xx)
-    uint32_t waitCount2 = 100000;
-    while(usart_flag_get(USART2, USART_TDC_FLAG) == RESET && --waitCount2 > 0);
+        GPS_SERIAL.enableRxDMA(
+            DMA1_CHANNEL4,
+            DMA1MUX_CHANNEL4,
+            DMAMUX_DMAREQ_ID_USART2_RX,
+            DMA1_Channel4_IRQn
+        );
 #endif
-    delay(50);
-
+        GPS_SERIAL.print("$PCAS01,3*1F\r\n"); // 重锁 38400 波特率
+        GPS_SendConfigCommands();              // Mode7 多星座 + 2Hz 输出配置
+        HAL::SysLog_Write("[GPS_RECOVER] Short offline: DMA re-arm + config sent");
+    }
+#else
+    // 不启用 Mode7 时：仅重拉 DMA，保持默认波特率
     GPS_SERIAL.begin(38400);
-#endif
-
 #if defined(AT32F435xx)
     GPS_SERIAL.enableRxDMA(
         DMA1_CHANNEL4,
@@ -419,13 +440,7 @@ static void GPS_Recover(uint32_t silentMs)
         DMA1_Channel4_IRQn
     );
 #endif
-
-#if CONFIG_GPS_TRY_MODE7_ENABLE
-    delay(20);
-    GPS_SendConfigCommands();
 #endif
-
-    HAL::SysLog_Write("[GPS_RECOVER] Recover complete: Mode7 and config sent, DMA active");
 }
 
 void HAL::GPS_Update()
@@ -443,6 +458,7 @@ void HAL::GPS_Update()
     static uint32_t s_lastRecoverTick = 0;
     static uint32_t s_lastHeartbeatTick = 0;
     static bool s_lastFixValid = false;
+    static bool s_hasEverFixed = false;
     static int s_lastSats = -1;
 
     uint32_t now = millis();
@@ -451,10 +467,13 @@ void HAL::GPS_Update()
     if (available > 0)
     {
         s_lastRxTick = now;
+        s_recoverRetryCount = 0; // 收到物理数据，复位重试计数器
     }
-    else if (s_lastRxTick > 0)
+    else if (s_hasEverFixed && s_lastRxTick > 0 && now > 6000)
     {
-        // 阶梯自愈看门狗：
+        // 阶梯自愈看门狗：仅在“曾经成功定位”且“物理串口彻底无任何数据输出”时才触发
+        // (若仅是进隧道/室内遮挡导致卫星为0，串口仍有NMEA/UTC输出，绝不触发自愈)
+
         // 阶段 1 (> 2500ms)：快速清除 USART/DMA 硬件错误标志，防止 DMA 挂起
         if (now - s_lastRxTick > 2500)
         {
@@ -483,12 +502,13 @@ void HAL::GPS_Update()
 #endif
         }
 
-        // 阶段 2 (> 4500ms)：GPS 模块可能掉电/复位重置回 9600 波特率，执行全自动重连自愈
-        if (now - s_lastRxTick > 4500 && (now - s_lastRecoverTick > 4000))
+        // 阶段 2 (> 4500ms)：自适应退避无阻塞自愈
+        // 前 3 次重试每 5 秒尝试一次，之后退避至每 30 秒尝试一次，彻底避免 UI 掉帧卡顿
+        uint32_t retryInterval = (s_recoverRetryCount < 3) ? 5000 : 30000;
+        if (now - s_lastRxTick > 4500 && (now - s_lastRecoverTick > retryInterval))
         {
             s_lastRecoverTick = now;
             GPS_Recover(now - s_lastRxTick);
-            s_lastRxTick = millis(); // 复位心跳，给自愈重连预留接收窗口
         }
     }
 
@@ -499,6 +519,7 @@ void HAL::GPS_Update()
         s_lastFixValid = currentFixValid;
         if (currentFixValid)
         {
+            s_hasEverFixed = true; // 记录本次开机已成功定位过
             HAL::SysLog_Write("[GPS_STATE] FIX ACQUIRED! Sats=%d, Pos=(%.5f,%.5f), Speed=%.1fkm/h, HDOP=%.1f",
                 gps.sats_in_use, (double)gps.latitude, (double)gps.longitude, (float)(gps.speed * 1.852f), (float)gps.dop_h);
         }

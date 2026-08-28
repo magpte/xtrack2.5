@@ -4,6 +4,7 @@
 #include "HAL/HAL_Config.h"
 #include "Utils/Time/Time.h"
 #include "lvgl/lvgl.h"
+#include <stdlib.h>
 
 using namespace DataProc;
 
@@ -18,6 +19,49 @@ static bool s_isDisplaySleeping = false;
 static int16_t s_lastAppliedBrightness = -1;
 static uint32_t s_lastEncoderActivityTick = 0;
 static uint32_t s_lastMovementTick = 0;
+
+static int16_t s_lastAx = 0;
+static int16_t s_lastAy = 0;
+static int16_t s_lastAz = 0;
+static uint32_t s_lastSteps = 0;
+static bool s_imuFirstSample = true;
+
+static void SysConfig_OnImuUpdate(const HAL::IMU_Info_t* imuInfo)
+{
+    if (s_imuFirstSample)
+    {
+        s_lastAx = imuInfo->ax;
+        s_lastAy = imuInfo->ay;
+        s_lastAz = imuInfo->az;
+        s_lastSteps = imuInfo->steps;
+        s_imuFirstSample = false;
+        return;
+    }
+
+    // 1. 计步变化检测 (步行/跑步/骑行踏频)
+    if (imuInfo->steps != s_lastSteps)
+    {
+        s_lastSteps = imuInfo->steps;
+        s_lastMovementTick = DataProc::GetTick();
+        return;
+    }
+
+    // 2. 加速度动态变化量检测 (路面震动/骑行颠簸/手持移动)
+    int32_t dAx = abs((int32_t)imuInfo->ax - s_lastAx);
+    int32_t dAy = abs((int32_t)imuInfo->ay - s_lastAy);
+    int32_t dAz = abs((int32_t)imuInfo->az - s_lastAz);
+    int32_t deltaA = dAx + dAy + dAz;
+
+    s_lastAx = imuInfo->ax;
+    s_lastAy = imuInfo->ay;
+    s_lastAz = imuInfo->az;
+
+    // 静态底噪过滤：设备静止平放时由于传感器热噪 deltaA < 400；骑行路面颠簸或手持时 deltaA > 800
+    if (deltaA > 800)
+    {
+        s_lastMovementTick = DataProc::GetTick();
+    }
+}
 
 static void SysConfig_SetDisplaySleep(bool sleep)
 {
@@ -53,11 +97,16 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
     int16_t targetLowBright  = SysConfig_NormalizeBrightness(sysConfig.autoDimTargetBright, CONFIG_AUTO_DIM_TARGET_BRIGHT_DEFAULT);
     float speedThresh        = sysConfig.autoDimSpeedThresh;
 
-    bool isMoving = isGpsValid && (currentSpeedKph >= 1.5f);
-    if (isMoving)
+    // 双通道运动判决：
+    // 通道 A: GPS 有效且速度 >= 1.5 km/h
+    // 通道 B: 最近 4 秒内 IMU 检测到连续震动/颠簸运动（适用于 GPS 丢星、进隧道、搜星阶段）
+    bool isGpsMoving = isGpsValid && (currentSpeedKph >= 1.5f);
+    if (isGpsMoving)
     {
         s_lastMovementTick = DataProc::GetTick();
     }
+
+    bool isMoving = isGpsMoving || (s_lastMovementTick != 0 && DataProc::GetTickElaps(s_lastMovementTick) < 4000);
 
     // 1. 骑行中高亮自动变暗判断 (速度大于阈值且初始设定为高亮度)
     if (sysConfig.screenBrightness > highBrightThresh && speedThresh > 0.0f)
@@ -101,7 +150,7 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
     }
     else if (!isMoving)
     {
-        // 2. 静止/停车状态下无操作分级节能判断
+        // 2. 静止/停车状态下无操作分级节能判断 (必须 GPS 为 0 且 IMU 完全无震动)
         uint32_t lastActiveTick = (s_lastEncoderActivityTick > s_lastMovementTick) ? s_lastEncoderActivityTick : s_lastMovementTick;
         uint32_t idleTime = (lastActiveTick == 0) ? 0 : DataProc::GetTickElaps(lastActiveTick);
 
@@ -128,7 +177,7 @@ static void SysConfig_UpdateBacklight(float currentSpeedKph, bool isGpsValid, ui
     }
     else
     {
-        // 正在正常运动骑行
+        // 正在正常运动骑行中 (GPS 速度达标或 IMU 感知到路面震动/运动) -> 坚决保持常亮
         targetHardwareBrightness = sysConfig.screenBrightness;
         s_isAutoScreenOff = false;
     }
@@ -171,6 +220,11 @@ static int onEvent(Account* account, Account::EventParam_t* param)
             s_lastKnownSpeed = (float)gpsInfo->speed;
             s_lastGpsValid = gpsInfo->isVaild;
             SysConfig_UpdateBacklight(s_lastKnownSpeed, s_lastGpsValid, 500);
+        }
+        else if (param->size == sizeof(HAL::IMU_Info_t))
+        {
+            HAL::IMU_Info_t* imuInfo = (HAL::IMU_Info_t*)param->data_p;
+            SysConfig_OnImuUpdate(imuInfo);
         }
         return Account::RES_OK;
     }
@@ -354,6 +408,7 @@ DATA_PROC_INIT_DEF(SysConfig)
 {
     account->Subscribe("Storage");
     account->Subscribe("GPS");
+    account->Subscribe("IMU");
     account->Subscribe("Clock"); // AID-INI 辅助定位需要 RTC 时间，见 SYSCONFIG_CMD_LOAD 分支
 #if CONFIG_LIPO_FUEL_GAUGE_ENABLE
     account->Subscribe("Power");

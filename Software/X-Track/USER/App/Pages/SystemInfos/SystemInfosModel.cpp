@@ -54,16 +54,23 @@ void SystemInfosModel::GetGPSInfo(
     *lat = gps.latitude;
     *lng = gps.longitude;
     *alt = gps.altitude;
-    snprintf(
-        utc, len,
-        "%d-%d-%d\n%02d:%02d:%02d",
-        gps.clock.year,
-        gps.clock.month,
-        gps.clock.day,
-        gps.clock.hour,
-        gps.clock.minute,
-        gps.clock.second
-    );
+    if (gps.clock.year >= 2020)
+    {
+        snprintf(
+            utc, len,
+            "%d-%02d-%02d\n%02d:%02d:%02d",
+            gps.clock.year,
+            gps.clock.month,
+            gps.clock.day,
+            gps.clock.hour,
+            gps.clock.minute,
+            gps.clock.second
+        );
+    }
+    else
+    {
+        snprintf(utc, len, "----/--/--\n--:--:--");
+    }
     *course = gps.course;
     *speed = gps.speed;
     *pdop = gps.pdop;
