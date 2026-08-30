@@ -68,8 +68,8 @@ void lv_port_disp_init()
 {
     HAL::Display_SetSendFinishCallback(disp_send_finish_callback);
 
-    static lv_color_t lv_disp_buf1[SCREEN_BUFFER_SIZE];
-    static lv_color_t lv_disp_buf2[SCREEN_BUFFER_SIZE];
+    static lv_color_t lv_disp_buf1[SCREEN_BUFFER_SIZE] __attribute__((aligned(8)));
+    static lv_color_t lv_disp_buf2[SCREEN_BUFFER_SIZE] __attribute__((aligned(8)));
 
     static lv_disp_draw_buf_t disp_buf;
     lv_disp_draw_buf_init(&disp_buf, lv_disp_buf1, lv_disp_buf2, SCREEN_BUFFER_SIZE);

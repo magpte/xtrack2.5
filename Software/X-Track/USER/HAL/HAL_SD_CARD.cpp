@@ -280,7 +280,7 @@ void HAL::SysLog_Flush()
 
 void HAL::SysLog_Write(const char* fmt, ...)
 {
-    char msg[256];
+    char msg[384];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
@@ -616,7 +616,6 @@ void HAL::SD_Update()
     }
 }
 
-// ��HAL_SD_CARD.cpp������  
 bool HAL::SD_WriteCrashLog(const char* data)  
 {  
     if (!SD_IsReady) {  

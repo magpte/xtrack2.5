@@ -135,6 +135,18 @@ extern "C" void EDMA_Stream1_IRQHandler(void)
     if(edma_flag_get(EDMA_DTERR1_FLAG) != RESET || edma_flag_get(EDMA_FERR1_FLAG) != RESET)
     {
         edma_flag_clear(EDMA_DTERR1_FLAG | EDMA_FERR1_FLAG);
+
+        /* Fix(P0): 错误路径必须重置 DMA 指针并回调 LVGL，否则 lv_disp_flush_ready()
+         * 永远不会被触发，LVGL 渲染管线永久挂起（黑屏/卡死）。
+         * 此处不等待 SPI 移位完成（EDMA 已中止，总线状态不可靠），直接拉高 CS
+         * 并通知 LVGL 这一帧已结束，让上层决定是否重绘。 */
+        Disp_DMA_CurrentPoint = NULL;
+        Disp_DMA_TragetPoint  = NULL;
+        digitalWrite_HIGH(CONFIG_SCREEN_CS_PIN);
+        if(Disp_Callback)
+        {
+            Disp_Callback();
+        }
     }
 
     if(edma_flag_get(DISP_EDMA_FDT_FLAG) != RESET)

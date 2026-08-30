@@ -207,24 +207,26 @@ static lv_fs_res_t fs_write(lv_fs_drv_t * drv, void * file_p, const void * buf, 
  */
 static lv_fs_res_t fs_seek (lv_fs_drv_t * drv, void * file_p, uint32_t pos, lv_fs_whence_t whence)
 {
+    bool ok = false;
+
     if(whence == LV_FS_SEEK_SET)
     {
-        SD_FILE(file_p)->seekSet(pos);
+        ok = SD_FILE(file_p)->seekSet(pos);
     }
     else if(whence == LV_FS_SEEK_CUR)
     {
-        SD_FILE(file_p)->seekCur(pos);
+        ok = SD_FILE(file_p)->seekCur(pos);
     }
     else if(whence == LV_FS_SEEK_END)
     {
-        SD_FILE(file_p)->seekEnd();
+        ok = SD_FILE(file_p)->seekEnd();
     }
     else
     {
         return LV_FS_RES_UNKNOWN;
     }
 
-    return LV_FS_RES_OK;
+    return ok ? LV_FS_RES_OK : LV_FS_RES_FS_ERR;
 }
 
 /**

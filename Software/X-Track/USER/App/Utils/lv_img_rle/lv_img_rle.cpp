@@ -11,15 +11,12 @@
  *      - Tier 3: 16-bit Green-decorrelation linear stream (>256 colors, 100% lossless).
  *   2. Micro-Chunk On-Demand Streaming: reads and decodes only the required 32-row chunk (1~4KB) from SD.
  *   3. Zero Heap Allocations: 100% static memory (Zero malloc / free).
- *   4. Ultra-Low Static RAM: 16 descriptors + 16KB scratchpad + 16KB chunk buffer + 24KB Zstd DCtx.
+ *   4. Ultra-Low Static RAM: 16 descriptors + 16KB scratchpad + 16KB chunk buffer + 24KB Zstd DCtx (Z1 optimized from 32KB).
  *   5. High-Throughput Rendering: FastMemcpy for Tier 3, 4-pixel parallel 32-bit burst lookup for Tier 1/2.
  */
 
 #include "lv_img_rle.h"
 #include "zstd_decompress.h"
-extern "C" {
-#include "zstd_decompress.c"
-}
 #include "Config/Config.h"
 #include "Common/HAL/HAL.h"
 #include "HAL/FastMemcpy.h"
@@ -74,7 +71,8 @@ static struct {
     bool     valid;
 } s_cached_bundle = { "", 0, 0, 0, 0, false };
 
-static bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t* br)
+/* L5: SD 読み取りの前後処理ループが頻繁に呼ばれるため RAMCODE へ */
+static LV_ATTRIBUTE_FAST_MEM bool tile_read_bytes(uint32_t abs_pos, void* buf, uint32_t len, uint32_t* br)
 {
     if (!s_bundle_valid) return false;
 
@@ -165,6 +163,17 @@ void lv_img_rle_cache_init()
 
 void lv_img_rle_cache_deinit()
 {
+    /* L7: LVGL の draw イベントはコールスタック内で同期的に発火するため、
+     * onViewWillDisappear → cache_deinit がレンダリング周期の途中で呼ばれると
+     * lv_zst2_draw が解放済みファイルハンドルを参照するリスクがある。
+     *
+     * 対策：
+     *  1. s_bundle_valid を先にクリアする（tile_read_bytes の先頭ガードが即座に false を返す）。
+     *  2. その後でファイルハンドルを閉じる（draw 側が valid=false のまま読もうとしても
+     *     tile_read_bytes が early-return するため、閉じた後のアクセスは起きない）。
+     * この順序を守ることで排他ロックなしでスレッドセーフに近い動作が得られる。 */
+
+    /* Step 1: キャッシュ参照を無効化（draw 側のガードを先に倒す） */
     for (int s = 0; s < TILE_MRU_SLOTS; s++)
     {
         s_mru_slots[s].desc = NULL;
@@ -179,13 +188,16 @@ void lv_img_rle_cache_deinit()
         s_descriptors[i].path[0] = '\0';
     }
 
+    s_cached_bundle.valid = false;
+    s_bundle_cur_pos = 0xFFFFFFFFu;
+
+    /* Step 2: valid フラグが false になった後でファイルを閉じる
+     * （tile_read_bytes は valid=false で即 return するためここは安全） */
     if (s_bundle_valid)
     {
+        s_bundle_valid = false;          /* draw 側へのガードを先に下げる */
         lv_fs_close(&s_bundle_file);
-        s_bundle_valid = false;
         s_bundle_path[0] = '\0';
-        s_bundle_cur_pos = 0xFFFFFFFFu;
-        s_cached_bundle.valid = false;
     }
 }
 
@@ -226,7 +238,7 @@ static inline void load_micro_palette_fast(lv_color_t* dst_pal, const uint8_t* s
 }
 
 // Find descriptor by tile path
-static TileDesc_t* cache_find(const char* path)
+static LV_ATTRIBUTE_FAST_MEM TileDesc_t* cache_find(const char* path)
 {
     uint32_t now = lv_tick_get();
     for (int i = 0; i < TILE_MAX_DESCRIPTORS; i++)
@@ -668,38 +680,36 @@ static void lv_img_rle_constructor(const lv_obj_class_t* class_p, lv_obj_t* obj)
 {
     LV_UNUSED(class_p);
     lv_img_rle_t* img = (lv_img_rle_t*)obj;
-    img->src = NULL;
+    img->src[0] = '\0';
 }
 
 static void lv_img_rle_destructor(const lv_obj_class_t* class_p, lv_obj_t* obj)
 {
     LV_UNUSED(class_p);
-    lv_img_rle_t* img = (lv_img_rle_t*)obj;
-    if (img->src)
-    {
-        lv_mem_free(img->src);
-        img->src = NULL;
-    }
+    LV_UNUSED(obj);
+    /* src 是内嵌 buf，随 LVGL 对象内存一起释放，无需手动 free */
 }
 
-static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc);
+/* L5: 毎フレームの全描画処理を担う最長ホットパス。RAMCODE 実行で
+ * Flash Wait State (288MHz では分岐予測ミスが重い) の影響を排除する。 */
+static LV_ATTRIBUTE_FAST_MEM lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc);
 
 static void lv_img_rle_event(const lv_obj_class_t* class_p, lv_event_t* e)
 {
     LV_UNUSED(class_p);
     lv_event_code_t code = lv_event_get_code(e);
 
-    if (code != LV_EVENT_DRAW_MAIN_BEGIN)
-    {
-        lv_res_t res = lv_obj_event_base(MY_CLASS, e);
-        if (res != LV_RES_OK) return;
-    }
+    /* L4: LVGL 8.4 标准：所有事件先 forward 给 base class，保证内部 dirty-area
+     * 合并统计和 DRAW_MAIN / DRAW_POST 链路完整。
+     * 对于 DRAW_MAIN_BEGIN，base class 不做任何绘制，forward 无副作用。 */
+    lv_res_t res = lv_obj_event_base(MY_CLASS, e);
+    if (res != LV_RES_OK) return;
 
     if (code == LV_EVENT_DRAW_MAIN_BEGIN)
     {
         lv_obj_t* obj = lv_event_get_current_target(e);
         lv_img_rle_t* img = (lv_img_rle_t*)obj;
-        if (img->src == NULL) return;
+        if (img->src[0] == '\0') return;  /* L3: 内嵌 buf，用空字符串判断代替 NULL */
 
         const lv_draw_ctx_t* draw_ctx = (const lv_draw_ctx_t*)lv_event_get_param(e);
         if (!draw_ctx || !draw_ctx->buf || !draw_ctx->buf_area || !draw_ctx->clip_area) return;
@@ -764,17 +774,12 @@ void lv_img_rle_set_src(lv_obj_t* obj, const char* src)
 
     if (src)
     {
-        size_t len = strlen(src) + 1;
-        img->src = (char*)lv_mem_realloc(img->src, len);
-        strcpy(img->src, src);
+        strncpy(img->src, src, sizeof(img->src) - 1);
+        img->src[sizeof(img->src) - 1] = '\0';
     }
     else
     {
-        if (img->src)
-        {
-            lv_mem_free(img->src);
-            img->src = NULL;
-        }
+        img->src[0] = '\0';
     }
     lv_obj_invalidate(obj);
 }
@@ -783,7 +788,7 @@ void lv_img_rle_set_src(lv_obj_t* obj, const char* src)
 // Main ZST2 Micro-Chunk Streaming Draw Function
 // =========================================================================
 
-static lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
+static LV_ATTRIBUTE_FAST_MEM lv_res_t lv_zst2_draw(const char* src, lv_img_rle_draw_dsc_t* dsc)
 {
     // Step 1: Lookup or load tile descriptor
     TileDesc_t* desc = cache_find(src);

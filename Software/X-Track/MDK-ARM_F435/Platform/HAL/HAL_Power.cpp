@@ -52,7 +52,10 @@ static void Power_ADC_Init(adc_type* ADCx)
 
     adc_ordinary_conversion_trigger_set(ADCx, ADC_ORDINARY_TRIG_TMR1CH1, ADC_ORDINARY_TRIG_EDGE_NONE);
 
-    adc_dma_mode_enable(ADCx, TRUE);
+    /* Fix(P1): 实际使用软件轮询（adc_flag_get + adc_ordinary_conversion_data_get）读取
+     * 转换结果，无需 DMA。adc_dma_mode_enable(TRUE) 会导致 ADC OCCE 标志在 DMA
+     * 搬移前不清除，使轮询路径始终读不到新值，电量检测失效。改为 FALSE。 */
+    adc_dma_mode_enable(ADCx, FALSE);
     adc_dma_request_repeat_enable(ADCx, FALSE);
     adc_interrupt_enable(ADCx, ADC_OCCO_INT, FALSE);
 
@@ -174,6 +177,7 @@ void HAL::Power_EventMonitor()
 #if CONFIG_GPS_NMEA_LOG_ENABLE
         HAL::NMEA_Log_Close();
 #endif
+        HAL::SysLog_Close(); /* Fix(P0): 关机前刷新并关闭 system.log，防止 16KB 缓冲区末尾数据丢失 */
 
         Backlight_SetGradual(0, 500);
         digitalWrite(CONFIG_POWER_EN_PIN, LOW);

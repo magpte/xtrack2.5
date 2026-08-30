@@ -45,7 +45,8 @@
 
 typedef struct {
     lv_obj_t obj;
-    char*    src;
+    char     src[96];   /* 内嵌路径缓冲，避免 lv_mem_realloc 碎片。
+                         * 格式 /:MAPRB/24/16777215/16777215.rle 最长约 40 字节，96 字节有足够余量 */
 } lv_img_rle_t;
 
 extern const lv_obj_class_t lv_img_rle_class;

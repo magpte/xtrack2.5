@@ -484,9 +484,9 @@ static void GPS_Recover(uint32_t silentMs)
 void HAL::GPS_Update()
 {
 #if CONFIG_GPS_BUF_OVERLOAD_CHK && !GPS_USE_TRANSPARENT
-    int available = GPS_SERIAL.available();
-    DEBUG_SERIAL.printf("GPS: Buffer available = %d", available);
-    if(available >= SERIAL_RX_BUFFER_SIZE / 2)
+    int avail_dbg = GPS_SERIAL.available();
+    DEBUG_SERIAL.printf("GPS: Buffer available = %d", avail_dbg);
+    if(avail_dbg >= SERIAL_RX_BUFFER_SIZE / 2)
     {
         DEBUG_SERIAL.print(", maybe overload!");
     }
@@ -706,7 +706,6 @@ void HAL::GPS_Update()
 
         GPS_SERIAL.advanceTail(consumed);
         totalProcessed += consumed;
-        s_lastRxTick = millis(); // 实时刷新通信心跳
     }
 
 #if GPS_USE_TRANSPARENT

@@ -128,8 +128,17 @@ void TrackLineFilter::PushPointForce(const Point_t* point)
 
 void TrackLineFilter::PushEnd()
 {
+    // 只有当前仍处于 inArea 状态（有未闭合的线段）时才发送 EVENT_END_LINE。
+    // 若最后一段已经因点离开视口而在 PushPoint() 里正常结束（inArea == false），
+    // 再发一次 EVENT_END_LINE 会让 onTrackLineEvent 额外调用 stop()，
+    // 使 current_index 多增一次，导致 append_to_end 定位到空段，产生断线。
+    if (!priv.inArea)
+    {
+        return;
+    }
     const Point_t* p = priv.pointCnt > 0 ? &priv.prePoint : nullptr;
     SendEvent(EVENT_END_LINE, p);
+    priv.inArea = false;
 }
 
 void TrackLineFilter::SetClipArea(const Area_t* area)

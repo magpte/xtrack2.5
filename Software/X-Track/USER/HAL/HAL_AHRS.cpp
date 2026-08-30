@@ -17,7 +17,13 @@ static void MahonyAHRSupdate(
     float ax, float ay, float az,
     float mx, float my, float mz)
 {
-    const static float sampleFreq = 0.002f;
+    /* P4-I Fix: sampleFreq 单位为 Hz（采样频率）。
+     * 积分步长 dt = 1.0f / sampleFreq（秒）。
+     * 原值 0.002f → dt = 500s，严重错误（四元数积分会在一次更新内旋转数百圈）。
+     * IMU_Update 在 HAL.cpp 中以 1000ms 周期调度（1Hz），因此 sampleFreq = 1.0f。
+     * 若将来修改 taskManager.Register(HAL::IMU_Update, ...) 的周期，需同步更新此值。
+     * 注意：AHRS_Update() 目前为空函数，本修正在启用前预防性到位。 */
+    const static float sampleFreq = 1.0f;  // 1 Hz，对应 IMU_Update 1000ms 调度周期
     const static float twoKp = 10.0f;
     const static float twoKi = 0.0f;
     static float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
